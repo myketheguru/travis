@@ -1,0 +1,29 @@
+# Default text handling: detect text files automatically.
+*       text=auto
+
+# Files whose checksum is hashed at compile time MUST be byte-identical
+# regardless of which platform checked them out. sqlx::migrate!() hashes
+# every migration file and stores the hash in the local DB; if a Windows
+# dev run embeds a CRLF version and a Linux CI build embeds the LF
+# version, sqlx refuses to open the DB on subsequent runs ("migration N
+# was previously applied but has been modified"). Pinning these to LF
+# avoids that mismatch.
+src-tauri/migrations/*.sql text eol=lf
+
+# Same logic for any shell scripts CI executes — keep them LF.
+*.sh                              text eol=lf
+
+# Binary blobs we don't want git smudging.
+*.png   binary
+*.ico   binary
+*.icns  binary
+*.dmg   binary
+*.exe   binary
+*.msi   binary
+*.deb   binary
+*.rpm   binary
+*.AppImage binary
+*.tar.gz   binary
+*.zip      binary
+*.onnx     binary
+*.key      binary
