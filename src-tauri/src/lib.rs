@@ -28,6 +28,7 @@ mod proactive;
 mod reminders;
 mod reminders_cmd;
 mod secrets;
+mod startup_error;
 mod summary;
 mod summary_cmd;
 mod telemetry;
@@ -102,16 +103,49 @@ pub fn run() {
         })
         .setup(move |app| {
             let handle = app.handle().clone();
-            let data_dir = handle
-                .path()
-                .app_data_dir()
-                .expect("failed to resolve app data dir");
+            // Resolve the app data dir up front. We need this for both the
+            // database and any startup_error log we want to write.
+            let data_dir = match handle.path().app_data_dir() {
+                Ok(d) => d,
+                Err(e) => {
+                    startup_error::die(
+                        None,
+                        format!(
+                            "Travis couldn't resolve its app data directory.\n\nDetails: {e}\n\n\
+                             This is unusual — try reinstalling, or contact support."
+                        ),
+                    );
+                }
+            };
             std::fs::create_dir_all(&data_dir).ok();
             let db_path = data_dir.join("travis.db");
 
-            let db = tauri::async_runtime::block_on(async move {
-                db::Db::open(&db_path).await.expect("failed to open database")
+            // Open + migrate the SQLite DB. The most likely failure mode is
+            // a sqlx migration checksum mismatch from a stale dev DB — the
+            // dialog points the user at the fix.
+            let db = tauri::async_runtime::block_on(async {
+                db::Db::open(&db_path).await
             });
+            let db = match db {
+                Ok(db) => db,
+                Err(e) => {
+                    startup_error::die(
+                        Some(&data_dir),
+                        format!(
+                            "Travis couldn't open its database.\n\n\
+                             Details: {e}\n\n\
+                             Database location:\n{}\n\n\
+                             If you've run a development build of Travis on this \
+                             machine before, the data directory may have stale \
+                             migration checksums. Closing this dialog and deleting \
+                             the directory above (or running:\n  \
+                             rmdir /s /q \"{}\"\n in cmd) will let Travis start fresh.",
+                            db_path.display(),
+                            data_dir.display()
+                        ),
+                    );
+                }
+            };
 
             let db_arc = Arc::new(db);
             let health_arc = Arc::new(health::Health::new());
@@ -133,11 +167,18 @@ pub fn run() {
                     &MenuItem::with_id(&handle, "tray_quit", "Quit Travis", true, None::<&str>)?,
                 ],
             )?;
+            let tray_icon = match handle.default_window_icon().cloned() {
+                Some(i) => i,
+                None => {
+                    startup_error::die(
+                        Some(&data_dir),
+                        "Travis couldn't load its window icon. The build is corrupted — try \
+                         reinstalling.",
+                    );
+                }
+            };
             let _tray = TrayIconBuilder::with_id("travis-tray")
-                .icon(handle.default_window_icon().cloned().unwrap_or_else(|| {
-                    // Should never happen — Tauri always provides a default icon.
-                    panic!("no default window icon available")
-                }))
+                .icon(tray_icon)
                 .tooltip("Travis")
                 .menu(&tray_menu)
                 .menu_on_left_click(false)

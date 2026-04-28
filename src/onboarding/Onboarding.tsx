@@ -10,7 +10,7 @@ import {
   type Provider,
 } from "../lib/ipc";
 import { Question, inputClass } from "./Question";
-import { VOICE_PRESETS, presetFromDescription } from "./voicePresets";
+import { VoiceDropdown } from "../components/VoiceDropdown";
 
 type Draft = {
   name: string;
@@ -126,8 +126,8 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
   const back = () => setStep((s) => Math.max(s - 1, 0));
 
   return (
-    <main className="relative h-full w-full flex flex-col items-center justify-center overflow-hidden px-10">
-      <div className="absolute top-6 left-1/2 -translate-x-1/2 flex items-center gap-1.5">
+    <main className="relative h-full w-full overflow-y-auto">
+      <div className="sticky top-0 z-10 pt-6 pb-2 flex items-center justify-center gap-1.5 pointer-events-none">
         {Array.from({ length: TOTAL_STEPS }).map((_, i) => (
           <motion.div
             key={i}
@@ -150,13 +150,20 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
       {step > 0 && step < 8 && (
         <button
           onClick={back}
-          className="absolute top-6 left-6 text-bone-3 hover:text-bone-2 text-xs flex items-center gap-1.5 transition-colors"
+          className="absolute top-6 left-6 z-20 text-bone-3 hover:text-bone-2 text-xs flex items-center gap-1.5 transition-colors"
         >
           <span aria-hidden>←</span>
           <span>Back</span>
         </button>
       )}
 
+      {/*
+        Min-height keeps short-step content vertically centred when the
+        window is tall, while overflow-y-auto on <main> takes over when
+        the step's content (e.g. the voice picker with 6+ options) is
+        taller than the viewport.
+      */}
+      <div className="min-h-[calc(100%-32px)] flex flex-col items-center justify-center px-10 pt-4 pb-12">
       <div className="flex flex-col items-center gap-7 w-full max-w-xl">
         <PresenceOrb size={96} />
 
@@ -287,33 +294,10 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
                 next();
               }}
             >
-              <div className="flex flex-col gap-2">
-                {VOICE_PRESETS.map((preset) => {
-                  const active =
-                    (presetFromDescription(draft.communicationStyle)?.id ?? "default") === preset.id;
-                  return (
-                    <button
-                      key={preset.id}
-                      type="button"
-                      onClick={() => update({ communicationStyle: preset.description })}
-                      className={
-                        "text-left rounded-xl border px-4 py-3 transition-all " +
-                        (active
-                          ? "border-pulse/60 bg-pulse/[0.07]"
-                          : "border-ink-3 bg-ink-2/30 hover:border-ink-3/80 hover:bg-ink-2/50")
-                      }
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="text-bone font-medium">{preset.label}</span>
-                        {active && (
-                          <span className="h-1.5 w-1.5 rounded-full bg-pulse-2 shadow-[0_0_8px_rgba(110,196,232,0.7)]" />
-                        )}
-                      </div>
-                      <p className="text-bone-3 text-xs mt-0.5">{preset.blurb}</p>
-                    </button>
-                  );
-                })}
-              </div>
+              <VoiceDropdown
+                value={draft.communicationStyle}
+                onChange={(v) => update({ communicationStyle: v })}
+              />
             </Question>
           )}
 
@@ -485,6 +469,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
           )}
           </AnimatePresence>
         </div>
+      </div>
       </div>
     </main>
   );

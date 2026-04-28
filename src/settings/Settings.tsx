@@ -16,7 +16,7 @@ import {
   type UserProfile,
 } from "../lib/ipc";
 import { checkForUpdate, installUpdate, type UpdateInfo } from "../lib/updater";
-import { VOICE_PRESETS, presetFromDescription } from "../onboarding/voicePresets";
+import { VoiceDropdown } from "../components/VoiceDropdown";
 import { useAppStore } from "../stores/app";
 
 const providers: { id: Provider; name: string; blurb: string; needsKey: boolean }[] = [
@@ -216,7 +216,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
             />
           </Field>
           <Field label="Voice (optional)">
-            <VoicePicker
+            <VoiceDropdown
               value={draft.communicationStyle}
               onChange={(v) => update({ communicationStyle: v })}
             />
@@ -786,83 +786,6 @@ function Input({
         (mono ? "font-mono text-sm" : "")
       }
     />
-  );
-}
-
-function VoicePicker({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-}) {
-  const activePreset = presetFromDescription(value);
-  const isCustom =
-    !activePreset && value.trim().length > 0;
-  const [showCustom, setShowCustom] = useState(isCustom);
-  const pulse = useAppStore((s) => s.pulse);
-  return (
-    <div className="flex flex-col gap-2">
-      {VOICE_PRESETS.map((preset) => {
-        const active = !isCustom && (activePreset?.id ?? "default") === preset.id;
-        return (
-          <button
-            key={preset.id}
-            type="button"
-            onClick={() => {
-              setShowCustom(false);
-              onChange(preset.description);
-            }}
-            className={
-              "text-left rounded-xl border px-4 py-3 transition-all " +
-              (active
-                ? "border-pulse/60 bg-pulse/[0.07]"
-                : "border-ink-3 bg-ink-2/30 hover:border-ink-3/80 hover:bg-ink-2/50")
-            }
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-bone font-medium">{preset.label}</span>
-              {active && (
-                <span className="h-1.5 w-1.5 rounded-full bg-pulse-2 shadow-[0_0_8px_rgba(110,196,232,0.7)]" />
-              )}
-            </div>
-            <p className="text-bone-3 text-xs mt-0.5">{preset.blurb}</p>
-          </button>
-        );
-      })}
-      <button
-        type="button"
-        onClick={() => setShowCustom((v) => !v)}
-        className={
-          "text-left rounded-xl border px-4 py-3 transition-all " +
-          (isCustom
-            ? "border-pulse/60 bg-pulse/[0.07]"
-            : "border-ink-3 bg-ink-2/30 hover:border-ink-3/80 hover:bg-ink-2/50")
-        }
-      >
-        <div className="flex items-center justify-between">
-          <span className="text-bone font-medium">Custom</span>
-          {isCustom && (
-            <span className="h-1.5 w-1.5 rounded-full bg-pulse-2 shadow-[0_0_8px_rgba(110,196,232,0.7)]" />
-          )}
-        </div>
-        <p className="text-bone-3 text-xs mt-0.5">
-          Write your own voice instructions.
-        </p>
-      </button>
-      {showCustom && (
-        <input
-          autoFocus
-          value={value}
-          placeholder="e.g. blunt, no preamble, action verbs only"
-          onChange={(e) => {
-            pulse();
-            onChange(e.target.value);
-          }}
-          className="w-full bg-ink-2/70 border border-ink-3 rounded-lg px-3.5 py-2.5 text-bone placeholder:text-bone-3/55 focus:outline-none focus:border-pulse/60 transition-colors mt-1"
-        />
-      )}
-    </div>
   );
 }
 
