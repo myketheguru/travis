@@ -1,25 +1,27 @@
-# Two-repo release pipeline.
+# Release pipeline (artifact-based, two-repo).
 #
 # THIS repo (private)               PUBLIC_REPO (public, see env below)
 # ─────────────────────             ────────────────────────────────────
-# - source code                     - installer assets only
+# - source code                     - installer assets
 # - build secrets                   - latest.json (updater manifest)
 # - tag pushes trigger this         - what end users actually download from
 #
-# Triggered when you push a tag matching v* (e.g. v0.2.0). The pipeline
-# runs in two stages:
+# Triggered when you push a tag matching v* (e.g. v0.2.0). Two stages:
 #
-#   1. build-and-stage  (Win/Mac/Linux, in parallel)
-#      Builds Travis, signs each installer with the Tauri Ed25519 key,
-#      attaches everything to a DRAFT release in this PRIVATE repo. The
-#      draft accumulates assets across platforms and tauri-action
-#      regenerates latest.json after each upload.
+#   1. build (Win/Mac/Linux, in parallel)
+#      Builds Travis with `tauri build`, signs each installer with the
+#      Tauri Ed25519 key, uploads the entire bundle/ directory as a
+#      workflow artifact. NO release is created in this private repo —
+#      that means we don't need contents:write here, which avoids the
+#      `default_workflow_permissions: read` lockout that bites tauri-action
+#      when GitHub repo settings keep workflow tokens read-only.
 #
-#   2. promote-public   (single linux runner, after #1 finishes)
-#      Downloads everything from the private staging draft and creates a
-#      DRAFT release in the public repo with the same tag. You then
-#      review + publish the PUBLIC release manually — that's the moment
-#      auto-updates go live for end users.
+#   2. publish (single linux runner, after build matrix completes)
+#      Downloads every platform's bundle artifact, generates the unified
+#      `latest.json` updater manifest from the .sig sidecars, then uses
+#      RELEASES_REPO_PAT to create a DRAFT release on PUBLIC_REPO with
+#      every installer + latest.json attached. You review the draft and
+#      click Publish — that's the moment auto-updates go live.
 #
 # Required repo secrets (Settings → Secrets and variables → Actions):
 #
@@ -48,25 +50,27 @@ on:
       - 'v*'
   workflow_dispatch:
 
-# Change this to your own org/repo if you fork. PUBLIC_REPO must be a
-# public GitHub repo that the RELEASES_REPO_PAT has Contents:write on.
 env:
   PUBLIC_REPO: myketheguru/travis-releases
 
 jobs:
-  build-and-stage:
-    permissions:
-      contents: write
+  build:
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: macos-latest
             args: --target universal-apple-darwin
+            artifact: macos
+            bundle_path: src-tauri/target/universal-apple-darwin/release/bundle
           - platform: ubuntu-22.04
             args: ''
+            artifact: linux
+            bundle_path: src-tauri/target/release/bundle
           - platform: windows-latest
             args: ''
+            artifact: windows
+            bundle_path: src-tauri/target/release/bundle
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -100,10 +104,9 @@ jobs:
       - name: Install npm deps
         run: npm ci
 
-      - name: Build, sign, append to staging draft (this private repo)
+      - name: Build & sign (no release upload from this repo)
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TRAVIS_GOOGLE_CLIENT_ID: ${{ secrets.TRAVIS_GOOGLE_CLIENT_ID }}
@@ -113,51 +116,105 @@ jobs:
           TRAVIS_TELEMETRY_URL: ${{ secrets.TRAVIS_TELEMETRY_URL }}
           TRAVIS_TELEMETRY_TOKEN: ${{ secrets.TRAVIS_TELEMETRY_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Travis ${{ github.ref_name }} (staging)'
-          releaseBody: |
-            Internal staging draft for ${{ github.ref_name }}.
-            The user-facing release is at github.com/${{ env.PUBLIC_REPO }}/releases.
-          releaseDraft: true
-          prerelease: false
+          # Intentionally no tagName/releaseName — that suppresses the
+          # release-creation step in tauri-action so we don't need
+          # contents:write on this repo.
           args: ${{ matrix.args }}
-          updaterJsonPreferNsis: true
 
-  promote-public:
-    needs: build-and-stage
+      - name: Upload signed bundle directory
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.artifact }}
+          path: ${{ matrix.bundle_path }}/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
-      - name: Download staged assets from this private repo
-        run: |
-          mkdir -p assets
-          gh release download "${{ github.ref_name }}" \
-            --repo "${{ github.repository }}" \
-            --dir assets
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4
 
-      - name: List downloaded assets
-        run: ls -la assets/
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Download every platform's bundle
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Merge into a unified bundle/ layout
+        run: |
+          set -euo pipefail
+          # Each artifact arrives at artifacts/bundle-<platform>/<format>/<file>.
+          # Flatten into a single bundle/<format>/<file> tree so the manifest
+          # script + final upload step both see one consistent structure.
+          mkdir -p bundle
+          for platform_dir in artifacts/bundle-*; do
+            for format_dir in "$platform_dir"/*; do
+              [ -d "$format_dir" ] || continue
+              format=$(basename "$format_dir")
+              mkdir -p "bundle/$format"
+              cp -r "$format_dir"/. "bundle/$format/"
+            done
+          done
+          echo "Merged bundle contents:"
+          find bundle -maxdepth 3 -type f
+
+      - name: Generate latest.json
+        run: |
+          node scripts/build-update-manifest.mjs \
+            --version "${{ github.ref_name }}" \
+            --release-url "https://github.com/${{ env.PUBLIC_REPO }}/releases/download/${{ github.ref_name }}" \
+            --notes "Auto-built. Edit these notes before publishing." \
+            --bundle-root "$PWD/bundle" \
+            --out "$PWD/dist-update"
+
+      - name: Collect installer files for upload
+        id: collect
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+          declare -a files=()
+          # User-facing installers + their .sig sidecars
+          for f in bundle/**/*.exe bundle/**/*.msi bundle/**/*.dmg \
+                   bundle/**/*.AppImage bundle/**/*.deb \
+                   bundle/**/*.app.tar.gz bundle/**/*.nsis.zip ; do
+            files+=("$f")
+          done
+          for f in bundle/**/*.sig ; do
+            files+=("$f")
+          done
+          files+=("dist-update/latest.json")
+          {
+            echo "files<<EOF"
+            for f in "${files[@]}"; do echo "$f"; done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "Will upload ${#files[@]} files"
+          printf '  %s\n' "${files[@]}"
 
       - name: Create or update draft release in public repo
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_REPO_PAT }}
         run: |
-          # Idempotent: re-running the workflow on the same tag updates
-          # assets in place rather than failing.
+          set -euo pipefail
+          # Convert newline-delimited paths back into argv-friendly form.
+          mapfile -t files <<<"${{ steps.collect.outputs.files }}"
           if gh release view "${{ github.ref_name }}" \
                --repo "${{ env.PUBLIC_REPO }}" >/dev/null 2>&1; then
             echo "Release exists; uploading assets with --clobber"
-            gh release upload "${{ github.ref_name }}" assets/* \
+            gh release upload "${{ github.ref_name }}" "${files[@]}" \
               --repo "${{ env.PUBLIC_REPO }}" \
               --clobber
           else
             echo "Creating new draft release"
-            gh release create "${{ github.ref_name }}" assets/* \
+            gh release create "${{ github.ref_name }}" "${files[@]}" \
               --repo "${{ env.PUBLIC_REPO }}" \
               --title "Travis ${{ github.ref_name }}" \
               --notes "Auto-built. Edit these notes before publishing." \
               --draft
           fi
-        env:
-          GH_TOKEN: ${{ secrets.RELEASES_REPO_PAT }}

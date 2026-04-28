@@ -84,11 +84,15 @@ function die(msg) {
   process.exit(1);
 }
 
-const version = arg("version") ?? readVersion();
+// Strip a leading "v" so callers can pass either "0.1.0" or "v0.1.0".
+const rawVersion = arg("version") ?? readVersion();
+const version = rawVersion.startsWith("v") ? rawVersion.slice(1) : rawVersion;
 const releaseUrl = arg("release-url");
 const notes = arg("notes") ?? "";
 const outDir = arg("out") ?? join(repoRoot, "dist-update");
-const bundleRoot = join(repoRoot, "src-tauri", "target", "release", "bundle");
+// Allow overriding the bundle root so CI can point at the merged
+// download directory rather than the local target/release/bundle.
+const bundleRoot = arg("bundle-root") ?? join(repoRoot, "src-tauri", "target", "release", "bundle");
 
 if (!releaseUrl) die("--release-url is required (URL prefix where binaries will be hosted)");
 if (!existsSync(bundleRoot)) {
@@ -177,12 +181,14 @@ const manifest = {
 };
 
 mkdirSync(outDir, { recursive: true });
-const outPath = join(outDir, "update.json");
+// Filename matches plugins.updater.endpoints in tauri.conf.json — the
+// updater fetches /releases/latest/download/latest.json.
+const outPath = join(outDir, "latest.json");
 writeFileSync(outPath, JSON.stringify(manifest, null, 2));
 
 console.log(`wrote ${outPath}`);
 console.log(`platforms: ${Object.keys(platforms).join(", ")}`);
-console.log(`\nNext: upload update.json AND the binaries below to ${releaseUrl}/`);
+console.log(`\nNext: upload latest.json AND the binaries below to ${releaseUrl}/`);
 for (const [key, p] of Object.entries(platforms)) {
   console.log(`  ${key}: ${basename(p.url)}`);
 }
