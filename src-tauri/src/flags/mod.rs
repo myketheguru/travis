@@ -4,7 +4,7 @@ use sqlx::SqlitePool;
 
 pub type Flags = Value;
 
-pub const DEFAULT_FLAGS_URL: &str = "https://leadtoempower.github.io/travis/config.json";
+pub const DEFAULT_FLAGS_URL: &str = "https://myketheguru.github.io/travis-releases/config.json";
 
 fn empty_flags() -> Flags {
     json!({ "features": {} })

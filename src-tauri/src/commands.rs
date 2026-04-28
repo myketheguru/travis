@@ -64,6 +64,10 @@ pub struct OnboardingPayload {
     pub api_key: Option<String>,
     pub ollama_url: Option<String>,
     pub model: Option<String>,
+    /// Free-form description of the user/org's work. Optional.
+    pub context_blurb: Option<String>,
+    /// Optional voice/tone guidance (e.g. "warm", "formal"). Optional.
+    pub communication_style: Option<String>,
 }
 
 async fn write_profile_and_key(
@@ -87,6 +91,16 @@ async fn write_profile_and_key(
             .filter(|s| !s.is_empty()),
         model: payload
             .model
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        context_blurb: payload
+            .context_blurb
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        communication_style: payload
+            .communication_style
             .as_ref()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty()),

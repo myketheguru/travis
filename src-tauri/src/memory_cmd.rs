@@ -220,24 +220,20 @@ pub async fn ask_travis(
     )
     .map_err(|e| e.to_string())?;
 
-    let first = profile
-        .name
-        .split_whitespace()
-        .next()
-        .unwrap_or(&profile.name);
+    let first = profile.first_name();
     let system = format!(
-        "You are Travis, a personal operations assistant for {first}, who is {role} at {org}. \
+        "You are Travis, a personal operations assistant.\n\n{user_context}\n\n\
 This is a continuous chat — you have prior turns of context above the current question. \
 Answer grounded in the supplied retrieval context (memory snippets + open tasks) when relevant. \
 If the context doesn't have enough info, say so plainly. \
 Be conversational but concise — short paragraphs or bullets, not essays. \
 \n\nIf {first} asks for something operational (set a reminder, draft an invoice, send an email), \
 acknowledge that this Ask surface is for retrieval/conversation. The Cmd/Ctrl+J overlay is where \
-ops capture happens. Offer to capture the intent there if it's something Travis CAN do; if it's \
-not yet supported (e.g. send email), say so honestly and offer to log it to track demand.",
+ops capture happens. Offer to capture the intent there if it's something Travis CAN do; if a \
+capability isn't connected yet (e.g. email when no Gmail/Outlook is linked), say so honestly and \
+offer to log it.",
+        user_context = profile.context_block(),
         first = first,
-        role = profile.role,
-        org = profile.org,
     );
 
     // Build history from conversation_message — drop the just-appended user

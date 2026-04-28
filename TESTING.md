@@ -6,7 +6,7 @@ Run `npm run tauri dev`, work through each section. Mark with `[x]` when verifie
 
 ## 1. App boot & migrations
 - [ ] App launches without errors in the dev terminal
-- [ ] DB at `%APPDATA%\com.leadtoempower.travis\travis.db` exists after launch
+- [ ] DB at `%APPDATA%\com.myketheguru.travis\travis.db` exists after launch
 - [ ] Splash shows version + `ready` pill after first paint
 - [ ] If wiped: onboarding flow appears
 

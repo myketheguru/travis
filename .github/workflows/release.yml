@@ -1,15 +1,32 @@
-# Release pipeline.
+# Two-repo release pipeline.
 #
-# Triggered when you push a tag matching v* (e.g. v0.2.0). Builds Travis
-# on Windows, macOS (universal: Intel + Apple Silicon), and Linux, signs
-# each installer with the Tauri updater Ed25519 key, creates a draft
-# GitHub Release, and attaches:
-#   - Windows:    .exe (NSIS) + .msi
-#   - macOS:      .dmg + Travis.app.tar.gz (the updater consumes the latter)
-#   - Linux:      .AppImage + .deb
-#   - latest.json (the updater manifest the running app fetches to find updates)
+# THIS repo (private)               PUBLIC_REPO (public, see env below)
+# ─────────────────────             ────────────────────────────────────
+# - source code                     - installer assets only
+# - build secrets                   - latest.json (updater manifest)
+# - tag pushes trigger this         - what end users actually download from
+#
+# Triggered when you push a tag matching v* (e.g. v0.2.0). The pipeline
+# runs in two stages:
+#
+#   1. build-and-stage  (Win/Mac/Linux, in parallel)
+#      Builds Travis, signs each installer with the Tauri Ed25519 key,
+#      attaches everything to a DRAFT release in this PRIVATE repo. The
+#      draft accumulates assets across platforms and tauri-action
+#      regenerates latest.json after each upload.
+#
+#   2. promote-public   (single linux runner, after #1 finishes)
+#      Downloads everything from the private staging draft and creates a
+#      DRAFT release in the public repo with the same tag. You then
+#      review + publish the PUBLIC release manually — that's the moment
+#      auto-updates go live for end users.
 #
 # Required repo secrets (Settings → Secrets and variables → Actions):
+#
+#   Required for cross-repo publishing:
+#     RELEASES_REPO_PAT                   — fine-grained PAT, scoped only to
+#                                           PUBLIC_REPO, with "Contents: Read
+#                                           and write" permission
 #
 #   Required for signed releases:
 #     TAURI_SIGNING_PRIVATE_KEY           — output of `tauri signer generate`
@@ -22,10 +39,6 @@
 #     TRAVIS_MICROSOFT_CLIENT_SECRET
 #     TRAVIS_TELEMETRY_URL
 #     TRAVIS_TELEMETRY_TOKEN
-#
-# After the workflow finishes, the release is a DRAFT — review it, edit
-# the notes, then click "Publish release". Once published, every running
-# install picks up the update on its next "Check for updates" tap.
 
 name: Release
 
@@ -35,8 +48,13 @@ on:
       - 'v*'
   workflow_dispatch:
 
+# Change this to your own org/repo if you fork. PUBLIC_REPO must be a
+# public GitHub repo that the RELEASES_REPO_PAT has Contents:write on.
+env:
+  PUBLIC_REPO: myketheguru/travis-releases
+
 jobs:
-  publish-tauri:
+  build-and-stage:
     permissions:
       contents: write
     strategy:
@@ -82,7 +100,7 @@ jobs:
       - name: Install npm deps
         run: npm ci
 
-      - name: Build, sign, and publish to GitHub Release
+      - name: Build, sign, append to staging draft (this private repo)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -96,14 +114,50 @@ jobs:
           TRAVIS_TELEMETRY_TOKEN: ${{ secrets.TRAVIS_TELEMETRY_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: 'Travis ${{ github.ref_name }}'
+          releaseName: 'Travis ${{ github.ref_name }} (staging)'
           releaseBody: |
-            See assets below for installers. The updater pulls
-            `latest.json` from this release automatically.
+            Internal staging draft for ${{ github.ref_name }}.
+            The user-facing release is at github.com/${{ env.PUBLIC_REPO }}/releases.
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
-          # Generate the updater manifest as `latest.json` and attach it.
-          # tauri-action does this automatically on tag pushes when signing
-          # secrets are present.
           updaterJsonPreferNsis: true
+
+  promote-public:
+    needs: build-and-stage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download staged assets from this private repo
+        run: |
+          mkdir -p assets
+          gh release download "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --dir assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: List downloaded assets
+        run: ls -la assets/
+
+      - name: Create or update draft release in public repo
+        run: |
+          # Idempotent: re-running the workflow on the same tag updates
+          # assets in place rather than failing.
+          if gh release view "${{ github.ref_name }}" \
+               --repo "${{ env.PUBLIC_REPO }}" >/dev/null 2>&1; then
+            echo "Release exists; uploading assets with --clobber"
+            gh release upload "${{ github.ref_name }}" assets/* \
+              --repo "${{ env.PUBLIC_REPO }}" \
+              --clobber
+          else
+            echo "Creating new draft release"
+            gh release create "${{ github.ref_name }}" assets/* \
+              --repo "${{ env.PUBLIC_REPO }}" \
+              --title "Travis ${{ github.ref_name }}" \
+              --notes "Auto-built. Edit these notes before publishing." \
+              --draft
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_REPO_PAT }}

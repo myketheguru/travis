@@ -16,13 +16,14 @@
 // 2. Paste the public key into src-tauri/tauri.conf.json under
 //    plugins.updater.pubkey, replacing the placeholder.
 //
-// 3. Decide where update.json + the installer binaries will be hosted. The
-//    current tauri.conf.json points at:
+// 3. Decide where the updater fetches its manifest from. The current
+//    tauri.conf.json points at:
 //
-//       https://leadtoempower.github.io/travis/update.json
+//       https://github.com/myketheguru/travis-releases/releases/latest/download/latest.json
 //
-//    GitHub Pages on the leadtoempower/travis repo's gh-pages branch is the
-//    simplest setup; GitHub Releases also works — just adjust the endpoint.
+//    That's the public releases repo; the release.yml workflow uploads
+//    installers there automatically. Adjust the endpoint in
+//    tauri.conf.json if you want a different host.
 //
 // ─── PER-RELEASE WORKFLOW ──────────────────────────────────────────────────
 //
@@ -53,7 +54,7 @@
 //
 //       node scripts/build-update-manifest.mjs \
 //         --version 0.2.0 \
-//         --release-url https://github.com/leadtoempower/travis/releases/download/v0.2.0 \
+//         --release-url https://github.com/myketheguru/travis/releases/download/v0.2.0 \
 //         --notes "Adds Outlook OAuth, fixes overlay focus."
 //
 // 5. Upload BOTH the installer files (the ones referenced in update.json) AND

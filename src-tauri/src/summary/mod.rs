@@ -1,6 +1,7 @@
 use serde::Serialize;
 use sqlx::SqlitePool;
 
+use crate::db::UserProfile;
 use crate::llm::{self, ChatOptions, Message};
 use crate::secrets;
 use crate::AppState;
@@ -19,9 +20,19 @@ pub struct Summary {
     pub created_at: String,
 }
 
-const DAILY_SYSTEM_PROMPT: &str = "You generate brief operational summaries for Bethel, COO of Lead to Empower (NYC schools, coaches, DoF). Output 2-4 sentences. No headers. Focus on what got done and what's outstanding.";
+fn daily_system_prompt(profile: &UserProfile) -> String {
+    format!(
+        "You generate brief operational summaries for the user.\n\n{}\n\nOutput 2-4 sentences. No headers. Focus on what got done and what's outstanding.",
+        profile.context_block(),
+    )
+}
 
-const WEEKLY_SYSTEM_PROMPT: &str = "You generate brief operational weekly summaries for Bethel, COO of Lead to Empower (NYC schools, coaches, DoF). Identify 1-2 patterns or recurring themes from the week. Output 4-6 sentences. No headers. Focus on what got done, what's outstanding, and patterns.";
+fn weekly_system_prompt(profile: &UserProfile) -> String {
+    format!(
+        "You generate brief operational weekly summaries for the user.\n\n{}\n\nIdentify 1-2 patterns or recurring themes from the week. Output 4-6 sentences. No headers. Focus on what got done, what's outstanding, and patterns.",
+        profile.context_block(),
+    )
+}
 
 pub async fn list(
     pool: &SqlitePool,
@@ -203,7 +214,7 @@ pub async fn generate_daily(state: &AppState, date: &str) -> anyhow::Result<Summ
         .chat(
             vec![Message::user(user_msg)],
             ChatOptions {
-                system: Some(DAILY_SYSTEM_PROMPT.to_string()),
+                system: Some(daily_system_prompt(&profile)),
                 cache_system: true,
                 json_mode: false,
                 temperature: Some(0.3),
@@ -322,7 +333,7 @@ pub async fn generate_weekly(state: &AppState, week_start: &str) -> anyhow::Resu
         .chat(
             vec![Message::user(user_msg)],
             ChatOptions {
-                system: Some(WEEKLY_SYSTEM_PROMPT.to_string()),
+                system: Some(weekly_system_prompt(&profile)),
                 cache_system: true,
                 json_mode: false,
                 temperature: Some(0.3),

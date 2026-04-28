@@ -42,6 +42,8 @@ export function actionLabel(kind: string): string {
       return "Run on your computer";
     case "send_email":
       return "Send email";
+    case "update_profile_context":
+      return "Save to your profile";
     default:
       return kind.replace(/_/g, " ");
   }
@@ -90,6 +92,17 @@ export function actionDetails(kind: string, paramsJson: string): string | null {
       if (to) parts.push(`To ${to}`);
       if (subject) parts.push(`"${subject}"`);
       if (provider && provider !== "gmail") parts.push(`via ${provider}`);
+      return parts.join(" · ") || null;
+    }
+    case "update_profile_context": {
+      const blurb = String(params.contextBlurb ?? "").trim();
+      const style = String(params.communicationStyle ?? "").trim();
+      const parts: string[] = [];
+      if (blurb) {
+        const preview = blurb.length > 140 ? blurb.slice(0, 140) + "…" : blurb;
+        parts.push(`Context: "${preview}"`);
+      }
+      if (style) parts.push(`Voice: ${style}`);
       return parts.join(" · ") || null;
     }
     default:

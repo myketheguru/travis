@@ -1,0 +1,45 @@
+# Deploy the landing page in landing/ to the gh-pages branch of the
+# PUBLIC releases repo. End users browse to:
+#
+#   https://myketheguru.github.io/travis-releases/
+#
+# One-time setup (in the public travis-releases repo):
+#   1. After this workflow runs successfully once, a `gh-pages` branch
+#      will exist there.
+#   2. travis-releases repo → Settings → Pages → Source: "Deploy from a
+#      branch" → Branch: `gh-pages` / `(root)` → Save.
+#   3. The site URL appears at the top of that page once Pages finishes
+#      its first build (~1 min).
+#
+# The deploy reuses the same RELEASES_REPO_PAT used by release.yml — that
+# PAT must have Contents: Read and write on travis-releases.
+
+name: Deploy landing page
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'landing/**'
+      - '.github/workflows/deploy-site.yml'
+  workflow_dispatch:
+
+env:
+  PUBLIC_REPO: myketheguru/travis-releases
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Push landing/ to PUBLIC_REPO gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          personal_token: ${{ secrets.RELEASES_REPO_PAT }}
+          external_repository: ${{ env.PUBLIC_REPO }}
+          publish_dir: ./landing
+          publish_branch: gh-pages
+          commit_message: "deploy: ${{ github.sha }}"
+          user_name: github-actions[bot]
+          user_email: 41898282+github-actions[bot]@users.noreply.github.com

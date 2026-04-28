@@ -2,7 +2,7 @@
 name = "travis"
 version = "0.1.0"
 description = "Travis — local-first AI operations assistant"
-authors = ["Lead to Empower"]
+authors = ["myketheguru"]
 edition = "2021"
 
 [lib]

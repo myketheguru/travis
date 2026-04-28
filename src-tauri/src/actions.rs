@@ -401,6 +401,106 @@ async fn apply_write_clipboard(
     })
 }
 
+// ---------- Update profile context ----------
+//
+// Lets the LLM propose writing what the user just told it about their work
+// into user_profile.context_blurb / communication_style. The user has to
+// confirm via the action card — we don't write to the profile silently.
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateProfileContextParams {
+    /// New free-form work blurb. Optional — pass only when updating.
+    #[serde(default)]
+    context_blurb: Option<String>,
+    /// New voice preference. Optional — pass only when updating.
+    #[serde(default)]
+    communication_style: Option<String>,
+}
+
+async fn apply_update_profile_context(
+    pool: &SqlitePool,
+    params_json: &str,
+) -> anyhow::Result<Applied> {
+    let p: UpdateProfileContextParams = serde_json::from_str(params_json)?;
+
+    let new_blurb = p.context_blurb.as_ref().map(|s| s.trim().to_string());
+    let new_style = p.communication_style.as_ref().map(|s| s.trim().to_string());
+
+    if new_blurb.is_none() && new_style.is_none() {
+        anyhow::bail!("nothing to update — pass contextBlurb and/or communicationStyle");
+    }
+
+    // Pull existing profile so we can preserve fields we're not touching.
+    let existing: Option<crate::db::UserProfile> = {
+        let row: Option<(
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        )> = sqlx::query_as(
+            "SELECT name, role, org, llm_provider, ollama_url, model,
+                    context_blurb, communication_style
+             FROM user_profile WHERE id = 1",
+        )
+        .fetch_optional(pool)
+        .await?;
+        row.map(
+            |(
+                name,
+                role,
+                org,
+                llm_provider,
+                ollama_url,
+                model,
+                context_blurb,
+                communication_style,
+            )| crate::db::UserProfile {
+                name,
+                role,
+                org,
+                llm_provider,
+                ollama_url,
+                model,
+                context_blurb,
+                communication_style,
+            },
+        )
+    };
+    let mut prof = existing.ok_or_else(|| anyhow::anyhow!("no user profile yet"))?;
+    if let Some(b) = new_blurb {
+        prof.context_blurb = if b.is_empty() { None } else { Some(b) };
+    }
+    if let Some(s) = new_style {
+        prof.communication_style = if s.is_empty() { None } else { Some(s) };
+    }
+
+    sqlx::query(
+        "UPDATE user_profile
+         SET context_blurb = ?1,
+             communication_style = ?2,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = 1",
+    )
+    .bind(&prof.context_blurb)
+    .bind(&prof.communication_style)
+    .execute(pool)
+    .await?;
+
+    Ok(Applied {
+        message: "Saved that to your profile. I'll use it from now on.".to_string(),
+        json: serde_json::json!({
+            "contextBlurbSet": prof.context_blurb.is_some(),
+            "communicationStyleSet": prof.communication_style.is_some(),
+        })
+        .to_string(),
+    })
+}
+
 // ---------- Send email ----------
 //
 // Provider-agnostic shell that delegates to email::gmail (or, once wired,
@@ -658,6 +758,7 @@ pub fn supported_kinds() -> &'static [&'static str] {
         "write_clipboard",
         "run_shell_command",
         "send_email",
+        "update_profile_context",
     ]
 }
 
@@ -673,6 +774,7 @@ async fn dispatch(
         "write_clipboard" => apply_write_clipboard(app, &action.params_json).await,
         "run_shell_command" => apply_run_shell_command(pool, &action.params_json).await,
         "send_email" => apply_send_email(pool, app, &action.params_json).await,
+        "update_profile_context" => apply_update_profile_context(pool, &action.params_json).await,
         other => anyhow::bail!("unsupported action kind: {other}"),
     }
 }

@@ -35,6 +35,11 @@ const MIN_GAP_SECS: i64 = 4 * 60 * 60;
 const WAKE_START_HOUR: u32 = 8;
 const WAKE_END_HOUR: u32 = 22;
 
+/// Don't ask for context until the user has clearly engaged with the app.
+const CONTEXT_PROMPT_MIN_JOURNAL_ENTRIES: i64 = 5;
+/// Don't re-ask the same question more than once a week.
+const CONTEXT_PROMPT_GAP_DAYS: i64 = 7;
+
 pub fn spawn(app: AppHandle, db: Arc<Db>, http: reqwest::Client, health: Arc<Health>) {
     tauri::async_runtime::spawn(async move {
         // Initial delay so we don't compete with onboarding/migrations.
@@ -78,6 +83,109 @@ async fn record_nudge_at(pool: &SqlitePool, when: chrono::DateTime<chrono::Utc>)
     .execute(pool)
     .await?;
     Ok(())
+}
+
+async fn last_context_prompt_at(
+    pool: &SqlitePool,
+) -> anyhow::Result<Option<chrono::DateTime<chrono::Utc>>> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT value FROM meta WHERE key = ?1")
+        .bind("proactive_context_prompt_last_at")
+        .fetch_optional(pool)
+        .await?;
+    Ok(row
+        .and_then(|(v,)| chrono::DateTime::parse_from_rfc3339(&v).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc)))
+}
+
+async fn record_context_prompt_at(
+    pool: &SqlitePool,
+    when: chrono::DateTime<chrono::Utc>,
+) -> anyhow::Result<()> {
+    let iso = when.to_rfc3339();
+    sqlx::query(
+        "INSERT INTO meta(key, value, updated_at)
+         VALUES ('proactive_context_prompt_last_at', ?1, CURRENT_TIMESTAMP)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+    )
+    .bind(&iso)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn total_journal_count(pool: &SqlitePool) -> anyhow::Result<i64> {
+    let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM journal_entry")
+        .fetch_one(pool)
+        .await?;
+    Ok(n)
+}
+
+/// If the user's profile is missing the free-form context blurb but they've
+/// clearly been using the app, surface a one-shot nudge asking for it. Runs
+/// at most once per `CONTEXT_PROMPT_GAP_DAYS`. No LLM call — text is
+/// authored here so it's deterministic and free.
+///
+/// Returns Ok(true) if we sent a nudge (caller should short-circuit the
+/// regular state-driven nudge for this tick).
+async fn maybe_send_context_request(
+    app: &AppHandle,
+    pool: &SqlitePool,
+    profile: &UserProfile,
+) -> anyhow::Result<bool> {
+    let blurb_set = profile
+        .context_blurb
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    if blurb_set {
+        return Ok(false);
+    }
+
+    let total = total_journal_count(pool).await?;
+    if total < CONTEXT_PROMPT_MIN_JOURNAL_ENTRIES {
+        return Ok(false);
+    }
+
+    let now = chrono::Utc::now();
+    if let Some(last) = last_context_prompt_at(pool).await? {
+        let days = (now - last).num_days();
+        if days < CONTEXT_PROMPT_GAP_DAYS {
+            return Ok(false);
+        }
+    }
+
+    let first = profile.first_name();
+    let text = format!(
+        "Hey {first} — I'd be more useful with a bit of context about your work. \
+         What does your org do, who do you serve, and what activities should I pay attention to? \
+         You can either reply here and I'll pull it from your message, or drop it into \
+         Settings → Context for Travis."
+    );
+
+    let conv_id = get_or_create_nudge_conversation(pool).await?;
+    let payload = serde_json::json!({
+        "kind": "context_request",
+        "severity": "info",
+    })
+    .to_string();
+    let _ = conversation::append(pool, conv_id, "assistant", &text, Some(&payload)).await;
+    let _ = conversation::set_status(pool, conv_id, "awaiting_user").await;
+
+    let _ = app
+        .notification()
+        .builder()
+        .title("Travis")
+        .body("Tell me a bit about your work — I'll work better with context.")
+        .show();
+
+    record_context_prompt_at(pool, now).await?;
+    telemetry::emit(
+        pool,
+        "context_request_sent",
+        serde_json::json!({"journal_total": total}),
+    )
+    .await;
+    Ok(true)
 }
 
 #[derive(Debug, Default)]
@@ -237,13 +345,11 @@ fn build_nudge_tool() -> ToolDef {
 }
 
 fn build_system_prompt(profile: &UserProfile) -> String {
-    let first = profile
-        .name
-        .split_whitespace()
-        .next()
-        .unwrap_or(&profile.name);
+    let first = profile.first_name();
     format!(
-        r#"You are Travis, a personal operations assistant for {first}, {role} at {org}.
+        r#"You are Travis, a personal operations assistant.
+
+{user_context}
 
 You are running on a quiet timer in the background. {first} hasn't typed anything recently. Your job RIGHT NOW is to decide whether their current state warrants a brief nudge — or whether to stay silent.
 
@@ -263,9 +369,8 @@ BAD reasons to nudge:
 Personality: warm, professional, terse. Reference items by name. Never sycophantic. Use contractions. Match the kind of brief check-in a sharp colleague would slip into chat — not corporate copy.
 
 Output via the report_nudge tool exactly once. If unsure, set shouldNudge=false. There is no penalty for staying silent."#,
+        user_context = profile.context_block(),
         first = first,
-        role = profile.role,
-        org = profile.org,
     )
 }
 
@@ -310,7 +415,22 @@ async fn tick(
         return Ok(());
     }
 
-    // Throttle.
+    // Profile must exist before we can do anything — pulled early so the
+    // context-request short-circuit below has access to it.
+    let profile = db
+        .user_profile()
+        .await
+        .map_err(|e| anyhow::anyhow!("read profile: {e}"))?
+        .ok_or_else(|| anyhow::anyhow!("no profile"))?;
+
+    // Context-request short-circuit. Independent of the regular operational
+    // throttle: at most once per CONTEXT_PROMPT_GAP_DAYS regardless of when
+    // the last regular nudge fired. If we send one, we're done for this tick.
+    if maybe_send_context_request(app, pool, &profile).await? {
+        return Ok(());
+    }
+
+    // Throttle for the regular state-driven nudges.
     let now_utc = chrono::Utc::now();
     if let Some(last) = last_nudge_at(pool).await? {
         let elapsed = (now_utc - last).num_seconds();
@@ -330,13 +450,6 @@ async fn tick(
     if state.is_quiet() {
         return Ok(());
     }
-
-    // Provider.
-    let profile = db
-        .user_profile()
-        .await
-        .map_err(|e| anyhow::anyhow!("read profile: {e}"))?
-        .ok_or_else(|| anyhow::anyhow!("no profile"))?;
     let api_key = match profile.llm_provider.as_str() {
         "claude" | "openai" => secrets::get_api_key(&profile.llm_provider),
         _ => None,

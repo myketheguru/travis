@@ -10,6 +10,10 @@ export type UserProfile = {
   llmProvider: Provider;
   ollamaUrl: string | null;
   model: string | null;
+  /** Free-form description of the user/org's work — used to template prompts. */
+  contextBlurb: string | null;
+  /** Optional voice/tone preference for Travis's replies. */
+  communicationStyle: string | null;
 };
 
 export type OnboardingPayload = {
@@ -20,6 +24,8 @@ export type OnboardingPayload = {
   apiKey?: string;
   ollamaUrl?: string;
   model?: string;
+  contextBlurb?: string;
+  communicationStyle?: string;
 };
 
 export async function getAppStatus(): Promise<AppStatus> {

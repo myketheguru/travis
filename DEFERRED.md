@@ -76,7 +76,7 @@ Items intentionally cut from the Travis MVP. Listed here so we don't lose track.
 3. In the GitHub repo, add two Actions secrets:
    - `TAURI_PRIVATE_KEY` — contents of the generated private key file.
    - `TAURI_KEY_PASSWORD` — the passphrase used during generation (empty string if none, but a passphrase is recommended).
-4. Confirm GitHub Pages is enabled for the repo on the `gh-pages` branch so `https://leadtoempower.github.io/travis/update.json` resolves.
+4. Confirm GitHub Pages is enabled for the repo on the `gh-pages` branch so `https://myketheguru.github.io/travis-releases/update.json` resolves.
 5. Optionally point the `flags_url` and updater `endpoints` at a different host (`set_flags_url` / edit `tauri.conf.json`) if you don't want the placeholder GitHub Pages URL.
 **Revisit when:** Cutting the first tagged release. Until then `tauri-action` will fail to produce signed updater artifacts.
 

@@ -10,11 +10,14 @@ import {
   type Provider,
 } from "../lib/ipc";
 import { Question, inputClass } from "./Question";
+import { VOICE_PRESETS, presetFromDescription } from "./voicePresets";
 
 type Draft = {
   name: string;
   role: string;
   org: string;
+  contextBlurb: string;
+  communicationStyle: string;
   provider: Provider;
   apiKey: string;
   ollamaUrl: string;
@@ -23,15 +26,20 @@ type Draft = {
 
 const initialDraft: Draft = {
   name: "",
-  role: "Chief Operating Officer",
-  org: "Lead to Empower",
+  role: "",
+  org: "",
+  contextBlurb: "",
+  communicationStyle: "",
   provider: "claude",
   apiKey: "",
   ollamaUrl: "http://localhost:11434",
   model: "",
 };
 
-const TOTAL_STEPS = 7;
+// Steps:
+// 0 welcome · 1 name · 2 role · 3 org · 4 context (opt) · 5 voice (opt)
+// 6 provider · 7 api key · 8 done
+const TOTAL_STEPS = 9;
 
 const providers: { id: Provider; name: string; blurb: string; needsKey: boolean }[] = [
   { id: "claude", name: "Claude",  blurb: "Anthropic — best reasoning, prompt caching",  needsKey: true },
@@ -96,13 +104,15 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
         name: draft.name.trim(),
         role: draft.role.trim(),
         org: draft.org.trim(),
+        contextBlurb: draft.contextBlurb.trim() || undefined,
+        communicationStyle: draft.communicationStyle.trim() || undefined,
         provider: draft.provider,
         apiKey: draft.provider === "ollama" ? undefined : draft.apiKey || undefined,
         ollamaUrl: draft.provider === "ollama" ? draft.ollamaUrl : undefined,
         model: draft.model || undefined,
       };
       await completeOnboarding(payload);
-      setStep(6);
+      setStep(8);
       setActivity("idle");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -137,7 +147,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
         ))}
       </div>
 
-      {step > 0 && step < 6 && (
+      {step > 0 && step < 8 && (
         <button
           onClick={back}
           className="absolute top-6 left-6 text-bone-3 hover:text-bone-2 text-xs flex items-center gap-1.5 transition-colors"
@@ -240,6 +250,76 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
           {step === 4 && (
             <Question
               index={4}
+              prompt="What does your work look like?"
+              hint="A short paragraph: what does your org do, who do you serve, and what activities should Travis pay attention to? The more concrete, the more relevant Travis's responses will be. Skip if you'd rather get going."
+              canAdvance={true}
+              onAdvance={next}
+              optional
+              onSkip={next}
+            >
+              <textarea
+                autoFocus
+                rows={4}
+                value={draft.contextBlurb}
+                onChange={(e) => {
+                  pulse();
+                  update({ contextBlurb: e.target.value });
+                }}
+                placeholder="e.g. We place coaches in NYC public schools and bill the Department of Finance for their hours. I track sessions, sign-off sheets, and invoicing cadence."
+                className={
+                  inputClass +
+                  " resize-none border-b-0 border border-ink-3 focus:border-pulse/70 rounded-md px-3 py-2.5 text-base font-normal leading-relaxed"
+                }
+              />
+            </Question>
+          )}
+
+          {step === 5 && (
+            <Question
+              index={5}
+              prompt="How should I sound?"
+              hint="Pick the voice that fits how you like to be talked to. You can change it later in Settings."
+              canAdvance={true}
+              onAdvance={next}
+              optional
+              onSkip={() => {
+                update({ communicationStyle: "" });
+                next();
+              }}
+            >
+              <div className="flex flex-col gap-2">
+                {VOICE_PRESETS.map((preset) => {
+                  const active =
+                    (presetFromDescription(draft.communicationStyle)?.id ?? "default") === preset.id;
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => update({ communicationStyle: preset.description })}
+                      className={
+                        "text-left rounded-xl border px-4 py-3 transition-all " +
+                        (active
+                          ? "border-pulse/60 bg-pulse/[0.07]"
+                          : "border-ink-3 bg-ink-2/30 hover:border-ink-3/80 hover:bg-ink-2/50")
+                      }
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-bone font-medium">{preset.label}</span>
+                        {active && (
+                          <span className="h-1.5 w-1.5 rounded-full bg-pulse-2 shadow-[0_0_8px_rgba(110,196,232,0.7)]" />
+                        )}
+                      </div>
+                      <p className="text-bone-3 text-xs mt-0.5">{preset.blurb}</p>
+                    </button>
+                  );
+                })}
+              </div>
+            </Question>
+          )}
+
+          {step === 6 && (
+            <Question
+              index={6}
               prompt="Which mind should I think with?"
               hint="You can switch this any time in settings."
               canAdvance={true}
@@ -273,9 +353,9 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
             </Question>
           )}
 
-          {step === 5 && (
+          {step === 7 && (
             <Question
-              index={5}
+              index={7}
               prompt={
                 provider.needsKey
                   ? `Drop your ${provider.name} key.`
@@ -376,7 +456,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
             </Question>
           )}
 
-          {step === 6 && (
+          {step === 8 && (
             <motion.div
               key="done"
               initial={{ opacity: 0, y: 24 }}
