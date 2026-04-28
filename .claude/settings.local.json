@@ -7,7 +7,9 @@
       "Bash(cargo check *)",
       "Bash(rustup update *)",
       "Bash(rustc *)",
-      "Bash(npx tsc *)"
+      "Bash(npx tsc *)",
+      "Bash(gh run *)",
+      "Bash(gh release *)"
     ]
   }
 }

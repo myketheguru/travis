@@ -67,14 +67,24 @@ function findAsset(assets, platformKey) {
 function setPrimaryCta({ os, label, href }) {
   const cta = document.getElementById("dl-primary");
   const platformLabel = document.getElementById("dl-primary-platform");
+  const iconSlot = document.getElementById("dl-primary-icon");
   if (!cta || !platformLabel) return;
   if (!os || !href) {
     platformLabel.textContent = "All platforms";
     cta.setAttribute("href", "#download");
+    if (iconSlot) iconSlot.innerHTML = "";
     return;
   }
   platformLabel.textContent = `${label} ${PLATFORM_LABELS[os] || ""}`.trim();
   cta.setAttribute("href", href);
+  if (iconSlot && window.travis && window.travis.platformIcons) {
+    iconSlot.innerHTML = window.travis.platformIcons[os] || "";
+  }
+}
+
+function thanksUrl(platformKey, assetUrl) {
+  const params = new URLSearchParams({ platform: platformKey, url: assetUrl });
+  return `thanks.html?${params.toString()}`;
 }
 
 function setCard(platformKey, { href, formatLabel }) {
@@ -87,7 +97,8 @@ function setCard(platformKey, { href, formatLabel }) {
     if (slot) slot.textContent = "Not available yet";
     return;
   }
-  card.setAttribute("href", href);
+  // Hand off through the thanks page so the user gets first-run guidance.
+  card.setAttribute("href", thanksUrl(platformKey, href));
   const slot = card.querySelector('[data-slot="format"]');
   if (slot && formatLabel) slot.textContent = formatLabel;
 }
@@ -110,7 +121,40 @@ function fallback(detectedOs) {
   }
 }
 
+function applyMobileMode() {
+  document.body.classList.add("is-mobile");
+  // Hide everything that assumes a downloadable artifact.
+  const hide = ["downloads-primary", "download"];
+  for (const id of hide) {
+    const el = document.getElementById(id);
+    if (el) el.setAttribute("hidden", "");
+  }
+  const meta = document.querySelector(".meta");
+  if (meta) meta.setAttribute("hidden", "");
+
+  // Reveal the friendly mobile message + wire the copy-link button.
+  const notice = document.getElementById("mobile-notice");
+  if (notice) notice.removeAttribute("hidden");
+  const copyBtn = document.getElementById("copy-link");
+  const status = document.getElementById("copy-link-status");
+  if (copyBtn) {
+    copyBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(window.location.href);
+        if (status) status.textContent = "Copied. Email it to yourself or open it on your computer.";
+      } catch {
+        if (status) status.textContent = "Couldn't copy automatically — long-press the URL bar to copy.";
+      }
+    });
+  }
+}
+
 async function init() {
+  if (window.travis && window.travis.isMobile && window.travis.isMobile()) {
+    applyMobileMode();
+    return;
+  }
+
   const detectedOs = detectOS();
 
   // Optimistic placeholder: show "Download for X" while we fetch.
@@ -159,12 +203,13 @@ async function init() {
     }
   }
 
-  // Wire primary CTA.
+  // Wire primary CTA — route through the thanks page so the user gets
+  // first-run guidance alongside the download.
   if (detectedOs && matched[detectedOs]) {
     setPrimaryCta({
       os: detectedOs,
       label: "Download",
-      href: matched[detectedOs].asset.browser_download_url,
+      href: thanksUrl(detectedOs, matched[detectedOs].asset.browser_download_url),
     });
   } else if (detectedOs) {
     // Detected OS, but no matching asset — point to the releases page.

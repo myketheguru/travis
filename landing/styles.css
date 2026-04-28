@@ -103,9 +103,10 @@ main {
 
 .dl-primary {
   display: inline-flex;
-  flex-direction: column;
-  align-items: flex-start;
-  padding: 14px 22px 12px;
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 22px 12px 18px;
   border-radius: 14px;
   background: var(--bone);
   color: var(--ink);
@@ -114,12 +115,31 @@ main {
   box-shadow:
     0 16px 40px -16px rgba(190, 118, 255, 0.4),
     0 4px 14px -4px rgba(0, 0, 0, 0.6);
-  min-width: 220px;
+  min-width: 240px;
 }
 .dl-primary:hover {
   transform: translateY(-1px);
   background: #fff;
   color: var(--ink);
+}
+.dl-primary .dl-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  color: var(--ink);
+  opacity: 0.85;
+}
+.dl-primary .dl-icon:empty {
+  display: none;
+}
+.dl-primary .dl-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
 }
 .dl-primary .dl-label {
   font-size: 11px;
@@ -498,4 +518,207 @@ footer a:hover {
   .hero { padding-bottom: 32px; }
   .features { margin-top: 48px; }
   .download { margin-top: 48px; }
+}
+
+/* ─────────────────────────────  mobile notice  ───────────────────────────── */
+
+.mobile-notice {
+  margin: 28px auto 0;
+  max-width: 460px;
+  padding: 22px 22px 18px;
+  border-radius: 16px;
+  border: 1px solid var(--hairline);
+  background: rgba(255, 255, 255, 0.018);
+  text-align: center;
+}
+.mobile-notice h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  color: var(--bone);
+}
+.mobile-notice p {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--bone-3);
+}
+.copy-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 10px 18px;
+  border-radius: 999px;
+  background: var(--bone);
+  color: var(--ink);
+  border: none;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background 0.18s ease, transform 0.18s ease;
+}
+.copy-link:hover {
+  background: #fff;
+  transform: translateY(-1px);
+}
+.copy-link-status {
+  margin: 12px 0 0;
+  font-size: 11px;
+  color: var(--pulse-2);
+  min-height: 1em;
+}
+
+/* When body has .is-mobile, the on-page mobile-notice was the section
+   we deliberately revealed; everything else stays put for context. */
+body.is-mobile .features {
+  margin-top: 32px;
+}
+
+/* ─────────────────────────────  thanks page  ───────────────────────────── */
+
+.hero--compact {
+  padding: 0 0 32px;
+}
+.hero--compact .orb {
+  width: clamp(160px, 28vw, 220px);
+}
+.hero--compact h1 {
+  margin-top: 24px;
+  font-size: clamp(34px, 6vw, 52px);
+}
+
+.thanks-page main {
+  padding-top: 56px;
+}
+
+.thanks-instructions {
+  margin: 32px auto 0;
+  max-width: 640px;
+  padding: 22px 24px;
+  border-radius: 16px;
+  border: 1px solid var(--hairline);
+  background: rgba(255, 255, 255, 0.012);
+}
+.thanks-instructions h2 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--bone-3);
+}
+.thanks-instructions h3 {
+  margin: 0 0 14px;
+  font-size: 18px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  color: var(--bone);
+}
+
+.thanks-steps {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.thanks-steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--bone-2);
+}
+.thanks-steps .step-num {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--pulse-2);
+  color: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+}
+.thanks-steps code {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--bone);
+}
+.thanks-steps kbd {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--bone);
+}
+.thanks-steps strong { color: var(--bone); }
+.thanks-steps em     { color: var(--bone-3); font-style: normal; }
+
+.thanks-next {
+  margin: 32px auto 0;
+  max-width: 640px;
+  padding: 22px 24px;
+}
+.thanks-next h2 {
+  margin: 0 0 14px;
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--bone-3);
+}
+.thanks-next ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.thanks-next li {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--bone-3);
+  padding-left: 16px;
+  position: relative;
+}
+.thanks-next li::before {
+  content: "·";
+  position: absolute;
+  left: 0;
+  color: var(--pulse-2);
+}
+.thanks-next strong { color: var(--bone-2); }
+
+.thanks-back {
+  margin: 32px 0 0;
+  text-align: center;
+  font-size: 12px;
+}
+.thanks-back a {
+  color: var(--bone-3);
+  border-bottom: 1px solid transparent;
+  padding-bottom: 1px;
+}
+.thanks-back a:hover {
+  color: var(--bone-2);
+  border-bottom-color: var(--bone-3);
+}
+
+#manual-link {
+  color: var(--pulse-2);
+  border-bottom: 1px dashed rgba(110, 196, 232, 0.4);
+}
+#manual-link:hover {
+  color: var(--bone);
+  border-bottom-color: var(--bone-2);
 }

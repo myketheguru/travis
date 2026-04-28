@@ -48,8 +48,11 @@
 
         <div class="downloads" id="downloads-primary">
           <a class="dl-primary" id="dl-primary" href="#download" aria-live="polite">
-            <span class="dl-label">Download</span>
-            <span class="dl-platform" id="dl-primary-platform">Loading…</span>
+            <span class="dl-icon" id="dl-primary-icon" aria-hidden="true"></span>
+            <span class="dl-text">
+              <span class="dl-label">Download</span>
+              <span class="dl-platform" id="dl-primary-platform">Loading…</span>
+            </span>
           </a>
           <a class="dl-secondary" href="#download">All platforms</a>
         </div>
@@ -59,6 +62,17 @@
           <span class="sep">·</span>
           <span>Free during preview</span>
         </p>
+
+        <div class="mobile-notice" id="mobile-notice" hidden>
+          <h2>Travis is built for desktop.</h2>
+          <p>
+            Travis is a native macOS, Windows, and Linux app — Cmd / Ctrl + J
+            anywhere is its primary surface, and a phone can't run it.
+            Open this page on your computer to install.
+          </p>
+          <button id="copy-link" class="copy-link">Copy link to my computer</button>
+          <p class="copy-link-status" id="copy-link-status" aria-live="polite"></p>
+        </div>
       </section>
 
       <section class="features">
@@ -185,6 +199,7 @@
       </footer>
     </main>
 
+    <script src="common.js"></script>
     <script src="script.js"></script>
   </body>
 </html>

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Thanks for downloading Travis</title>
+    <meta name="theme-color" content="#07080b" />
+    <meta name="robots" content="noindex" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="thanks-page">
+    <div class="bg-haze" aria-hidden="true"></div>
+
+    <main>
+      <section class="hero hero--compact">
+        <div class="orb" aria-hidden="true">
+          <div class="orb-aura"></div>
+          <div class="orb-core">
+            <div class="orb-bg"></div>
+            <div class="blob blob-1"></div>
+            <div class="blob blob-2"></div>
+            <div class="blob blob-3"></div>
+            <div class="blob blob-4"></div>
+            <div class="blob blob-5"></div>
+            <div class="orb-conic"></div>
+            <div class="orb-highlight"></div>
+            <div class="orb-rim"></div>
+          </div>
+          <div class="orb-glow"></div>
+        </div>
+
+        <h1>Thanks for downloading Travis.</h1>
+        <p class="tagline" id="thanks-status">Your download should start in a moment.</p>
+        <p class="lede" id="thanks-fallback">
+          Didn't start?
+          <a href="#" id="manual-link">Click here to download manually</a>.
+        </p>
+
+        <div class="mobile-notice" id="mobile-notice" hidden>
+          <h2>Travis is built for desktop.</h2>
+          <p>
+            Travis is a native macOS, Windows, and Linux app. Open this page
+            on your computer to install — your phone can't run it.
+          </p>
+          <button id="copy-link" class="copy-link">Copy link to my computer</button>
+          <p class="copy-link-status" id="copy-link-status" aria-live="polite"></p>
+        </div>
+      </section>
+
+      <section class="thanks-instructions" id="thanks-instructions">
+        <h2>First run — what to expect</h2>
+        <div id="platform-instructions"></div>
+      </section>
+
+      <section class="thanks-next">
+        <h2>What's next</h2>
+        <ul>
+          <li>
+            <strong>Cmd / Ctrl + J</strong> opens Travis from anywhere.
+            Type what you're thinking — it captures, structures, and acts.
+          </li>
+          <li>
+            Tell Travis a bit about your work in <strong>Settings → Context</strong>
+            so its replies stay grounded in what you actually do.
+          </li>
+          <li>
+            Connect <strong>Gmail</strong> or <strong>Outlook</strong> in
+            Settings → Connections so Travis can draft and send email on
+            your behalf, with a confirmation card.
+          </li>
+          <li>
+            Updates ship automatically — Travis checks the release feed and
+            installs new versions when you tap <strong>Settings → Updates</strong>.
+          </li>
+        </ul>
+      </section>
+
+      <p class="thanks-back">
+        <a href="index.html">← Back to overview</a>
+      </p>
+
+      <footer>
+        <p>
+          By <a href="https://github.com/myketheguru" target="_blank" rel="noopener">myketheguru</a>.
+          Updates are signed and delivered to running installs automatically.
+        </p>
+      </footer>
+    </main>
+
+    <script src="common.js"></script>
+    <script src="thanks.js"></script>
+  </body>
+</html>
