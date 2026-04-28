@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- Bold diagonal gradient — purple top-left to deep blue bottom-right.
+         Strong enough to read as the dominant colour at 32×32. -->
+    <linearGradient id="base" x1="10%" y1="10%" x2="90%" y2="90%">
+      <stop offset="0%"  stop-color="#a062ff"/>
+      <stop offset="35%" stop-color="#7c5cff"/>
+      <stop offset="70%" stop-color="#3a4fb8"/>
+      <stop offset="100%" stop-color="#0e1027"/>
+    </linearGradient>
+
+    <!-- Bright purple-pink blob upper-left. -->
+    <radialGradient id="blob-pink" cx="32%" cy="28%" r="48%">
+      <stop offset="0%"  stop-color="#ff6cc4" stop-opacity="0.85"/>
+      <stop offset="60%" stop-color="#ff6cc4" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Cyan blob lower-right for the iridescent feel. -->
+    <radialGradient id="blob-cyan" cx="78%" cy="80%" r="50%">
+      <stop offset="0%"  stop-color="#48d4ff" stop-opacity="0.65"/>
+      <stop offset="60%" stop-color="#48d4ff" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Warm pop in the middle — mimics the orb's hue cycling. -->
+    <radialGradient id="blob-warm" cx="55%" cy="55%" r="40%">
+      <stop offset="0%"  stop-color="#ffb26c" stop-opacity="0.30"/>
+      <stop offset="65%" stop-color="#ffb26c" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Crisp specular highlight, upper-left. Read as "lit". -->
+    <radialGradient id="highlight" cx="30%" cy="22%" r="26%">
+      <stop offset="0%"  stop-color="#ffffff" stop-opacity="0.85"/>
+      <stop offset="35%" stop-color="#ffffff" stop-opacity="0.30"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Bottom-right vignette for depth and contrast against bright icons. -->
+    <radialGradient id="vignette" cx="78%" cy="82%" r="65%">
+      <stop offset="60%"  stop-color="#000000" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.45"/>
+    </radialGradient>
+
+    <!-- Inner rim — a 1px-ish glassy edge. -->
+    <radialGradient id="rim" cx="50%" cy="50%" r="50%">
+      <stop offset="93%"  stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.18"/>
+    </radialGradient>
+
+    <!-- Squircle clip — 22% corner radius matches Apple's icon convention. -->
+    <clipPath id="squircle">
+      <rect x="0" y="0" width="1024" height="1024" rx="225" ry="225"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#squircle)">
+    <!-- 1. Bold base gradient. -->
+    <rect width="1024" height="1024" fill="url(#base)"/>
+    <!-- 2. Iridescent colour blobs. -->
+    <rect width="1024" height="1024" fill="url(#blob-pink)"/>
+    <rect width="1024" height="1024" fill="url(#blob-cyan)"/>
+    <rect width="1024" height="1024" fill="url(#blob-warm)"/>
+    <!-- 3. Vignette + highlight for depth. -->
+    <rect width="1024" height="1024" fill="url(#vignette)"/>
+    <rect width="1024" height="1024" fill="url(#highlight)"/>
+    <!-- 4. Glassy rim. -->
+    <rect width="1024" height="1024" fill="url(#rim)"/>
+  </g>
+</svg>
