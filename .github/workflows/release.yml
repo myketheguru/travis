@@ -181,7 +181,7 @@ jobs:
           declare -a files=()
           # User-facing installers + their .sig sidecars
           for f in bundle/**/*.exe bundle/**/*.msi bundle/**/*.dmg \
-                   bundle/**/*.AppImage bundle/**/*.deb \
+                   bundle/**/*.AppImage bundle/**/*.deb bundle/**/*.rpm \
                    bundle/**/*.app.tar.gz bundle/**/*.nsis.zip ; do
             files+=("$f")
           done
