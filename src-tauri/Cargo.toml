@@ -1,0 +1,40 @@
+[package]
+name = "travis"
+version = "0.1.0"
+description = "Travis — local-first AI operations assistant"
+authors = ["Lead to Empower"]
+edition = "2021"
+
+[lib]
+name = "travis_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-clipboard-manager = "2"
+oauth2 = "5"
+url = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
+libsqlite3-sys = { version = "0.30", features = ["bundled"] }
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native-sync-persistent"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+fastembed = "4"
+printpdf = "0.7"
+lettre = { version = "0.11", default-features = false, features = ["tokio1", "tokio1-rustls-tls", "smtp-transport", "builder"] }
+base64 = "0.22"

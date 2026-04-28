@@ -1,0 +1,411 @@
+import { useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import { PresenceOrb } from "../components/PresenceOrb";
+import { useAppStore } from "../stores/app";
+import {
+  completeOnboarding,
+  testProvider,
+  type OnboardingPayload,
+  type PingResult,
+  type Provider,
+} from "../lib/ipc";
+import { Question, inputClass } from "./Question";
+
+type Draft = {
+  name: string;
+  role: string;
+  org: string;
+  provider: Provider;
+  apiKey: string;
+  ollamaUrl: string;
+  model: string;
+};
+
+const initialDraft: Draft = {
+  name: "",
+  role: "Chief Operating Officer",
+  org: "Lead to Empower",
+  provider: "claude",
+  apiKey: "",
+  ollamaUrl: "http://localhost:11434",
+  model: "",
+};
+
+const TOTAL_STEPS = 7;
+
+const providers: { id: Provider; name: string; blurb: string; needsKey: boolean }[] = [
+  { id: "claude", name: "Claude",  blurb: "Anthropic — best reasoning, prompt caching",  needsKey: true },
+  { id: "openai", name: "OpenAI",  blurb: "GPT-class models, broadly compatible",         needsKey: true },
+  { id: "ollama", name: "Ollama",  blurb: "Run locally, private, no API key",             needsKey: false },
+];
+
+const defaultModels: Record<Provider, string> = {
+  claude: "claude-sonnet-4-6",
+  openai: "gpt-4o",
+  ollama: "llama3.1:8b",
+};
+
+export default function Onboarding({ onDone }: { onDone: () => void }) {
+  const [step, setStep] = useState(0);
+  const [draft, setDraft] = useState<Draft>(initialDraft);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<PingResult | null>(null);
+  const setActivity = useAppStore((s) => s.setActivity);
+  const pulse = useAppStore((s) => s.pulse);
+
+  const update = (patch: Partial<Draft>) => {
+    setTestResult(null);
+    setDraft((d) => ({ ...d, ...patch }));
+  };
+
+  const runTest = async () => {
+    setTesting(true);
+    setTestResult(null);
+    setActivity("thinking");
+    try {
+      const r = await testProvider({
+        provider: draft.provider,
+        apiKey: draft.provider === "ollama" ? undefined : draft.apiKey || undefined,
+        ollamaUrl: draft.provider === "ollama" ? draft.ollamaUrl : undefined,
+        model: draft.model || undefined,
+      });
+      setTestResult(r);
+    } catch (e) {
+      setTestResult({
+        ok: false,
+        model: draft.model || defaultModels[draft.provider],
+        latencyMs: 0,
+        message: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setActivity("idle");
+      setTesting(false);
+    }
+  };
+
+  const provider = providers.find((p) => p.id === draft.provider)!;
+
+  const submit = async () => {
+    setError(null);
+    setSubmitting(true);
+    setActivity("thinking");
+    try {
+      const payload: OnboardingPayload = {
+        name: draft.name.trim(),
+        role: draft.role.trim(),
+        org: draft.org.trim(),
+        provider: draft.provider,
+        apiKey: draft.provider === "ollama" ? undefined : draft.apiKey || undefined,
+        ollamaUrl: draft.provider === "ollama" ? draft.ollamaUrl : undefined,
+        model: draft.model || undefined,
+      };
+      await completeOnboarding(payload);
+      setStep(6);
+      setActivity("idle");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setActivity("idle");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const next = () => setStep((s) => Math.min(s + 1, TOTAL_STEPS - 1));
+  const back = () => setStep((s) => Math.max(s - 1, 0));
+
+  return (
+    <main className="relative h-full w-full flex flex-col items-center justify-center overflow-hidden px-10">
+      <div className="absolute top-6 left-1/2 -translate-x-1/2 flex items-center gap-1.5">
+        {Array.from({ length: TOTAL_STEPS }).map((_, i) => (
+          <motion.div
+            key={i}
+            className="h-[3px] rounded-full"
+            initial={false}
+            animate={{
+              width: i === step ? 22 : 6,
+              backgroundColor:
+                i < step
+                  ? "rgba(110,196,232,0.75)"
+                  : i === step
+                  ? "rgba(168,124,232,0.95)"
+                  : "rgba(108,108,124,0.30)",
+            }}
+            transition={{ duration: 0.4, ease: "easeOut" }}
+          />
+        ))}
+      </div>
+
+      {step > 0 && step < 6 && (
+        <button
+          onClick={back}
+          className="absolute top-6 left-6 text-bone-3 hover:text-bone-2 text-xs flex items-center gap-1.5 transition-colors"
+        >
+          <span aria-hidden>←</span>
+          <span>Back</span>
+        </button>
+      )}
+
+      <div className="flex flex-col items-center gap-7 w-full max-w-xl">
+        <PresenceOrb size={96} />
+
+        <div className="relative z-10 w-full">
+          <AnimatePresence mode="wait">
+          {step === 0 && (
+            <motion.div
+              key="welcome"
+              initial={{ opacity: 0, y: 24 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -24 }}
+              transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+              className="flex flex-col items-center text-center gap-5"
+            >
+              <h1 className="text-5xl font-light tracking-[-0.04em] text-bone">Travis</h1>
+              <p className="text-bone-2 text-sm leading-relaxed max-w-sm">
+                A thinking and execution layer for your day. A few questions and we're set.
+              </p>
+              <button
+                onClick={next}
+                className="mt-3 px-6 py-2.5 rounded-full bg-bone/95 text-ink text-sm font-medium hover:bg-bone transition-colors"
+              >
+                Begin
+              </button>
+            </motion.div>
+          )}
+
+          {step === 1 && (
+            <Question
+              index={1}
+              prompt="What should I call you?"
+              hint="Just your first name is fine."
+              canAdvance={draft.name.trim().length > 0}
+              onAdvance={next}
+            >
+              <input
+                autoFocus
+                value={draft.name}
+                onChange={(e) => {
+                  pulse();
+                  update({ name: e.target.value });
+                }}
+                placeholder="Your name"
+                className={inputClass}
+              />
+            </Question>
+          )}
+
+          {step === 2 && (
+            <Question
+              index={2}
+              prompt="And your role?"
+              hint="So I can frame work in language that fits."
+              canAdvance={draft.role.trim().length > 0}
+              onAdvance={next}
+            >
+              <input
+                autoFocus
+                value={draft.role}
+                onChange={(e) => {
+                  pulse();
+                  update({ role: e.target.value });
+                }}
+                placeholder="e.g. Chief Operating Officer"
+                className={inputClass}
+              />
+            </Question>
+          )}
+
+          {step === 3 && (
+            <Question
+              index={3}
+              prompt="Where do you work?"
+              hint="Travis tailors examples and language to your org."
+              canAdvance={draft.org.trim().length > 0}
+              onAdvance={next}
+            >
+              <input
+                autoFocus
+                value={draft.org}
+                onChange={(e) => {
+                  pulse();
+                  update({ org: e.target.value });
+                }}
+                placeholder="Organization"
+                className={inputClass}
+              />
+            </Question>
+          )}
+
+          {step === 4 && (
+            <Question
+              index={4}
+              prompt="Which mind should I think with?"
+              hint="You can switch this any time in settings."
+              canAdvance={true}
+              onAdvance={next}
+            >
+              <div className="flex flex-col gap-2">
+                {providers.map((p) => {
+                  const active = draft.provider === p.id;
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => update({ provider: p.id })}
+                      className={
+                        "text-left rounded-xl border px-4 py-3 transition-all " +
+                        (active
+                          ? "border-pulse/60 bg-pulse/[0.07]"
+                          : "border-ink-3 bg-ink-2/30 hover:border-ink-3/80 hover:bg-ink-2/50")
+                      }
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-bone font-medium">{p.name}</span>
+                        {active && (
+                          <span className="h-1.5 w-1.5 rounded-full bg-pulse-2 shadow-[0_0_8px_rgba(110,196,232,0.7)]" />
+                        )}
+                      </div>
+                      <p className="text-bone-3 text-xs mt-0.5">{p.blurb}</p>
+                    </button>
+                  );
+                })}
+              </div>
+            </Question>
+          )}
+
+          {step === 5 && (
+            <Question
+              index={5}
+              prompt={
+                provider.needsKey
+                  ? `Drop your ${provider.name} key.`
+                  : "Where's your Ollama running?"
+              }
+              hint={
+                provider.needsKey
+                  ? "Stored in your OS keychain — never written to disk in plain text."
+                  : "The default works for most local installs."
+              }
+              canAdvance={
+                provider.needsKey
+                  ? draft.apiKey.trim().length > 0
+                  : draft.ollamaUrl.trim().length > 0
+              }
+              onAdvance={submit}
+              advanceLabel={submitting ? "Setting up…" : "Finish"}
+            >
+              <div className="flex flex-col gap-5">
+                {provider.needsKey ? (
+                  <input
+                    autoFocus
+                    type="password"
+                    value={draft.apiKey}
+                    onChange={(e) => {
+                      pulse();
+                      update({ apiKey: e.target.value });
+                    }}
+                    placeholder={draft.provider === "claude" ? "sk-ant-..." : "sk-..."}
+                    className={inputClass + " font-mono text-base"}
+                  />
+                ) : (
+                  <input
+                    autoFocus
+                    value={draft.ollamaUrl}
+                    onChange={(e) => {
+                      pulse();
+                      update({ ollamaUrl: e.target.value });
+                    }}
+                    className={inputClass + " font-mono text-base"}
+                  />
+                )}
+
+                <details className="group">
+                  <summary className="text-bone-3 text-xs cursor-pointer hover:text-bone-2 transition-colors list-none flex items-center gap-2">
+                    <span className="text-pulse-2/70 transition-transform group-open:rotate-90">›</span>
+                    <span>Specific model? (optional, default {defaultModels[draft.provider]})</span>
+                  </summary>
+                  <div className="mt-3 ml-4">
+                    <input
+                      value={draft.model}
+                      onChange={(e) => {
+                        pulse();
+                        update({ model: e.target.value });
+                      }}
+                      placeholder={defaultModels[draft.provider]}
+                      className={inputClass + " font-mono text-base"}
+                    />
+                  </div>
+                </details>
+
+                <div className="flex items-center gap-3 text-xs">
+                  <button
+                    type="button"
+                    onClick={runTest}
+                    disabled={
+                      testing ||
+                      (provider.needsKey
+                        ? draft.apiKey.trim().length === 0
+                        : draft.ollamaUrl.trim().length === 0)
+                    }
+                    className="text-pulse-2 hover:text-bone disabled:opacity-30 disabled:cursor-not-allowed underline-offset-4 hover:underline transition-colors"
+                  >
+                    {testing ? "Testing…" : "Test connection"}
+                  </button>
+                  {testResult && (
+                    <span
+                      className={
+                        "flex items-center gap-1.5 " +
+                        (testResult.ok ? "text-pulse-2" : "text-warn")
+                      }
+                    >
+                      <span
+                        className={
+                          "h-1.5 w-1.5 rounded-full " +
+                          (testResult.ok ? "bg-pulse-2" : "bg-warn")
+                        }
+                      />
+                      {testResult.ok
+                        ? `connected · ${testResult.model} · ${testResult.latencyMs}ms`
+                        : testResult.message ?? "failed"}
+                    </span>
+                  )}
+                </div>
+
+                {error && <p className="text-warn text-xs">{error}</p>}
+              </div>
+            </Question>
+          )}
+
+          {step === 6 && (
+            <motion.div
+              key="done"
+              initial={{ opacity: 0, y: 24 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -24 }}
+              transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+              className="flex flex-col items-center text-center gap-5"
+            >
+              <h2 className="text-3xl font-light tracking-tight text-bone">
+                Hello, {draft.name.split(" ")[0] || draft.name}.
+              </h2>
+              <p className="text-bone-2 text-sm max-w-sm leading-relaxed">
+                I'm here. Press{" "}
+                <kbd className="px-1.5 py-0.5 rounded border border-ink-3 bg-ink-2/60 text-bone-2 font-mono text-[10px]">Ctrl</kbd>{" "}
+                +{" "}
+                <kbd className="px-1.5 py-0.5 rounded border border-ink-3 bg-ink-2/60 text-bone-2 font-mono text-[10px]">J</kbd>{" "}
+                anywhere to think out loud.
+              </p>
+              <button
+                onClick={onDone}
+                className="mt-3 px-6 py-2.5 rounded-full bg-bone/95 text-ink text-sm font-medium hover:bg-bone transition-colors"
+              >
+                Enter
+              </button>
+            </motion.div>
+          )}
+          </AnimatePresence>
+        </div>
+      </div>
+    </main>
+  );
+}

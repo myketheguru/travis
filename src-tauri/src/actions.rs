@@ -1,0 +1,771 @@
+use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_clipboard_manager::ClipboardExt;
+
+use crate::conversation;
+use crate::domain::coach_hours;
+use crate::domain::invoice::{self, InvoiceInput};
+use crate::domain::task::{self, TaskInput};
+use crate::reminders::{self, ReminderInput};
+use crate::AppState;
+
+// ---------- Stored action ----------
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct ProposedAction {
+    pub id: i64,
+    pub conversation_id: i64,
+    pub kind: String,
+    pub rationale: Option<String>,
+    pub params_json: String,
+    pub status: String,
+    pub result_json: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ProposedActionFilter {
+    pub conversation_id: Option<i64>,
+    pub status: Option<String>,
+}
+
+pub async fn record(
+    pool: &SqlitePool,
+    conversation_id: i64,
+    kind: &str,
+    rationale: Option<&str>,
+    params_json: &str,
+) -> Result<ProposedAction, sqlx::Error> {
+    let id = sqlx::query(
+        "INSERT INTO proposed_action (conversation_id, kind, rationale, params_json)
+         VALUES (?1, ?2, ?3, ?4)",
+    )
+    .bind(conversation_id)
+    .bind(kind)
+    .bind(rationale)
+    .bind(params_json)
+    .execute(pool)
+    .await?
+    .last_insert_rowid();
+    fetch(pool, id).await
+}
+
+pub async fn fetch(pool: &SqlitePool, id: i64) -> Result<ProposedAction, sqlx::Error> {
+    sqlx::query_as::<_, ProposedAction>(
+        "SELECT id, conversation_id, kind, rationale, params_json, status, result_json,
+                created_at, updated_at
+         FROM proposed_action WHERE id = ?1",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+}
+
+async fn list(pool: &SqlitePool, filter: ProposedActionFilter) -> Result<Vec<ProposedAction>, sqlx::Error> {
+    sqlx::query_as::<_, ProposedAction>(
+        "SELECT id, conversation_id, kind, rationale, params_json, status, result_json,
+                created_at, updated_at
+         FROM proposed_action
+         WHERE (?1 IS NULL OR conversation_id = ?1)
+           AND (?2 IS NULL OR status = ?2)
+         ORDER BY id DESC LIMIT 200",
+    )
+    .bind(filter.conversation_id)
+    .bind(filter.status)
+    .fetch_all(pool)
+    .await
+}
+
+async fn set_status(
+    pool: &SqlitePool,
+    id: i64,
+    status: &str,
+    result_json: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE proposed_action SET status = ?1, result_json = ?2,
+            updated_at = CURRENT_TIMESTAMP WHERE id = ?3",
+    )
+    .bind(status)
+    .bind(result_json)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+// ---------- Action params ----------
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeferTaskParams {
+    task_id: i64,
+    new_due_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProposeInvoiceParams {
+    coach_name: String,
+    school_name: Option<String>,
+    period_start: String,
+    period_end: String,
+    hours_total: Option<f64>,
+    rate_cents: Option<i64>,
+    recipient: Option<String>,
+}
+
+// ---------- Apply outcomes ----------
+
+struct Applied {
+    /// Human-readable assistant message appended to the thread.
+    message: String,
+    /// JSON serialized into proposed_action.result_json for audit + later UI lookup.
+    json: String,
+}
+
+async fn apply_defer_task(pool: &SqlitePool, params_json: &str) -> anyhow::Result<Applied> {
+    let p: DeferTaskParams = serde_json::from_str(params_json)?;
+    if p.new_due_at.trim().is_empty() {
+        anyhow::bail!("newDueAt is required");
+    }
+    let existing = task::fetch_one(pool, p.task_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("task {} not found: {e}", p.task_id))?;
+
+    let updated = task::upsert(
+        pool,
+        TaskInput {
+            id: Some(existing.id),
+            title: existing.title.clone(),
+            description: existing.description.clone(),
+            priority: Some(existing.priority),
+            due_at: Some(p.new_due_at.clone()),
+            link_kind: existing.link_kind.clone(),
+            link_id: existing.link_id,
+            source: Some(existing.source.clone()),
+        },
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("update task: {e}"))?;
+
+    Ok(Applied {
+        message: format!("Moved \"{}\" to {}.", updated.title, p.new_due_at),
+        json: serde_json::json!({
+            "taskId": updated.id,
+            "newDueAt": p.new_due_at,
+        })
+        .to_string(),
+    })
+}
+
+async fn resolve_or_create_coach(pool: &SqlitePool, name: &str) -> anyhow::Result<(i64, String)> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("coach name required");
+    }
+    let existing: Option<(i64, String)> = sqlx::query_as(
+        "SELECT id, name FROM coach
+         WHERE LOWER(TRIM(name)) = LOWER(TRIM(?1))
+         ORDER BY id ASC LIMIT 1",
+    )
+    .bind(trimmed)
+    .fetch_optional(pool)
+    .await?;
+    if let Some((id, name)) = existing {
+        return Ok((id, name));
+    }
+    let id = sqlx::query("INSERT INTO coach (name) VALUES (?1)")
+        .bind(trimmed)
+        .execute(pool)
+        .await?
+        .last_insert_rowid();
+    Ok((id, trimmed.to_string()))
+}
+
+async fn resolve_or_create_school(pool: &SqlitePool, name: &str) -> anyhow::Result<(i64, String)> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("school name required");
+    }
+    let existing: Option<(i64, String)> = sqlx::query_as(
+        "SELECT id, name FROM school
+         WHERE LOWER(TRIM(name)) = LOWER(TRIM(?1))
+         ORDER BY id ASC LIMIT 1",
+    )
+    .bind(trimmed)
+    .fetch_optional(pool)
+    .await?;
+    if let Some((id, name)) = existing {
+        return Ok((id, name));
+    }
+    let id = sqlx::query("INSERT INTO school (name) VALUES (?1)")
+        .bind(trimmed)
+        .execute(pool)
+        .await?
+        .last_insert_rowid();
+    Ok((id, trimmed.to_string()))
+}
+
+async fn next_invoice_number(pool: &SqlitePool) -> anyhow::Result<String> {
+    let year = chrono::Utc::now().format("%Y").to_string();
+    let prefix = format!("L2E-{year}-");
+    let pattern = format!("{prefix}%");
+    let (count,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM invoice WHERE number LIKE ?1")
+            .bind(&pattern)
+            .fetch_one(pool)
+            .await?;
+    Ok(format!("{prefix}{:04}", count + 1))
+}
+
+fn fmt_cents(cents: i64) -> String {
+    let neg = cents < 0;
+    let abs = cents.unsigned_abs() as u128;
+    let dollars = abs / 100;
+    let frac = abs % 100;
+    let raw = dollars.to_string();
+    let bytes = raw.as_bytes();
+    let mut out = String::with_capacity(raw.len() + raw.len() / 3);
+    let len = bytes.len();
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 && (len - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(*b as char);
+    }
+    if neg {
+        format!("-${out}.{frac:02}")
+    } else {
+        format!("${out}.{frac:02}")
+    }
+}
+
+async fn apply_propose_invoice_draft(
+    pool: &SqlitePool,
+    params_json: &str,
+) -> anyhow::Result<Applied> {
+    let p: ProposeInvoiceParams = serde_json::from_str(params_json)?;
+    let (coach_id, coach_name) = resolve_or_create_coach(pool, &p.coach_name).await?;
+
+    let school_pair = if let Some(s) = p.school_name.as_ref() {
+        Some(resolve_or_create_school(pool, s).await?)
+    } else {
+        None
+    };
+    let school_id = school_pair.as_ref().map(|(id, _)| *id);
+
+    if p.period_start > p.period_end {
+        anyhow::bail!("periodStart must be on or before periodEnd");
+    }
+
+    let hours_total = match p.hours_total {
+        Some(h) if h >= 0.0 => h,
+        _ => coach_hours::sum_in_period(pool, coach_id, school_id, &p.period_start, &p.period_end)
+            .await
+            .map_err(|e| anyhow::anyhow!("sum hours: {e}"))?,
+    };
+
+    let rate_cents = match p.rate_cents {
+        Some(r) if r >= 0 => r,
+        _ => {
+            let row: Option<(Option<i64>,)> =
+                sqlx::query_as("SELECT rate_cents FROM coach WHERE id = ?1")
+                    .bind(coach_id)
+                    .fetch_optional(pool)
+                    .await?;
+            row.and_then(|r| r.0).unwrap_or(0)
+        }
+    };
+
+    let recipient = p
+        .recipient
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "NYC Department of Finance".to_string());
+
+    let number = next_invoice_number(pool).await?;
+    let inv = invoice::upsert(
+        pool,
+        InvoiceInput {
+            id: None,
+            number: number.clone(),
+            recipient,
+            coach_id: Some(coach_id),
+            school_id,
+            signing_sheet_id: None,
+            period_start: p.period_start.clone(),
+            period_end: p.period_end.clone(),
+            hours_total,
+            rate_cents,
+            notes: None,
+        },
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("create invoice: {e}"))?;
+
+    Ok(Applied {
+        message: format!(
+            "Drafted invoice {} for Coach {} · {} → {} · {} h · {}",
+            inv.number,
+            coach_name,
+            inv.period_start,
+            inv.period_end,
+            inv.hours_total,
+            fmt_cents(inv.amount_cents)
+        ),
+        json: serde_json::json!({
+            "invoiceId": inv.id,
+            "number": inv.number,
+            "amountCents": inv.amount_cents,
+        })
+        .to_string(),
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetReminderParams {
+    text: String,
+    remind_at: String,
+    #[serde(default)]
+    kind: Option<String>,
+}
+
+async fn apply_set_reminder(pool: &SqlitePool, params_json: &str) -> anyhow::Result<Applied> {
+    let p: SetReminderParams = serde_json::from_str(params_json)?;
+    let text = p.text.trim();
+    if text.is_empty() {
+        anyhow::bail!("reminder text required");
+    }
+    let when = p.remind_at.trim();
+    if when.is_empty() {
+        anyhow::bail!("remindAt required");
+    }
+    let reminder = reminders::upsert(
+        pool,
+        ReminderInput {
+            id: None,
+            text: text.to_string(),
+            kind: p.kind.or_else(|| Some("time".into())),
+            remind_at: Some(when.to_string()),
+            source: Some("agent".into()),
+            link_kind: None,
+            link_id: None,
+        },
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("create reminder: {e}"))?;
+
+    Ok(Applied {
+        message: format!("Reminder set for {when} — {text}"),
+        json: serde_json::json!({
+            "reminderId": reminder.id,
+            "remindAt": when,
+        })
+        .to_string(),
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WriteClipboardParams {
+    text: String,
+}
+
+async fn apply_write_clipboard(
+    app: &AppHandle,
+    params_json: &str,
+) -> anyhow::Result<Applied> {
+    let p: WriteClipboardParams = serde_json::from_str(params_json)?;
+    let text = p.text;
+    if text.is_empty() {
+        anyhow::bail!("text required");
+    }
+    app.clipboard()
+        .write_text(text.clone())
+        .map_err(|e| anyhow::anyhow!("clipboard write: {e}"))?;
+    let preview: String = text.chars().take(80).collect();
+    let elided = if text.chars().count() > 80 { "…" } else { "" };
+    Ok(Applied {
+        message: format!("Copied to clipboard: \"{preview}{elided}\""),
+        json: serde_json::json!({
+            "chars": text.chars().count(),
+        })
+        .to_string(),
+    })
+}
+
+// ---------- Send email ----------
+//
+// Provider-agnostic shell that delegates to email::gmail (or, once wired,
+// email::outlook). The user sees a preview card with To/Subject/snippet and
+// must click Confirm before anything is actually sent.
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SendEmailParams {
+    to: String,
+    subject: String,
+    body: String,
+    /// "gmail" | "outlook". Defaults to "gmail".
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    related_kind: Option<String>,
+    #[serde(default)]
+    related_id: Option<i64>,
+}
+
+async fn apply_send_email(
+    pool: &SqlitePool,
+    app: &AppHandle,
+    params_json: &str,
+) -> anyhow::Result<Applied> {
+    let p: SendEmailParams = serde_json::from_str(params_json)?;
+    let to = p.to.trim();
+    let subject = p.subject.trim();
+    if to.is_empty() {
+        anyhow::bail!("recipient required");
+    }
+    if subject.is_empty() {
+        anyhow::bail!("subject required");
+    }
+    let provider = p
+        .provider
+        .as_deref()
+        .map(|s| s.trim().to_lowercase())
+        .unwrap_or_else(|| "gmail".into());
+
+    let state = app.state::<AppState>();
+
+    let sent = match provider.as_str() {
+        "gmail" => crate::email::gmail::send(
+            pool,
+            &state.http,
+            to,
+            subject,
+            &p.body,
+            Some("agent"),
+            p.related_kind.as_deref(),
+            p.related_id,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("gmail send: {e}"))?,
+        "outlook" => crate::email::outlook::send(
+            pool,
+            &state.http,
+            to,
+            subject,
+            &p.body,
+            Some("agent"),
+            p.related_kind.as_deref(),
+            p.related_id,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("outlook send: {e}"))?,
+        other => anyhow::bail!("unknown email provider: {other}"),
+    };
+
+    Ok(Applied {
+        message: format!("Sent email to {} via {}.", sent.recipient, provider),
+        json: serde_json::json!({
+            "emailId": sent.id,
+            "recipient": sent.recipient,
+            "provider": provider,
+        })
+        .to_string(),
+    })
+}
+
+// ---------- Shell command ----------
+//
+// Defaults: OFF. User must flip `meta.shell_enabled = "true"` via Settings.
+// Every invocation is gated by the user's Confirm click on the proposed_action
+// card — so even with the toggle ON, no command runs without explicit consent.
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunShellParams {
+    /// The literal shell command line. Will be passed to `cmd /c` on Windows
+    /// or `sh -c` on Unix. The user sees this exact string before approving.
+    command: String,
+    #[serde(default)]
+    working_dir: Option<String>,
+    #[serde(default)]
+    timeout_seconds: Option<u64>,
+}
+
+/// Static denylist of patterns that never run, even if the user confirmed.
+/// This is a belt-and-suspenders layer — the primary gate is user Confirm.
+fn shell_command_is_dangerous(cmd: &str) -> Option<&'static str> {
+    let lower = cmd.trim().to_lowercase();
+    // Patterns matched as substrings of the lowercased command. Conservative.
+    const PATTERNS: &[(&str, &str)] = &[
+        ("rm -rf",    "destructive recursive delete"),
+        ("rm -fr",    "destructive recursive delete"),
+        ("rmdir /s",  "destructive recursive delete"),
+        ("del /s",    "destructive recursive delete"),
+        ("del /q /s", "destructive recursive delete"),
+        ("format ",   "formats a disk"),
+        ("format c:", "formats system drive"),
+        ("dd if=",    "raw disk write"),
+        ("mkfs",      "filesystem create"),
+        ("shutdown",  "powers off the machine"),
+        ("reboot",    "reboots the machine"),
+        ("halt",      "halts the machine"),
+        ("poweroff",  "powers off"),
+        (":(){",      "fork bomb"),
+        ("chmod 777", "world-writable permission"),
+        ("chmod -r 777", "recursive world-writable"),
+        ("chown -r",  "recursive ownership change"),
+        ("sudo ",     "privilege escalation"),
+        ("doas ",     "privilege escalation"),
+        ("runas ",    "privilege escalation"),
+        ("> /dev/",   "raw device write"),
+        ("curl | sh", "remote-script-pipe-to-shell"),
+        ("curl | bash", "remote-script-pipe-to-shell"),
+        ("wget | sh", "remote-script-pipe-to-shell"),
+        ("wget | bash", "remote-script-pipe-to-shell"),
+        ("drop database", "destructive sql"),
+        ("drop table",    "destructive sql"),
+        ("git push --force", "force push"),
+        ("git reset --hard", "destroys local history"),
+    ];
+    for (p, why) in PATTERNS {
+        if lower.contains(p) {
+            return Some(why);
+        }
+    }
+    None
+}
+
+async fn apply_run_shell_command(
+    pool: &SqlitePool,
+    params_json: &str,
+) -> anyhow::Result<Applied> {
+    let p: RunShellParams = serde_json::from_str(params_json)?;
+    let command = p.command.trim();
+    if command.is_empty() {
+        anyhow::bail!("command is required");
+    }
+
+    // Hard gate: the toggle must be on.
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT value FROM meta WHERE key = ?1")
+            .bind("shell_enabled")
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| anyhow::anyhow!("read shell_enabled meta: {e}"))?;
+    let enabled = row.as_ref().map(|(v,)| v == "true").unwrap_or(false);
+    if !enabled {
+        anyhow::bail!("Shell tool is disabled. Enable it in Settings → Advanced → Shell tool.");
+    }
+
+    // Denylist check.
+    if let Some(reason) = shell_command_is_dangerous(command) {
+        anyhow::bail!("Refusing to run — matched safety pattern ({reason}). If you really need this, run it manually.");
+    }
+
+    let timeout_secs = p.timeout_seconds.unwrap_or(30).clamp(1, 120);
+
+    let mut cmd = if cfg!(target_os = "windows") {
+        let mut c = tokio::process::Command::new("cmd.exe");
+        c.arg("/C").arg(command);
+        c
+    } else {
+        let mut c = tokio::process::Command::new("sh");
+        c.arg("-c").arg(command);
+        c
+    };
+
+    if let Some(wd) = p.working_dir.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        cmd.current_dir(wd);
+    }
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+
+    let output = match tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        cmd.output(),
+    )
+    .await
+    {
+        Err(_) => anyhow::bail!("Command timed out after {timeout_secs}s"),
+        Ok(Err(e)) => anyhow::bail!("Spawn failed: {e}"),
+        Ok(Ok(o)) => o,
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let exit_code = output.status.code().unwrap_or(-1);
+
+    const CAP: usize = 4000;
+    let truncate = |s: &str| -> String {
+        let chars: Vec<char> = s.chars().collect();
+        if chars.len() <= CAP {
+            chars.into_iter().collect()
+        } else {
+            let head: String = chars[..CAP].iter().collect();
+            format!("{head}\n[…+{} more chars truncated]", chars.len() - CAP)
+        }
+    };
+
+    let stdout_trim = truncate(&stdout);
+    let stderr_trim = truncate(&stderr);
+
+    let preview: String = command.chars().take(60).collect();
+    let preview_elided = if command.chars().count() > 60 { "…" } else { "" };
+
+    let mut message = format!(
+        "Ran `{preview}{preview_elided}` (exit {exit_code})"
+    );
+    if !stdout_trim.is_empty() {
+        message.push_str(&format!("\n\n--- stdout ---\n{stdout_trim}"));
+    }
+    if !stderr_trim.is_empty() {
+        message.push_str(&format!("\n\n--- stderr ---\n{stderr_trim}"));
+    }
+    if stdout_trim.is_empty() && stderr_trim.is_empty() {
+        message.push_str("\n\n(no output)");
+    }
+
+    Ok(Applied {
+        message,
+        json: serde_json::json!({
+            "command": command,
+            "exitCode": exit_code,
+            "stdoutChars": stdout.chars().count(),
+            "stderrChars": stderr.chars().count(),
+        })
+        .to_string(),
+    })
+}
+
+// ---------- Public dispatch ----------
+
+pub fn supported_kinds() -> &'static [&'static str] {
+    &[
+        "defer_task",
+        "propose_invoice_draft",
+        "set_reminder",
+        "write_clipboard",
+        "run_shell_command",
+        "send_email",
+    ]
+}
+
+async fn dispatch(
+    pool: &SqlitePool,
+    app: &AppHandle,
+    action: &ProposedAction,
+) -> anyhow::Result<Applied> {
+    match action.kind.as_str() {
+        "defer_task" => apply_defer_task(pool, &action.params_json).await,
+        "propose_invoice_draft" => apply_propose_invoice_draft(pool, &action.params_json).await,
+        "set_reminder" => apply_set_reminder(pool, &action.params_json).await,
+        "write_clipboard" => apply_write_clipboard(app, &action.params_json).await,
+        "run_shell_command" => apply_run_shell_command(pool, &action.params_json).await,
+        "send_email" => apply_send_email(pool, app, &action.params_json).await,
+        other => anyhow::bail!("unsupported action kind: {other}"),
+    }
+}
+
+// ---------- IPC ----------
+
+#[tauri::command]
+pub async fn list_proposed_actions(
+    state: State<'_, AppState>,
+    filter: Option<ProposedActionFilter>,
+) -> Result<Vec<ProposedAction>, String> {
+    list(&state.db.pool, filter.unwrap_or_default())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn confirm_action(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<ProposedAction, String> {
+    let action = fetch(&state.db.pool, id).await.map_err(|e| e.to_string())?;
+    if action.status != "proposed" {
+        return Err(format!("action #{id} is {} — not pending", action.status));
+    }
+
+    let outcome = dispatch(&state.db.pool, &app, &action).await;
+    match outcome {
+        Ok(applied) => {
+            set_status(&state.db.pool, id, "applied", Some(&applied.json))
+                .await
+                .map_err(|e| e.to_string())?;
+            let _ = conversation::append(
+                &state.db.pool,
+                action.conversation_id,
+                "assistant",
+                &applied.message,
+                Some(
+                    &serde_json::json!({
+                        "kind": "action_applied",
+                        "actionId": id,
+                        "actionKind": action.kind,
+                        "result": serde_json::from_str::<serde_json::Value>(&applied.json)
+                            .unwrap_or(serde_json::Value::Null),
+                    })
+                    .to_string(),
+                ),
+            )
+            .await;
+            let _ = app.emit("domain-changed", "action_applied");
+            fetch(&state.db.pool, id).await.map_err(|e| e.to_string())
+        }
+        Err(e) => {
+            let err = e.to_string();
+            let _ = set_status(
+                &state.db.pool,
+                id,
+                "failed",
+                Some(
+                    &serde_json::json!({
+                        "error": err,
+                    })
+                    .to_string(),
+                ),
+            )
+            .await;
+            let _ = conversation::append(
+                &state.db.pool,
+                action.conversation_id,
+                "assistant",
+                &format!("Couldn't apply that — {err}"),
+                None,
+            )
+            .await;
+            Err(err)
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn decline_action(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<ProposedAction, String> {
+    let action = fetch(&state.db.pool, id).await.map_err(|e| e.to_string())?;
+    if action.status != "proposed" {
+        return Err(format!("action #{id} is {} — not pending", action.status));
+    }
+    set_status(&state.db.pool, id, "declined", None)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit("domain-changed", "action_declined");
+    fetch(&state.db.pool, id).await.map_err(|e| e.to_string())
+}

@@ -1,0 +1,109 @@
+# Release pipeline.
+#
+# Triggered when you push a tag matching v* (e.g. v0.2.0). Builds Travis
+# on Windows, macOS (universal: Intel + Apple Silicon), and Linux, signs
+# each installer with the Tauri updater Ed25519 key, creates a draft
+# GitHub Release, and attaches:
+#   - Windows:    .exe (NSIS) + .msi
+#   - macOS:      .dmg + Travis.app.tar.gz (the updater consumes the latter)
+#   - Linux:      .AppImage + .deb
+#   - latest.json (the updater manifest the running app fetches to find updates)
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#
+#   Required for signed releases:
+#     TAURI_SIGNING_PRIVATE_KEY           — output of `tauri signer generate`
+#     TAURI_SIGNING_PRIVATE_KEY_PASSWORD  — password chosen at keygen time
+#
+#   Required for OAuth + telemetry (else those features are disabled at runtime):
+#     TRAVIS_GOOGLE_CLIENT_ID
+#     TRAVIS_GOOGLE_CLIENT_SECRET
+#     TRAVIS_MICROSOFT_CLIENT_ID
+#     TRAVIS_MICROSOFT_CLIENT_SECRET
+#     TRAVIS_TELEMETRY_URL
+#     TRAVIS_TELEMETRY_TOKEN
+#
+# After the workflow finishes, the release is a DRAFT — review it, edit
+# the notes, then click "Publish release". Once published, every running
+# install picks up the update on its next "Check for updates" tap.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  publish-tauri:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target universal-apple-darwin
+          - platform: ubuntu-22.04
+            args: ''
+          - platform: windows-latest
+            args: ''
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build deps
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Set up Rust (with macOS targets when needed)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install npm deps
+        run: npm ci
+
+      - name: Build, sign, and publish to GitHub Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TRAVIS_GOOGLE_CLIENT_ID: ${{ secrets.TRAVIS_GOOGLE_CLIENT_ID }}
+          TRAVIS_GOOGLE_CLIENT_SECRET: ${{ secrets.TRAVIS_GOOGLE_CLIENT_SECRET }}
+          TRAVIS_MICROSOFT_CLIENT_ID: ${{ secrets.TRAVIS_MICROSOFT_CLIENT_ID }}
+          TRAVIS_MICROSOFT_CLIENT_SECRET: ${{ secrets.TRAVIS_MICROSOFT_CLIENT_SECRET }}
+          TRAVIS_TELEMETRY_URL: ${{ secrets.TRAVIS_TELEMETRY_URL }}
+          TRAVIS_TELEMETRY_TOKEN: ${{ secrets.TRAVIS_TELEMETRY_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Travis ${{ github.ref_name }}'
+          releaseBody: |
+            See assets below for installers. The updater pulls
+            `latest.json` from this release automatically.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+          # Generate the updater manifest as `latest.json` and attach it.
+          # tauri-action does this automatically on tag pushes when signing
+          # secrets are present.
+          updaterJsonPreferNsis: true

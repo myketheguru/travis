@@ -1,0 +1,444 @@
+//! Proactive nudges. A tokio task wakes up periodically (every hour) and, if
+//! enabled, asks the LLM whether the user's current state warrants a brief
+//! nudge. If yes, it persists the nudge to a singleton "Proactive nudges"
+//! conversation and fires an OS notification. The user opts in via Settings.
+//!
+//! Cadence: hourly check. Throttled to one nudge per 4h. Waking hours
+//! enforced (08:00–22:00 local). Default OFF.
+//!
+//! Cost guardrails: when enabled, this is at most 4 LLM calls per day
+//! (waking-hours / 4h throttle), with prompt caching on the system prompt.
+//! On Sonnet 4.6 that's ~$0.02/day.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use chrono::{Datelike, Timelike};
+use serde::Deserialize;
+use sqlx::SqlitePool;
+use tauri::AppHandle;
+use tauri_plugin_notification::NotificationExt;
+use tokio::time::sleep;
+
+use crate::conversation;
+use crate::db::{Db, UserProfile};
+use crate::health::{self, Health};
+use crate::llm::{
+    self, ChatWithToolsOptions, Message, ToolChoice, ToolDef,
+};
+use crate::secrets;
+use crate::telemetry;
+
+const TOOL_NAME: &str = "report_nudge";
+const NUDGE_THREAD_TITLE: &str = "Proactive nudges";
+const MIN_GAP_SECS: i64 = 4 * 60 * 60;
+const WAKE_START_HOUR: u32 = 8;
+const WAKE_END_HOUR: u32 = 22;
+
+pub fn spawn(app: AppHandle, db: Arc<Db>, http: reqwest::Client, health: Arc<Health>) {
+    tauri::async_runtime::spawn(async move {
+        // Initial delay so we don't compete with onboarding/migrations.
+        sleep(Duration::from_secs(120)).await;
+        loop {
+            if let Err(e) = tick(&app, &db, &http, &health).await {
+                tracing::warn!("proactive tick: {e}");
+            }
+            sleep(Duration::from_secs(60 * 60)).await;
+        }
+    });
+}
+
+async fn is_enabled(pool: &SqlitePool) -> anyhow::Result<bool> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT value FROM meta WHERE key = ?1")
+            .bind("proactive_enabled")
+            .fetch_optional(pool)
+            .await?;
+    // Default ON: only off if the user has explicitly set the meta to "false".
+    Ok(row.map(|(v,)| v != "false").unwrap_or(true))
+}
+
+async fn last_nudge_at(pool: &SqlitePool) -> anyhow::Result<Option<chrono::DateTime<chrono::Utc>>> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT value FROM meta WHERE key = ?1")
+            .bind("proactive_last_at")
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.and_then(|(v,)| chrono::DateTime::parse_from_rfc3339(&v).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc)))
+}
+
+async fn record_nudge_at(pool: &SqlitePool, when: chrono::DateTime<chrono::Utc>) -> anyhow::Result<()> {
+    let iso = when.to_rfc3339();
+    sqlx::query(
+        "INSERT INTO meta(key, value, updated_at) VALUES ('proactive_last_at', ?1, CURRENT_TIMESTAMP)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+    )
+    .bind(&iso)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+#[derive(Debug, Default)]
+struct StateSummary {
+    open_tasks_total: i64,
+    overdue_tasks: Vec<(i64, String, Option<String>)>,
+    awaiting_threads: i64,
+    awaiting_first_title: Option<String>,
+    journal_24h: i64,
+    top_gaps: Vec<(String, i64)>,
+}
+
+impl StateSummary {
+    fn is_quiet(&self) -> bool {
+        self.open_tasks_total == 0
+            && self.overdue_tasks.is_empty()
+            && self.awaiting_threads == 0
+            && self.journal_24h == 0
+            && self.top_gaps.is_empty()
+    }
+
+    fn render(&self, today: &str) -> String {
+        let overdue_block = if self.overdue_tasks.is_empty() {
+            "(none)".to_string()
+        } else {
+            self.overdue_tasks
+                .iter()
+                .take(5)
+                .map(|(id, title, due)| {
+                    let due_str = due.as_deref().unwrap_or("—");
+                    format!("- [{id}] {title} (due {due_str})")
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let gaps_block = if self.top_gaps.is_empty() {
+            "(none)".to_string()
+        } else {
+            self.top_gaps
+                .iter()
+                .map(|(cap, count)| format!("- {cap} ({count}×)"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let waiting = match (self.awaiting_threads, &self.awaiting_first_title) {
+            (0, _) => "(none)".to_string(),
+            (n, Some(t)) => format!("{n} (most recent: \"{t}\")"),
+            (n, None) => format!("{n}"),
+        };
+        format!(
+            "Today: {today}\n\nOpen tasks: {open}\nOverdue:\n{overdue}\n\nThreads waiting on the user: {waiting}\n\nNotes captured in last 24h: {j24}\n\nOutstanding capability requests:\n{gaps}",
+            open = self.open_tasks_total,
+            overdue = overdue_block,
+            waiting = waiting,
+            j24 = self.journal_24h,
+            gaps = gaps_block,
+            today = today,
+        )
+    }
+}
+
+async fn build_state_summary(pool: &SqlitePool, today_iso: &str) -> anyhow::Result<StateSummary> {
+    let mut s = StateSummary::default();
+    let (open,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM task WHERE status = 'open'")
+        .fetch_one(pool)
+        .await?;
+    s.open_tasks_total = open;
+
+    let overdue: Vec<(i64, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, title, due_at FROM task
+         WHERE status = 'open' AND due_at IS NOT NULL AND due_at < ?1
+         ORDER BY due_at ASC, priority DESC LIMIT 5",
+    )
+    .bind(today_iso)
+    .fetch_all(pool)
+    .await?;
+    s.overdue_tasks = overdue;
+
+    let (awaiting,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM conversation WHERE status = 'awaiting_user'",
+    )
+    .fetch_one(pool)
+    .await?;
+    s.awaiting_threads = awaiting;
+
+    if awaiting > 0 {
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            "SELECT title FROM conversation
+             WHERE status = 'awaiting_user'
+             ORDER BY updated_at DESC LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await?;
+        s.awaiting_first_title = row.and_then(|(t,)| t);
+    }
+
+    let (j24,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM journal_entry
+         WHERE datetime(created_at) >= datetime('now', '-24 hours')",
+    )
+    .fetch_one(pool)
+    .await?;
+    s.journal_24h = j24;
+
+    let gaps: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT capability, COUNT(*) FROM app_feedback
+         WHERE addressed_at IS NULL
+         GROUP BY capability ORDER BY COUNT(*) DESC LIMIT 3",
+    )
+    .fetch_all(pool)
+    .await?;
+    s.top_gaps = gaps;
+
+    Ok(s)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NudgeOutput {
+    should_nudge: bool,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    severity: Option<String>,
+}
+
+fn build_nudge_tool() -> ToolDef {
+    ToolDef {
+        name: TOOL_NAME.into(),
+        description:
+            "Decide whether to send a proactive nudge to the user right now and, if so, what to say. Bias toward shouldNudge=false — quiet is good. Only nudge when there's a clear, specific reason.".into(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "shouldNudge": {
+                    "type": "boolean",
+                    "description": "True only if there's a SPECIFIC, non-trivial reason worth interrupting the user."
+                },
+                "text": {
+                    "type": ["string", "null"],
+                    "description": "1-2 sentences max. Friendly, conversational, professional. Reference SPECIFIC items by name. Bad: 'You have things to do.' Good: 'Maria's hours are still pending review — third day. Want me to draft a follow-up?'"
+                },
+                "kind": {
+                    "type": ["string", "null"],
+                    "enum": ["check_in", "overdue", "follow_up", "celebration", null]
+                },
+                "severity": {
+                    "type": ["string", "null"],
+                    "enum": ["low", "med", "high", null]
+                }
+            },
+            "required": ["shouldNudge"]
+        }),
+    }
+}
+
+fn build_system_prompt(profile: &UserProfile) -> String {
+    let first = profile
+        .name
+        .split_whitespace()
+        .next()
+        .unwrap_or(&profile.name);
+    format!(
+        r#"You are Travis, a personal operations assistant for {first}, {role} at {org}.
+
+You are running on a quiet timer in the background. {first} hasn't typed anything recently. Your job RIGHT NOW is to decide whether their current state warrants a brief nudge — or whether to stay silent.
+
+GUIDING PRINCIPLE: quiet is the default. {first}'s attention is precious. Only nudge when there's a specific, concrete, useful thing to say. NEVER nudge with generic content like "Just checking in!" or "How's it going?".
+
+GOOD reasons to nudge:
+- An overdue task with a specific name and how long it's been overdue.
+- A clarifying question Travis asked earlier that's been hanging in an awaiting_user thread for hours.
+- A pattern in capability requests worth surfacing ("you've asked to send email three times — want a workaround?").
+- A visible win to celebrate succinctly ("nice — three closed today").
+
+BAD reasons to nudge:
+- "You have N open tasks." (generic)
+- Just to remind them you exist.
+- Anything that doesn't reference a specific item by name.
+
+Personality: warm, professional, terse. Reference items by name. Never sycophantic. Use contractions. Match the kind of brief check-in a sharp colleague would slip into chat — not corporate copy.
+
+Output via the report_nudge tool exactly once. If unsure, set shouldNudge=false. There is no penalty for staying silent."#,
+        first = first,
+        role = profile.role,
+        org = profile.org,
+    )
+}
+
+async fn get_or_create_nudge_conversation(pool: &SqlitePool) -> anyhow::Result<i64> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT id FROM conversation WHERE kind = 'nudge' ORDER BY id ASC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+    if let Some((id,)) = row {
+        return Ok(id);
+    }
+    let conv = conversation::open(pool, "nudge", Some(NUDGE_THREAD_TITLE))
+        .await
+        .map_err(|e| anyhow::anyhow!("create nudge thread: {e}"))?;
+    Ok(conv.id)
+}
+
+async fn tick(
+    app: &AppHandle,
+    db: &Db,
+    http: &reqwest::Client,
+    health: &Health,
+) -> anyhow::Result<()> {
+    let pool = &db.pool;
+
+    if !is_enabled(pool).await? {
+        return Ok(());
+    }
+
+    // Skip the tick entirely if we're offline or the LLM is in a known-bad
+    // state. The user already has a banner; no point burning a retry that's
+    // going to fail and re-fire the same notification.
+    if health.is_blocked() {
+        return Ok(());
+    }
+
+    // Waking hours.
+    let local_now = chrono::Local::now();
+    let hour = local_now.time().hour();
+    if !(WAKE_START_HOUR..WAKE_END_HOUR).contains(&hour) {
+        return Ok(());
+    }
+
+    // Throttle.
+    let now_utc = chrono::Utc::now();
+    if let Some(last) = last_nudge_at(pool).await? {
+        let elapsed = (now_utc - last).num_seconds();
+        if elapsed < MIN_GAP_SECS {
+            return Ok(());
+        }
+    }
+
+    // Pull state. If nothing interesting at all, stay quiet.
+    let today = format!(
+        "{:04}-{:02}-{:02}",
+        local_now.year(),
+        local_now.month(),
+        local_now.day()
+    );
+    let state = build_state_summary(pool, &today).await?;
+    if state.is_quiet() {
+        return Ok(());
+    }
+
+    // Provider.
+    let profile = db
+        .user_profile()
+        .await
+        .map_err(|e| anyhow::anyhow!("read profile: {e}"))?
+        .ok_or_else(|| anyhow::anyhow!("no profile"))?;
+    let api_key = match profile.llm_provider.as_str() {
+        "claude" | "openai" => secrets::get_api_key(&profile.llm_provider),
+        _ => None,
+    };
+    let provider = llm::build(
+        &profile.llm_provider,
+        api_key.as_deref(),
+        profile.ollama_url.as_deref(),
+        profile.model.as_deref(),
+        http.clone(),
+    )?;
+
+    let tool = build_nudge_tool();
+    let user_msg = state.render(&today);
+
+    let turn_res = provider
+        .chat_with_tools(
+            vec![Message::user(user_msg)],
+            ChatWithToolsOptions {
+                system: Some(build_system_prompt(&profile)),
+                cache_system: true,
+                temperature: Some(0.5),
+                max_tokens: Some(400),
+                tools: vec![tool],
+                tool_choice: Some(ToolChoice::Specific(TOOL_NAME.into())),
+            },
+        )
+        .await;
+
+    let turn = match turn_res {
+        Ok(t) => {
+            // A successful background call means whatever degraded us is
+            // resolved — clear so the banner goes away and proactive +
+            // user-facing flows resume.
+            health.clear(app);
+            t
+        }
+        Err(e) => {
+            let kind = health::classify_llm_error(&e.to_string());
+            health.report(app, kind, format!("Proactive nudge failed: {e}"));
+            return Err(e);
+        }
+    };
+
+    let call = match turn.tool_calls.into_iter().find(|c| c.name == TOOL_NAME) {
+        Some(c) => c,
+        None => return Ok(()),
+    };
+    let nudge: NudgeOutput = match serde_json::from_value(call.input) {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!("nudge parse: {e}");
+            return Ok(());
+        }
+    };
+
+    if !nudge.should_nudge {
+        return Ok(());
+    }
+    let text = match nudge.text.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        Some(t) => t,
+        None => return Ok(()),
+    };
+
+    // Persist.
+    let conv_id = get_or_create_nudge_conversation(pool).await?;
+    let payload = serde_json::json!({
+        "kind": nudge.kind,
+        "severity": nudge.severity,
+    })
+    .to_string();
+    let _ = conversation::append(pool, conv_id, "assistant", &text, Some(&payload)).await;
+    let _ = conversation::set_status(pool, conv_id, "awaiting_user").await;
+
+    // OS notification — clip to a sensible body length.
+    let body: String = text.chars().take(200).collect();
+    let _ = app
+        .notification()
+        .builder()
+        .title("Travis")
+        .body(&body)
+        .show();
+
+    record_nudge_at(pool, now_utc).await?;
+
+    telemetry::emit(
+        pool,
+        "nudge_generated",
+        serde_json::json!({
+            "kind": nudge.kind,
+            "severity": nudge.severity,
+            "open_tasks": state.open_tasks_total,
+            "overdue": state.overdue_tasks.len(),
+        }),
+    )
+    .await;
+
+    tracing::info!(
+        "proactive: nudged ({}, {})",
+        nudge.kind.as_deref().unwrap_or("?"),
+        nudge.severity.as_deref().unwrap_or("?")
+    );
+
+    Ok(())
+}

@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #07080b;
+  --color-ink-2: #0d0f14;
+  --color-ink-3: #161922;
+  --color-bone: #ececf1;
+  --color-bone-2: #b3b5bf;
+  --color-bone-3: #6a6d78;
+  --color-pulse: #7c5cff;
+  --color-pulse-2: #4ad6ff;
+  --color-warn: #ffb86b;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background:
+    radial-gradient(1200px 800px at 50% -10%, rgba(124, 92, 255, 0.10), transparent 60%),
+    radial-gradient(900px 600px at 100% 110%, rgba(74, 214, 255, 0.06), transparent 60%),
+    var(--color-ink);
+  overflow: hidden;
+}
+
+body.transparent-window,
+body.transparent-window #root {
+  background: transparent !important;
+}
+
+::selection {
+  background: rgba(124, 92, 255, 0.35);
+  color: var(--color-bone);
+}
+
+* {
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Custom scrollbars matching the dark theme */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(180, 180, 200, 0.12);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(180, 180, 200, 0.28);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(180, 180, 200, 0.2) transparent;
+}

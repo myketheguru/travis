@@ -1,0 +1,105 @@
+name: Publish update.json
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Generate and publish update.json
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build update.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p _site
+
+          # Strip leading 'v' from tag (v1.2.3 -> 1.2.3) for the version field.
+          VERSION="${TAG#v}"
+          PUB_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          NOTES=$(gh release view "$TAG" --json body --jq '.body // ""')
+
+          # Pull asset list from the release.
+          ASSETS_JSON=$(gh release view "$TAG" --json assets --jq '.assets')
+
+          # Helper: find an asset URL by suffix; empty string if missing.
+          asset_url() {
+            local suffix="$1"
+            echo "$ASSETS_JSON" | jq -r --arg s "$suffix" \
+              '[.[] | select(.name | endswith($s))][0].url // ""'
+          }
+
+          # Helper: download .sig file body (Tauri stores the signature inline).
+          asset_sig() {
+            local suffix="$1"
+            local url
+            url=$(echo "$ASSETS_JSON" | jq -r --arg s "$suffix" \
+              '[.[] | select(.name | endswith($s))][0].url // ""')
+            if [ -z "$url" ]; then
+              echo ""
+              return
+            fi
+            curl -sSL -H "Accept: application/octet-stream" \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              "$url" || echo ""
+          }
+
+          DARWIN_AARCH64_URL=$(asset_url ".app.tar.gz")
+          DARWIN_AARCH64_SIG=$(asset_sig ".app.tar.gz.sig")
+          DARWIN_X86_64_URL="$DARWIN_AARCH64_URL"
+          DARWIN_X86_64_SIG="$DARWIN_AARCH64_SIG"
+
+          WIN_X86_64_URL=$(asset_url ".msi.zip")
+          WIN_X86_64_SIG=$(asset_sig ".msi.zip.sig")
+          # Fallback to NSIS if MSI bundle is not present.
+          if [ -z "$WIN_X86_64_URL" ]; then
+            WIN_X86_64_URL=$(asset_url ".nsis.zip")
+            WIN_X86_64_SIG=$(asset_sig ".nsis.zip.sig")
+          fi
+
+          LINUX_X86_64_URL=$(asset_url ".AppImage.tar.gz")
+          LINUX_X86_64_SIG=$(asset_sig ".AppImage.tar.gz.sig")
+
+          jq -n \
+            --arg version "$VERSION" \
+            --arg notes   "$NOTES" \
+            --arg pubdate "$PUB_DATE" \
+            --arg dax_url "$DARWIN_AARCH64_URL" --arg dax_sig "$DARWIN_AARCH64_SIG" \
+            --arg dx86_url "$DARWIN_X86_64_URL" --arg dx86_sig "$DARWIN_X86_64_SIG" \
+            --arg win_url "$WIN_X86_64_URL"     --arg win_sig "$WIN_X86_64_SIG" \
+            --arg lin_url "$LINUX_X86_64_URL"   --arg lin_sig "$LINUX_X86_64_SIG" \
+            '{
+              version: $version,
+              notes:   $notes,
+              pub_date: $pubdate,
+              platforms: (
+                {}
+                | (if $dax_url != "" then . + { "darwin-aarch64": { signature: $dax_sig, url: $dax_url } } else . end)
+                | (if $dx86_url != "" then . + { "darwin-x86_64": { signature: $dx86_sig, url: $dx86_url } } else . end)
+                | (if $win_url != "" then . + { "windows-x86_64": { signature: $win_sig, url: $win_url } } else . end)
+                | (if $lin_url != "" then . + { "linux-x86_64": { signature: $lin_sig, url: $lin_url } } else . end)
+              )
+            }' > _site/update.json
+
+          cat _site/update.json
+
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./_site
+          publish_branch: gh-pages
+          keep_files: true
+          commit_message: "chore: publish update.json for ${{ github.event.release.tag_name }}"

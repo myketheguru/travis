@@ -1,0 +1,44 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+dist-update
+*.local
+
+# Rust build output.
+src-tauri/target
+src-tauri/Cargo.lock.bak
+
+# fastembed downloads its ONNX model into a cache the first time the
+# app starts. ~130MB of weights — not appropriate for the repo. The
+# user's machine re-fetches on first launch.
+src-tauri/.fastembed_cache
+
+# Travis secrets — OAuth client IDs/secrets, telemetry endpoint + token,
+# and any other build-time env vars live here for local dev. CI passes
+# these through GitHub Actions secrets instead.
+src-tauri/.env
+
+# Tauri updater signing key — this should NEVER live inside the repo.
+# Keep it at $HOME/.tauri/travis.key (or similar) and back it up offline.
+*.key
+!src-tauri/icons/*.key
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
