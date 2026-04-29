@@ -98,7 +98,18 @@ export function PresenceOrb({ size = 240 }: { size?: number }) {
 
       <motion.div
         className="absolute inset-0 rounded-full overflow-hidden"
-        style={{ filter: `saturate(${p.saturation})` }}
+        style={{
+          filter: `saturate(${p.saturation})`,
+          // WebKit (macOS) doesn't reliably clip filtered content + children
+          // with mix-blend-mode to a rounded `overflow:hidden` parent. The
+          // blobs below would render as a rectangular bounding box. clip-path
+          // is composited correctly through the filter pipeline; isolation
+          // pins the blend modes to this stacking context. Together they
+          // restore the circular silhouette on macOS.
+          clipPath: "circle(50%)",
+          WebkitClipPath: "circle(50%)",
+          isolation: "isolate",
+        }}
         animate={
           reduce
             ? {}

@@ -25,9 +25,10 @@ const INSTRUCTIONS = {
     heading: "macOS (Intel + Apple Silicon)",
     steps: [
       'Open the downloaded <code>.dmg</code> and drag <strong>Travis.app</strong> into <strong>Applications</strong>.',
-      'On first launch, macOS will block the app: <em>"Travis cannot be opened because it is from an unidentified developer."</em>',
-      'Open Finder → Applications, <strong>right-click Travis</strong>, choose <strong>Open</strong>, then <strong>Open</strong> in the dialog. You only do this once.',
-      "Press <kbd>⌘</kbd> + <kbd>J</kbd> anywhere to open the capture overlay.",
+      'On first launch, macOS will say <em>"Travis is damaged and can\'t be opened"</em> or block it as from an unidentified developer. This is the standard Gatekeeper warning for unsigned apps.',
+      'Open Terminal and run:<br><code>xattr -dr com.apple.quarantine /Applications/Travis.app</code><br>This strips the quarantine flag macOS adds to anything downloaded via browser. You only do this once per install.',
+      'Launch Travis from Spotlight or Applications.',
+      'Press <kbd>⌘</kbd> + <kbd>J</kbd> anywhere to open the capture overlay.',
     ],
   },
   linux: {
