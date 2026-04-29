@@ -63,6 +63,16 @@ export async function setShellEnabled(enabled: boolean): Promise<void> {
 export type ProactiveConfig = {
   enabled: boolean;
   lastAt: string | null;
+  /** ISO weekday numbers — Mon=1..Sun=7. */
+  activeDays: number[];
+  startHour: number;
+  endHour: number;
+};
+
+export type ProactiveSchedulePayload = {
+  activeDays: number[];
+  startHour: number;
+  endHour: number;
 };
 
 export async function getProactiveConfig(): Promise<ProactiveConfig> {
@@ -71,6 +81,10 @@ export async function getProactiveConfig(): Promise<ProactiveConfig> {
 
 export async function setProactiveEnabled(enabled: boolean): Promise<void> {
   await invoke("set_proactive_enabled", { enabled });
+}
+
+export async function setProactiveSchedule(payload: ProactiveSchedulePayload): Promise<void> {
+  await invoke("set_proactive_schedule", { payload });
 }
 
 export type PingResult = {

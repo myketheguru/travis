@@ -7,6 +7,7 @@ import {
   hasApiKey,
   setApiKey,
   setProactiveEnabled,
+  setProactiveSchedule,
   setShellEnabled,
   testProvider,
   updateProfile,
@@ -575,15 +576,43 @@ function ShellToolSection() {
   );
 }
 
+// Mon=1..Sun=7, ordered to match the way most people think about a week.
+const DAY_CHIPS: { num: number; label: string }[] = [
+  { num: 1, label: "Mon" },
+  { num: 2, label: "Tue" },
+  { num: 3, label: "Wed" },
+  { num: 4, label: "Thu" },
+  { num: 5, label: "Fri" },
+  { num: 6, label: "Sat" },
+  { num: 7, label: "Sun" },
+];
+
+const HOUR_OPTIONS = Array.from({ length: 25 }, (_, i) => i);
+
+const fmtHour = (h: number) => {
+  if (h === 0 || h === 24) return "midnight";
+  if (h === 12) return "noon";
+  return h < 12 ? `${h} am` : `${h - 12} pm`;
+};
+
 function ProactiveSection() {
   const [cfg, setCfg] = useState<ProactiveConfig | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [savedHint, setSavedHint] = useState<string | null>(null);
 
   useEffect(() => {
     getProactiveConfig()
       .then(setCfg)
-      .catch(() => setCfg({ enabled: false, lastAt: null }));
+      .catch(() =>
+        setCfg({
+          enabled: false,
+          lastAt: null,
+          activeDays: [1, 2, 3, 4, 5, 6, 7],
+          startHour: 8,
+          endHour: 22,
+        }),
+      );
   }, []);
 
   const toggle = async (v: boolean) => {
@@ -591,12 +620,53 @@ function ProactiveSection() {
     setErr(null);
     try {
       await setProactiveEnabled(v);
-      setCfg((c) => (c ? { ...c, enabled: v } : { enabled: v, lastAt: null }));
+      setCfg((c) => (c ? { ...c, enabled: v } : null));
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
+  };
+
+  const toggleDay = (n: number) => {
+    if (!cfg) return;
+    const next = cfg.activeDays.includes(n)
+      ? cfg.activeDays.filter((d) => d !== n)
+      : [...cfg.activeDays, n].sort((a, b) => a - b);
+    setCfg({ ...cfg, activeDays: next });
+  };
+
+  const setHourField = (which: "startHour" | "endHour", val: number) => {
+    if (!cfg) return;
+    setCfg({ ...cfg, [which]: val });
+  };
+
+  const saveSchedule = async () => {
+    if (!cfg) return;
+    setBusy(true);
+    setErr(null);
+    setSavedHint(null);
+    try {
+      await setProactiveSchedule({
+        activeDays: cfg.activeDays,
+        startHour: cfg.startHour,
+        endHour: cfg.endHour,
+      });
+      setSavedHint("Saved.");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const presetWeekdays = () => {
+    if (!cfg) return;
+    setCfg({ ...cfg, activeDays: [1, 2, 3, 4, 5] });
+  };
+  const presetEveryDay = () => {
+    if (!cfg) return;
+    setCfg({ ...cfg, activeDays: [1, 2, 3, 4, 5, 6, 7] });
   };
 
   const lastAtPretty = (() => {
@@ -612,11 +682,10 @@ function ProactiveSection() {
   return (
     <Section title="Proactive nudges">
       <p className="text-bone-3 text-[11px] leading-relaxed -mt-2">
-        Travis quietly checks in roughly every few hours during waking hours
-        (8am–10pm) — but only when there's something specific worth surfacing,
-        like an overdue task, a thread waiting on you, or a capability gap.
-        Stays silent otherwise. You'll get a notification and a card in the
-        Asks of me thread. On by default — turn off if it's too chatty.
+        Travis quietly checks in during the hours you choose — but only when
+        there's something specific worth surfacing, like an overdue task, a
+        thread waiting on you, or a capability gap. Stays silent otherwise.
+        On by default — turn off if it's too chatty.
       </p>
 
       <label className="flex items-center gap-2 cursor-pointer select-none">
@@ -631,6 +700,110 @@ function ProactiveSection() {
           Let Travis nudge me when something's worth surfacing
         </span>
       </label>
+
+      {cfg && (
+        <div className="mt-2 flex flex-col gap-3 rounded-xl border border-ink-3 bg-ink-2/30 p-3.5">
+          <div>
+            <div className="text-bone-3 text-[10px] tracking-[0.18em] uppercase mb-2">
+              Active days
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {DAY_CHIPS.map((d) => {
+                const on = cfg.activeDays.includes(d.num);
+                return (
+                  <button
+                    key={d.num}
+                    type="button"
+                    onClick={() => toggleDay(d.num)}
+                    disabled={busy}
+                    className={
+                      "px-3 py-1.5 rounded-full text-[11px] tracking-wider transition-colors disabled:opacity-50 " +
+                      (on
+                        ? "bg-pulse/20 text-bone border border-pulse/40"
+                        : "border border-ink-3 text-bone-3 hover:text-bone-2 hover:border-ink-3/80")
+                    }
+                  >
+                    {d.label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex items-center gap-3 mt-2 text-[10px]">
+              <button
+                type="button"
+                onClick={presetWeekdays}
+                disabled={busy}
+                className="text-bone-3 hover:text-bone-2 underline-offset-4 hover:underline"
+              >
+                Weekdays only
+              </button>
+              <span className="text-bone-3 opacity-50">·</span>
+              <button
+                type="button"
+                onClick={presetEveryDay}
+                disabled={busy}
+                className="text-bone-3 hover:text-bone-2 underline-offset-4 hover:underline"
+              >
+                Every day
+              </button>
+            </div>
+          </div>
+
+          <div className="flex items-end gap-3">
+            <div className="flex-1">
+              <div className="text-bone-3 text-[10px] tracking-[0.18em] uppercase mb-1.5">
+                From
+              </div>
+              <select
+                value={cfg.startHour}
+                onChange={(e) => setHourField("startHour", Number(e.target.value))}
+                disabled={busy}
+                className="w-full bg-ink-2/70 border border-ink-3 rounded-lg px-3 py-2 text-bone text-sm focus:outline-none focus:border-pulse/60 transition-colors"
+              >
+                {HOUR_OPTIONS.map((h) => (
+                  <option key={h} value={h}>
+                    {fmtHour(h)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex-1">
+              <div className="text-bone-3 text-[10px] tracking-[0.18em] uppercase mb-1.5">
+                Until
+              </div>
+              <select
+                value={cfg.endHour}
+                onChange={(e) => setHourField("endHour", Number(e.target.value))}
+                disabled={busy}
+                className="w-full bg-ink-2/70 border border-ink-3 rounded-lg px-3 py-2 text-bone text-sm focus:outline-none focus:border-pulse/60 transition-colors"
+              >
+                {HOUR_OPTIONS.map((h) => (
+                  <option key={h} value={h}>
+                    {fmtHour(h)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <p className="text-bone-3 text-[10px] leading-relaxed">
+            If "until" is earlier than "from" the schedule wraps overnight —
+            e.g. 10 pm → 6 am works.
+          </p>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={saveSchedule}
+              disabled={busy || cfg.activeDays.length === 0}
+              className="px-4 py-1.5 rounded-full bg-bone/95 text-ink text-[11px] font-medium hover:bg-bone disabled:opacity-30 transition-colors"
+            >
+              {busy ? "Saving…" : "Save schedule"}
+            </button>
+            {savedHint && (
+              <span className="text-pulse-2 text-[11px]">{savedHint}</span>
+            )}
+          </div>
+        </div>
+      )}
 
       {lastAtPretty && (
         <p className="text-bone-3 text-[10px]">Last nudge: {lastAtPretty}</p>

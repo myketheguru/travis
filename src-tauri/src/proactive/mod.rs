@@ -32,8 +32,11 @@ use crate::telemetry;
 const TOOL_NAME: &str = "report_nudge";
 const NUDGE_THREAD_TITLE: &str = "Proactive nudges";
 const MIN_GAP_SECS: i64 = 4 * 60 * 60;
-const WAKE_START_HOUR: u32 = 8;
-const WAKE_END_HOUR: u32 = 22;
+/// Defaults applied when the user hasn't customised their schedule.
+/// Active 8am-10pm every day of the week.
+const DEFAULT_START_HOUR: u32 = 8;
+const DEFAULT_END_HOUR: u32 = 22;
+const DEFAULT_ACTIVE_DAYS: &str = "1,2,3,4,5,6,7"; // ISO weekday: Mon=1..Sun=7
 
 /// Don't ask for context until the user has clearly engaged with the app.
 const CONTEXT_PROMPT_MIN_JOURNAL_ENTRIES: i64 = 5;
@@ -61,6 +64,72 @@ async fn is_enabled(pool: &SqlitePool) -> anyhow::Result<bool> {
             .await?;
     // Default ON: only off if the user has explicitly set the meta to "false".
     Ok(row.map(|(v,)| v != "false").unwrap_or(true))
+}
+
+/// User-configurable schedule for when proactive nudges may fire.
+/// `active_days` holds ISO weekday numbers (Mon=1..Sun=7); the hour
+/// window is [start, end) in the user's local timezone.
+#[derive(Debug, Clone)]
+pub(crate) struct Schedule {
+    pub active_days: Vec<u32>,
+    pub start_hour: u32,
+    pub end_hour: u32,
+}
+
+impl Schedule {
+    pub fn allows(&self, weekday: u32, hour: u32) -> bool {
+        if !self.active_days.contains(&weekday) {
+            return false;
+        }
+        if self.start_hour <= self.end_hour {
+            // Simple range, e.g. 8..22.
+            hour >= self.start_hour && hour < self.end_hour
+        } else {
+            // Wrap-around range, e.g. 22..6 (overnight).
+            hour >= self.start_hour || hour < self.end_hour
+        }
+    }
+}
+
+fn parse_active_days(raw: &str) -> Vec<u32> {
+    raw.split(',')
+        .filter_map(|s| s.trim().parse::<u32>().ok())
+        .filter(|n| (1..=7).contains(n))
+        .collect()
+}
+
+pub(crate) async fn load_schedule(pool: &SqlitePool) -> anyhow::Result<Schedule> {
+    let row_days: Option<(String,)> = sqlx::query_as("SELECT value FROM meta WHERE key = ?1")
+        .bind("proactive_active_days")
+        .fetch_optional(pool)
+        .await?;
+    let row_start: Option<(String,)> = sqlx::query_as("SELECT value FROM meta WHERE key = ?1")
+        .bind("proactive_start_hour")
+        .fetch_optional(pool)
+        .await?;
+    let row_end: Option<(String,)> = sqlx::query_as("SELECT value FROM meta WHERE key = ?1")
+        .bind("proactive_end_hour")
+        .fetch_optional(pool)
+        .await?;
+
+    let active_days = row_days
+        .map(|(v,)| parse_active_days(&v))
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| parse_active_days(DEFAULT_ACTIVE_DAYS));
+    let start_hour = row_start
+        .and_then(|(v,)| v.parse::<u32>().ok())
+        .filter(|h| *h <= 24)
+        .unwrap_or(DEFAULT_START_HOUR);
+    let end_hour = row_end
+        .and_then(|(v,)| v.parse::<u32>().ok())
+        .filter(|h| *h <= 24)
+        .unwrap_or(DEFAULT_END_HOUR);
+
+    Ok(Schedule {
+        active_days,
+        start_hour,
+        end_hour,
+    })
 }
 
 async fn last_nudge_at(pool: &SqlitePool) -> anyhow::Result<Option<chrono::DateTime<chrono::Utc>>> {
@@ -408,10 +477,12 @@ async fn tick(
         return Ok(());
     }
 
-    // Waking hours.
+    // Schedule gate — user-configurable in Settings → Proactive nudges.
     let local_now = chrono::Local::now();
     let hour = local_now.time().hour();
-    if !(WAKE_START_HOUR..WAKE_END_HOUR).contains(&hour) {
+    let weekday = local_now.weekday().number_from_monday(); // Mon=1..Sun=7
+    let schedule = load_schedule(pool).await?;
+    if !schedule.allows(weekday, hour) {
         return Ok(());
     }
 

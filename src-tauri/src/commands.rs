@@ -169,6 +169,10 @@ pub fn has_api_key(provider: String) -> bool {
 pub struct ProactiveConfig {
     pub enabled: bool,
     pub last_at: Option<String>,
+    /// ISO weekday numbers Mon=1..Sun=7 the schedule is active on.
+    pub active_days: Vec<u32>,
+    pub start_hour: u32,
+    pub end_hour: u32,
 }
 
 #[tauri::command]
@@ -186,7 +190,63 @@ pub async fn get_proactive_config(state: State<'_, AppState>) -> Result<Proactiv
         .meta("proactive_last_at")
         .await
         .map_err(|e| e.to_string())?;
-    Ok(ProactiveConfig { enabled, last_at })
+    let schedule = crate::proactive::load_schedule(&state.db.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(ProactiveConfig {
+        enabled,
+        last_at,
+        active_days: schedule.active_days,
+        start_hour: schedule.start_hour,
+        end_hour: schedule.end_hour,
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProactiveSchedulePayload {
+    pub active_days: Vec<u32>,
+    pub start_hour: u32,
+    pub end_hour: u32,
+}
+
+#[tauri::command]
+pub async fn set_proactive_schedule(
+    state: State<'_, AppState>,
+    payload: ProactiveSchedulePayload,
+) -> Result<(), String> {
+    // Sanity bounds — keep the user from setting a 25-hour day.
+    if payload.start_hour > 24 || payload.end_hour > 24 {
+        return Err("hours must be 0–24".into());
+    }
+    if payload.active_days.is_empty() {
+        return Err("pick at least one day".into());
+    }
+    if payload.active_days.iter().any(|d| !(1..=7).contains(d)) {
+        return Err("days must be 1 (Mon) through 7 (Sun)".into());
+    }
+    let days_str = payload
+        .active_days
+        .iter()
+        .map(|d| d.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    state
+        .db
+        .set_meta("proactive_active_days", &days_str)
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_meta("proactive_start_hour", &payload.start_hour.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .db
+        .set_meta("proactive_end_hour", &payload.end_hour.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]

@@ -261,6 +261,7 @@ pub fn run() {
             commands::set_shell_enabled,
             commands::get_proactive_config,
             commands::set_proactive_enabled,
+            commands::set_proactive_schedule,
             commands::test_provider,
             commands::chat,
             overlay::toggle_overlay,
