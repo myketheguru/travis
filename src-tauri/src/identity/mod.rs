@@ -37,6 +37,11 @@ pub fn normalize(name: &str) -> String {
 }
 
 /// Best-effort upsert of a mention. Errors are logged but not propagated.
+///
+/// `kind` is a soft string — packs declare what kinds they care about.
+/// Anything goes through; junk kinds will just sit in the spine until
+/// someone queries for them. The validation cost of an allowlist isn't
+/// worth the loss of pack flexibility.
 pub async fn record_mention(pool: &SqlitePool, kind: &str, display_name: &str) {
     let trimmed = display_name.trim();
     if trimmed.is_empty() {
@@ -46,13 +51,13 @@ pub async fn record_mention(pool: &SqlitePool, kind: &str, display_name: &str) {
     if normalized.is_empty() {
         return;
     }
-    if !["coach", "school", "dept"].contains(&kind) {
-        tracing::warn!("identity::record_mention: unknown kind {kind}");
+    if kind.trim().is_empty() {
+        tracing::warn!("identity::record_mention: empty kind");
         return;
     }
 
     let res = sqlx::query(
-        "INSERT INTO entity_index (kind, normalized_name, display_name, mentions_count, first_seen, last_seen)
+        "INSERT INTO entity (kind, normalized_name, display_name, mentions_count, first_seen, last_seen)
          VALUES (?1, ?2, ?3, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
          ON CONFLICT(kind, normalized_name) DO UPDATE SET
             mentions_count = mentions_count + 1,
@@ -77,7 +82,7 @@ pub async fn list_top(
     let limit = limit.clamp(1, 500);
     let rows = sqlx::query_as::<_, EntityIndex>(
         "SELECT id, kind, normalized_name, display_name, mentions_count, first_seen, last_seen, attributes_json
-         FROM entity_index
+         FROM entity
          WHERE (?1 IS NULL OR kind = ?1)
          ORDER BY mentions_count DESC, last_seen DESC, id DESC
          LIMIT ?2",
@@ -91,7 +96,7 @@ pub async fn list_top(
 
 async fn top_names(pool: &SqlitePool, kind: &str, limit: i64) -> anyhow::Result<Vec<String>> {
     let rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT display_name FROM entity_index
+        "SELECT display_name FROM entity
          WHERE kind = ?1
          ORDER BY mentions_count DESC, last_seen DESC, id DESC
          LIMIT ?2",

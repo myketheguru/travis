@@ -37,11 +37,11 @@ pub struct Stats {
 
 pub async fn stats(pool: &sqlx::SqlitePool) -> Result<Stats, sqlx::Error> {
     // Coaches/schools include both explicit CRUD rows AND mentions captured from
-    // journal extraction (entity_index). UNION dedupes on the lowercase name so
-    // a coach added both ways is only counted once.
+    // journal extraction (the spine `entity` table). UNION dedupes on the
+    // lowercase name so a coach added both ways is only counted once.
     let (coaches,): (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM (
-            SELECT normalized_name AS n FROM entity_index WHERE kind = 'coach'
+            SELECT normalized_name AS n FROM entity WHERE kind = 'coach'
             UNION
             SELECT LOWER(TRIM(name)) AS n FROM coach
         )",
@@ -50,7 +50,7 @@ pub async fn stats(pool: &sqlx::SqlitePool) -> Result<Stats, sqlx::Error> {
     .await?;
     let (schools,): (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM (
-            SELECT normalized_name AS n FROM entity_index WHERE kind = 'school'
+            SELECT normalized_name AS n FROM entity WHERE kind = 'school'
             UNION
             SELECT LOWER(TRIM(name)) AS n FROM school
         )",

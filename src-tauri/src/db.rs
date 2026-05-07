@@ -79,6 +79,7 @@ impl Db {
             .await?;
 
         sqlx::migrate!("./migrations").run(&pool).await?;
+        crate::packs::run_pack_migrations(&pool).await?;
 
         Ok(Self { pool })
     }
