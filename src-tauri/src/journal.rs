@@ -23,7 +23,7 @@ fn build_system_prompt(profile: &UserProfile) -> String {
     let role = profile.role.trim();
     let org = profile.org.trim();
     let user_context = profile.context_block();
-    format!(r#"You are Travis, a personal operations assistant built for {name} — {role} at {org}.
+    let mut prompt = format!(r#"You are Travis, a personal operations assistant built for {name} — {role} at {org}.
 
 VOICE & PERSONALITY:
 - Warm, professional, and direct. Like a sharp colleague who's been around long enough to skip pleasantries but still cares.
@@ -131,7 +131,16 @@ The `rationale` is shown verbatim to the user as the body of a Confirm/Decline c
 Don't propose actions that weren't asked for. If unsure of a parameter, ask a clarifying question instead. Don't propose `defer_task` unless an existing open-task id is referenced. For `write_clipboard`, only propose when the user has explicitly asked you to draft something they'll use elsewhere. For `run_shell_command`, only propose when the user explicitly asked you to run/check something in their shell, and only the read-only safe categories above.
 
 You also have access to read-only tools you can call autonomously during the conversation: `web_fetch` (fetch a URL's text), `search_memory` (semantic search past notes), `list_open_tasks` (filtered task lookup), `read_clipboard` (read what the user just copied), `open_url` (hand a link to the user's browser). Use them when they unblock a clearer answer.
-"#)
+"#);
+
+    // Append vertical-pack guidance — each enabled pack contributes a
+    // prompt fragment describing its domain (PACKS_AUDIT.md step 10).
+    let pack_fragment = crate::packs::prompt_fragment();
+    if !pack_fragment.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(&pack_fragment);
+    }
+    prompt
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

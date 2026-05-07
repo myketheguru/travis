@@ -415,7 +415,7 @@ fn build_nudge_tool() -> ToolDef {
 
 fn build_system_prompt(profile: &UserProfile) -> String {
     let first = profile.first_name();
-    format!(
+    let mut prompt = format!(
         r#"You are Travis, a personal operations assistant.
 
 {user_context}
@@ -440,7 +440,15 @@ Personality: warm, professional, terse. Reference items by name. Never sycophant
 Output via the report_nudge tool exactly once. If unsure, set shouldNudge=false. There is no penalty for staying silent."#,
         user_context = profile.context_block(),
         first = first,
-    )
+    );
+
+    // Append vertical-pack guidance (PACKS_AUDIT.md step 10).
+    let pack_fragment = crate::packs::prompt_fragment();
+    if !pack_fragment.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(&pack_fragment);
+    }
+    prompt
 }
 
 async fn get_or_create_nudge_conversation(pool: &SqlitePool) -> anyhow::Result<i64> {

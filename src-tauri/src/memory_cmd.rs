@@ -221,7 +221,7 @@ pub async fn ask_travis(
     .map_err(|e| e.to_string())?;
 
     let first = profile.first_name();
-    let system = format!(
+    let mut system = format!(
         "You are Travis, a personal operations assistant.\n\n{user_context}\n\n\
 This is a continuous chat — you have prior turns of context above the current question. \
 Answer grounded in the supplied retrieval context (memory snippets + open tasks) when relevant. \
@@ -235,6 +235,13 @@ offer to log it.",
         user_context = profile.context_block(),
         first = first,
     );
+
+    // Append vertical-pack guidance (PACKS_AUDIT.md step 10).
+    let pack_fragment = crate::packs::prompt_fragment();
+    if !pack_fragment.is_empty() {
+        system.push_str("\n\n");
+        system.push_str(&pack_fragment);
+    }
 
     // Build history from conversation_message — drop the just-appended user
     // message because we send the contextualized version below.

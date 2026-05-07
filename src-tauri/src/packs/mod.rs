@@ -159,3 +159,19 @@ async fn current_version(pool: &SqlitePool, key: &str) -> anyhow::Result<i64> {
 pub fn is_enabled(slug: &str) -> bool {
     enabled_packs().iter().any(|p| p.slug() == slug)
 }
+
+/// Concatenated system-prompt fragments from every enabled pack, separated
+/// by blank lines. Empty string when no fragments. Append to a core prompt
+/// to give the LLM pack-specific operational context (entity vocabulary,
+/// example queries, vertical-specific behaviour).
+pub fn prompt_fragment() -> String {
+    let parts: Vec<&'static str> = enabled_packs()
+        .iter()
+        .filter_map(|p| p.prompt_fragment())
+        .collect();
+    if parts.is_empty() {
+        String::new()
+    } else {
+        parts.join("\n\n")
+    }
+}

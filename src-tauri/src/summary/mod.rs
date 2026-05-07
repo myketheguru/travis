@@ -21,17 +21,29 @@ pub struct Summary {
 }
 
 fn daily_system_prompt(profile: &UserProfile) -> String {
-    format!(
+    let mut prompt = format!(
         "You generate brief operational summaries for the user.\n\n{}\n\nOutput 2-4 sentences. No headers. Focus on what got done and what's outstanding.",
         profile.context_block(),
-    )
+    );
+    let pack_fragment = crate::packs::prompt_fragment();
+    if !pack_fragment.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(&pack_fragment);
+    }
+    prompt
 }
 
 fn weekly_system_prompt(profile: &UserProfile) -> String {
-    format!(
+    let mut prompt = format!(
         "You generate brief operational weekly summaries for the user.\n\n{}\n\nIdentify 1-2 patterns or recurring themes from the week. Output 4-6 sentences. No headers. Focus on what got done, what's outstanding, and patterns.",
         profile.context_block(),
-    )
+    );
+    let pack_fragment = crate::packs::prompt_fragment();
+    if !pack_fragment.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(&pack_fragment);
+    }
+    prompt
 }
 
 pub async fn list(
