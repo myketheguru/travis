@@ -148,6 +148,7 @@ async fn apply_defer_task(pool: &SqlitePool, params_json: &str) -> anyhow::Resul
             description: existing.description.clone(),
             priority: Some(existing.priority),
             due_at: Some(p.new_due_at.clone()),
+            entity_id: existing.entity_id,
             link_kind: existing.link_kind.clone(),
             link_id: existing.link_id,
             source: Some(existing.source.clone()),

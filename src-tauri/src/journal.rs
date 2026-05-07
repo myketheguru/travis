@@ -708,6 +708,7 @@ pub async fn journal_ingest(
                     description: t.notes.clone(),
                     priority: t.priority,
                     due_at: t.due_at.clone(),
+                    entity_id: None,
                     link_kind: None,
                     link_id: None,
                     source: Some("journal".into()),

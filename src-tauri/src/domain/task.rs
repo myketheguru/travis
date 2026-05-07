@@ -13,6 +13,11 @@ pub struct Task {
     pub status: String,
     pub priority: i64,
     pub due_at: Option<String>,
+    /// Forward-looking link into the spine `entity` table. New code
+    /// should prefer this over the legacy `link_kind` / `link_id`
+    /// pair, which stays populated for backwards compatibility until
+    /// step 8 of the pack refactor (PACKS_AUDIT.md) backfills.
+    pub entity_id: Option<i64>,
     pub link_kind: Option<String>,
     pub link_id: Option<i64>,
     pub source: String,
@@ -29,6 +34,8 @@ pub struct TaskInput {
     pub description: Option<String>,
     pub priority: Option<i64>,
     pub due_at: Option<String>,
+    #[serde(default)]
+    pub entity_id: Option<i64>,
     pub link_kind: Option<String>,
     pub link_id: Option<i64>,
     pub source: Option<String>,
@@ -44,7 +51,8 @@ pub struct TaskFilter {
 
 pub async fn list(pool: &SqlitePool, filter: TaskFilter) -> Result<Vec<Task>, DomainError> {
     let rows = sqlx::query_as::<_, Task>(
-        "SELECT id, title, description, status, priority, due_at, link_kind, link_id,
+        "SELECT id, title, description, status, priority, due_at,
+                entity_id, link_kind, link_id,
                 source, completed_at, created_at, updated_at
          FROM task
          WHERE (?1 IS NULL OR status = ?1)
@@ -81,13 +89,15 @@ pub async fn upsert(pool: &SqlitePool, input: TaskInput) -> Result<Task, DomainE
         Some(id) => {
             sqlx::query(
                 "UPDATE task SET title=?1, description=?2, priority=?3, due_at=?4,
-                    link_kind=?5, link_id=?6, source=?7, updated_at=CURRENT_TIMESTAMP
-                 WHERE id=?8",
+                    entity_id=?5, link_kind=?6, link_id=?7, source=?8,
+                    updated_at=CURRENT_TIMESTAMP
+                 WHERE id=?9",
             )
             .bind(&title)
             .bind(&input.description)
             .bind(priority)
             .bind(&input.due_at)
+            .bind(input.entity_id)
             .bind(&input.link_kind)
             .bind(input.link_id)
             .bind(&source)
@@ -97,13 +107,15 @@ pub async fn upsert(pool: &SqlitePool, input: TaskInput) -> Result<Task, DomainE
             id
         }
         None => sqlx::query(
-            "INSERT INTO task (title, description, priority, due_at, link_kind, link_id, source)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO task (title, description, priority, due_at,
+                               entity_id, link_kind, link_id, source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )
         .bind(&title)
         .bind(&input.description)
         .bind(priority)
         .bind(&input.due_at)
+        .bind(input.entity_id)
         .bind(&input.link_kind)
         .bind(input.link_id)
         .bind(&source)
@@ -120,7 +132,8 @@ pub async fn upsert(pool: &SqlitePool, input: TaskInput) -> Result<Task, DomainE
 
 pub async fn fetch_one(pool: &SqlitePool, id: i64) -> Result<Task, DomainError> {
     let row = sqlx::query_as::<_, Task>(
-        "SELECT id, title, description, status, priority, due_at, link_kind, link_id,
+        "SELECT id, title, description, status, priority, due_at,
+                entity_id, link_kind, link_id,
                 source, completed_at, created_at, updated_at
          FROM task WHERE id=?1",
     )
