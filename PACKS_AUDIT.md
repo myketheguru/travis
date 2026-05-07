@@ -5,10 +5,17 @@ L2E-specific seam in the current Travis binary so the move into a
 pack is mechanical, not a redesign. For the resulting pack format see
 [PACKS.md](./PACKS.md).
 
-This doc is **temporary**. Once the L2E pack and the second pack
-(tutoring) ship, archive this doc — its job is done.
+> **Status (2026-05-07): all 12 audit steps shipped in v0.2.0.** The
+> code matches what's described below; the L2E pack lives entirely
+> under `src-tauri/src/packs/lead_to_empower/`, the spine is
+> populated, and the journal extraction + system prompts derive
+> their pack-specific bits from the registry. The doc is kept as the
+> reference for what the refactor did, not as a working backlog.
+> Archive once the second pack (tutoring) ships and validates the
+> abstraction.
 
-Audited at: Travis v0.1.3 (commit `1fc6d08`), 2026-05-07.
+Audited at: Travis v0.1.3 (commit `1fc6d08`), 2026-05-07. Refactor
+completed at v0.2.0 (commit `4228771`), same day.
 
 ---
 

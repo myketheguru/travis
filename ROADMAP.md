@@ -109,26 +109,62 @@ through the layers it touches.
 
 ## Phases
 
-### Phase 0 — Where we are *(now, v0.1.x)*
+### Phase 0 — Foundation *(v0.1.x)*
 
-Local-first desktop, single user/device, L2E-flavoured. Open source.
-Working but coupled to one customer's domain.
+Local-first desktop, single user/device. Open source. L2E-coupled —
+Travis worked, but the data model and prompts assumed one customer's
+domain. Phase 1 unlocks everything downstream.
 
-### Phase 1 — De-domain *(2–4 weeks)*
+### Phase 1 — De-domain *(SHIPPED in v0.2.0)*
 
 **Goal:** Travis is generic at the data-model level; the L2E stuff is a
 pack like any other.
 
-- Pack manifest (id, semver, migrations, tools, prompt fragment, depends_on).
-- Move `coach`, `school`, `coach_hours`, `signing_sheet`, `invoice` and
-  their tools into a `lead-to-empower-ops` pack with namespaced table
-  prefixes.
-- Tool registry filters by active packs; system prompt builds the tool
-  list dynamically.
-- Starter packs: `lead-to-empower-ops`, `solo-creator`
-  (clients/projects/invoicing), `generic` (just notes/tasks/reminders/
-  contacts).
-- Settings → Workspaces lets the user pick a profile and toggle packs.
+**Shipped:**
+
+- ✅ `PackHandle` trait — slug, name, version, migrations, prompt
+  fragment, declared entity kinds + action kinds, `register_tools` /
+  `register_actions` hooks. Per-pack migration runner tracks
+  `meta.pack.<slug>.schema_version` independently of core's `_sqlx_migrations`.
+- ✅ L2E lives entirely under `src-tauri/src/packs/lead_to_empower/`:
+  typed domain modules (coach / school / coach_hours / signing_sheet /
+  invoice), Tauri command surface, PDF generator, the
+  `propose_invoice_draft` action handler, the system-prompt fragment.
+- ✅ Cargo feature `pack-lead-to-empower` (default-on) gates
+  compilation. `tauri::generate_handler!` accepts `#[cfg]` per-item, so
+  L2E commands disappear cleanly when the feature is off.
+- ✅ Universal spine — `entity` (generalised from `entity_index`),
+  `relation`, `event`. Three core tables that don't presume a domain
+  shape; every pack writes to them from its CRUD paths so cross-pack
+  retrieval works from day 1.
+- ✅ `task` graduated to core as a thin opt-in. CHECK constraint
+  dropped; new `entity_id` column links to the spine.
+- ✅ Action registry replaces static dispatch. Built-in handlers
+  pre-register; pack handlers register at startup.
+- ✅ Tool registry takes the pack list and lets each pack contribute
+  its own tools.
+- ✅ Journal extraction is dynamic — entity buckets and the
+  `proposedActions.kind` enum come from the live pack registry +
+  action registry.
+- ✅ Pack prompt fragments concatenated into all four system-prompt
+  assembly sites (journal, proactive, summary, ask).
+- ✅ Frontend gates pack-supplied UI (the Invoices tab) on a
+  pack-installed flag exposed via `appStatus.enabledPacks`.
+
+**Still open before "Phase 1 fully done":**
+
+- 🟡 **Validate the abstraction with a second pack.** Build the
+  tutoring pack from scratch — proves the format isn't accidentally
+  shaped around L2E. This is the test that says "we did Phase 1 right."
+- 🟡 **Runtime-installable packs.** Today packs ship at compile time
+  via Cargo features. Drag-and-drop a `.zip` → install at runtime
+  comes once a second pack exists to test it with.
+- 🟡 **Settings → Packs UI** for toggling enabled packs (depends on
+  runtime install).
+- 🟡 **L2E-flavoured prose still in core prompts.** The journal
+  extraction system prompt still mentions invoice drafting and coach
+  examples directly. Step-10 plumbed pack fragments alongside; a
+  follow-up trims core back to a fully neutral baseline.
 
 **Open source:** all of it. **Cloud play:** none yet.
 

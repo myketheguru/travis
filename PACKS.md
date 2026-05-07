@@ -1,4 +1,4 @@
-# Pack Format — v0.1 (draft)
+# Pack Format — v0.1 (implemented in v0.2.0)
 
 A **pack** is the unit of vertical extension in Travis. One pack = one
 operational shape (after-school programs, tutoring, home care, therapy,
@@ -8,8 +8,13 @@ library.
 This document specifies what a pack *is* on disk and how Travis core
 loads one. The point of the format is that **building the second pack
 should feel like writing a known thing, not inventing a new one** —
-that's the validation we're aiming for in week 5–6 of the Phase 1
-sequence (see [ROADMAP.md](./ROADMAP.md)).
+that's the validation we're still aiming for (the next pack is the
+real test).
+
+> **Status:** the format described here landed in v0.2.0 with one
+> pack (`lead-to-empower`) bundled by default. Surfaces marked
+> "Phase 2" or "Phase 3" below are not yet implemented. The current
+> implementation lives under `src-tauri/src/packs/`.
 
 For the codebase-audit findings that drove this format, see
 [PACKS_AUDIT.md](./PACKS_AUDIT.md).

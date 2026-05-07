@@ -97,12 +97,12 @@ big enough for percentages to mean something.
 
 ## Invoice templates library
 **What:** Multiple named invoice layouts the user can pick between,
-beyond the single Lead-to-Empower / NYC DoF design that ships today.
+beyond the single NYC DoF design that ships today.
 
-**Why deferred:** L2E-specific in scope. With Phase 1 the invoicing
-pack becomes its own thing; this would be a pack-internal feature
-(ship a `templates/` dir in the pack with handlebars-shaped layouts)
-that lands when a customer needs more than one layout. No external
+**Why deferred:** L2E pack-internal feature now that Phase 1 has
+shipped (v0.2.0). Add a `templates/` dir under
+`src-tauri/src/packs/lead_to_empower/pdf/` with handlebars-shaped
+layouts and a per-invoice template selector. No external
 dependencies; just product work.
 
 **Revisit when:** The L2E pack has 2–3 distinct invoice formats users
