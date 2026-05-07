@@ -565,7 +565,7 @@ pub async fn journal_ingest(
     // the iteration cap (then we force the extraction tool).
     let extraction_tool = build_extraction_tool();
     let extraction_name = extraction_tool.name.clone();
-    let read_registry = tools::read_only_registry();
+    let read_registry = tools::read_only_registry(crate::packs::enabled_packs());
     let mut tool_defs: Vec<ToolDef> = vec![extraction_tool.clone()];
     tool_defs.extend(read_registry.definitions());
 

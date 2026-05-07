@@ -121,11 +121,14 @@ struct ProposeInvoiceParams {
 
 // ---------- Apply outcomes ----------
 
-struct Applied {
+/// Outcome of applying a proposed action. Returned by every
+/// [`ActionHandler`] implementation; `confirm_action` writes
+/// `message` to the thread and `json` to `proposed_action.result_json`.
+pub struct Applied {
     /// Human-readable assistant message appended to the thread.
-    message: String,
+    pub message: String,
     /// JSON serialized into proposed_action.result_json for audit + later UI lookup.
-    json: String,
+    pub json: String,
 }
 
 async fn apply_defer_task(pool: &SqlitePool, params_json: &str) -> anyhow::Result<Applied> {
@@ -748,7 +751,178 @@ async fn apply_run_shell_command(
     })
 }
 
-// ---------- Public dispatch ----------
+// ---------- Action registry ----------
+//
+// Runtime registry of action handlers. Built-in handlers register in
+// `builtin_registry()`; packs add their own handlers at startup (e.g.
+// the L2E pack will register `propose_invoice_draft` after step 8 of
+// the pack refactor — see PACKS_AUDIT.md).
+//
+// Why a runtime registry instead of a static match: pack handlers
+// can't be enumerated at compile time. The registry replaces the old
+// `dispatch(...)` free function with `ActionRegistry::dispatch`.
+
+use std::collections::HashMap;
+
+#[async_trait::async_trait]
+pub trait ActionHandler: Send + Sync {
+    /// Stable identifier — the value of `proposed_action.kind` this
+    /// handler applies to. Must be unique across the registry.
+    fn kind(&self) -> &'static str;
+
+    /// Apply the action. Returns the message to surface in the thread
+    /// and the JSON to persist as `proposed_action.result_json`.
+    async fn apply(
+        &self,
+        pool: &SqlitePool,
+        app: &AppHandle,
+        params_json: &str,
+    ) -> anyhow::Result<Applied>;
+}
+
+pub struct ActionRegistry {
+    handlers: HashMap<&'static str, Box<dyn ActionHandler>>,
+}
+
+impl ActionRegistry {
+    pub fn new() -> Self {
+        Self {
+            handlers: HashMap::new(),
+        }
+    }
+
+    pub fn register(&mut self, h: Box<dyn ActionHandler>) {
+        let kind = h.kind();
+        if self.handlers.insert(kind, h).is_some() {
+            tracing::warn!(
+                "ActionRegistry: replacing existing handler for kind {kind}"
+            );
+        }
+    }
+
+    /// Sorted list of registered kinds. Used by callers that need to
+    /// enumerate the surface (e.g. the journal extraction prompt
+    /// schema, currently still hardcoded — see step 9 in
+    /// PACKS_AUDIT.md).
+    pub fn kinds(&self) -> Vec<&'static str> {
+        let mut v: Vec<_> = self.handlers.keys().copied().collect();
+        v.sort_unstable();
+        v
+    }
+
+    pub async fn dispatch(
+        &self,
+        pool: &SqlitePool,
+        app: &AppHandle,
+        action: &ProposedAction,
+    ) -> anyhow::Result<Applied> {
+        let h = self
+            .handlers
+            .get(action.kind.as_str())
+            .ok_or_else(|| anyhow::anyhow!("unsupported action kind: {}", action.kind))?;
+        h.apply(pool, app, &action.params_json).await
+    }
+}
+
+impl Default for ActionRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Built-in action handlers shipped with Travis core. Packs extend
+/// this by inserting more handlers at startup (e.g. the L2E pack
+/// will register `propose_invoice_draft` once it's lifted out of
+/// core in step 8). For now `propose_invoice_draft` lives here so
+/// existing behavior is preserved.
+pub fn builtin_registry() -> ActionRegistry {
+    let mut r = ActionRegistry::new();
+    r.register(Box::new(DeferTaskHandler));
+    r.register(Box::new(SetReminderHandler));
+    r.register(Box::new(WriteClipboardHandler));
+    r.register(Box::new(RunShellCommandHandler));
+    r.register(Box::new(SendEmailHandler));
+    r.register(Box::new(UpdateProfileContextHandler));
+    r.register(Box::new(ProposeInvoiceDraftHandler)); // moves to L2E pack in step 8
+    r
+}
+
+// ---------- Handler wrappers ----------
+//
+// Each handler is a unit struct that delegates to the existing
+// `apply_*` private functions. Once the L2E pack lifts in step 8,
+// `ProposeInvoiceDraftHandler` and its `apply_propose_invoice_draft`
+// move to the pack and register through `PackHandle::register_actions`.
+
+struct DeferTaskHandler;
+#[async_trait::async_trait]
+impl ActionHandler for DeferTaskHandler {
+    fn kind(&self) -> &'static str { "defer_task" }
+    async fn apply(&self, pool: &SqlitePool, _app: &AppHandle, params_json: &str) -> anyhow::Result<Applied> {
+        apply_defer_task(pool, params_json).await
+    }
+}
+
+struct ProposeInvoiceDraftHandler;
+#[async_trait::async_trait]
+impl ActionHandler for ProposeInvoiceDraftHandler {
+    fn kind(&self) -> &'static str { "propose_invoice_draft" }
+    async fn apply(&self, pool: &SqlitePool, _app: &AppHandle, params_json: &str) -> anyhow::Result<Applied> {
+        apply_propose_invoice_draft(pool, params_json).await
+    }
+}
+
+struct SetReminderHandler;
+#[async_trait::async_trait]
+impl ActionHandler for SetReminderHandler {
+    fn kind(&self) -> &'static str { "set_reminder" }
+    async fn apply(&self, pool: &SqlitePool, _app: &AppHandle, params_json: &str) -> anyhow::Result<Applied> {
+        apply_set_reminder(pool, params_json).await
+    }
+}
+
+struct WriteClipboardHandler;
+#[async_trait::async_trait]
+impl ActionHandler for WriteClipboardHandler {
+    fn kind(&self) -> &'static str { "write_clipboard" }
+    async fn apply(&self, _pool: &SqlitePool, app: &AppHandle, params_json: &str) -> anyhow::Result<Applied> {
+        apply_write_clipboard(app, params_json).await
+    }
+}
+
+struct RunShellCommandHandler;
+#[async_trait::async_trait]
+impl ActionHandler for RunShellCommandHandler {
+    fn kind(&self) -> &'static str { "run_shell_command" }
+    async fn apply(&self, pool: &SqlitePool, _app: &AppHandle, params_json: &str) -> anyhow::Result<Applied> {
+        apply_run_shell_command(pool, params_json).await
+    }
+}
+
+struct SendEmailHandler;
+#[async_trait::async_trait]
+impl ActionHandler for SendEmailHandler {
+    fn kind(&self) -> &'static str { "send_email" }
+    async fn apply(&self, pool: &SqlitePool, app: &AppHandle, params_json: &str) -> anyhow::Result<Applied> {
+        apply_send_email(pool, app, params_json).await
+    }
+}
+
+struct UpdateProfileContextHandler;
+#[async_trait::async_trait]
+impl ActionHandler for UpdateProfileContextHandler {
+    fn kind(&self) -> &'static str { "update_profile_context" }
+    async fn apply(&self, pool: &SqlitePool, _app: &AppHandle, params_json: &str) -> anyhow::Result<Applied> {
+        apply_update_profile_context(pool, params_json).await
+    }
+}
+
+// ---------- Legacy free-function shim (journal extraction still uses) ----------
+//
+// Step 9 generalises the journal extraction prompt to derive its action
+// list from the live registry. Until then this thin shim returns the
+// built-in kinds so journal.rs keeps working. Pack-supplied kinds will
+// not flow through this list — but they don't yet exist.
 
 pub fn supported_kinds() -> &'static [&'static str] {
     &[
@@ -760,23 +934,6 @@ pub fn supported_kinds() -> &'static [&'static str] {
         "send_email",
         "update_profile_context",
     ]
-}
-
-async fn dispatch(
-    pool: &SqlitePool,
-    app: &AppHandle,
-    action: &ProposedAction,
-) -> anyhow::Result<Applied> {
-    match action.kind.as_str() {
-        "defer_task" => apply_defer_task(pool, &action.params_json).await,
-        "propose_invoice_draft" => apply_propose_invoice_draft(pool, &action.params_json).await,
-        "set_reminder" => apply_set_reminder(pool, &action.params_json).await,
-        "write_clipboard" => apply_write_clipboard(app, &action.params_json).await,
-        "run_shell_command" => apply_run_shell_command(pool, &action.params_json).await,
-        "send_email" => apply_send_email(pool, app, &action.params_json).await,
-        "update_profile_context" => apply_update_profile_context(pool, &action.params_json).await,
-        other => anyhow::bail!("unsupported action kind: {other}"),
-    }
 }
 
 // ---------- IPC ----------
@@ -802,7 +959,7 @@ pub async fn confirm_action(
         return Err(format!("action #{id} is {} — not pending", action.status));
     }
 
-    let outcome = dispatch(&state.db.pool, &app, &action).await;
+    let outcome = state.actions.dispatch(&state.db.pool, &app, &action).await;
     match outcome {
         Ok(applied) => {
             set_status(&state.db.pool, id, "applied", Some(&applied.json))

@@ -55,6 +55,20 @@ pub trait PackHandle: Send + Sync {
     fn action_kinds(&self) -> &'static [&'static str] {
         &[]
     }
+
+    /// Add this pack's LLM tools to the read-only registry. Called once
+    /// at startup from `lib.rs` after the core tool list is built.
+    /// Default: no tools.
+    fn register_tools(&self, registry: &mut crate::tools::ToolRegistry) {
+        let _ = registry;
+    }
+
+    /// Add this pack's action handlers to the action registry. Called
+    /// once at startup before [`AppState`] is constructed. Default: no
+    /// handlers.
+    fn register_actions(&self, registry: &mut crate::actions::ActionRegistry) {
+        let _ = registry;
+    }
 }
 
 /// A single SQL migration file, bundled into the binary at compile time.

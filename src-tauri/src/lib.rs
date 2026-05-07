@@ -47,6 +47,7 @@ pub struct AppState {
     pub db: Arc<db::Db>,
     pub http: reqwest::Client,
     pub health: Arc<health::Health>,
+    pub actions: Arc<actions::ActionRegistry>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -151,10 +152,21 @@ pub fn run() {
 
             let db_arc = Arc::new(db);
             let health_arc = Arc::new(health::Health::new());
+
+            // Build the action registry: core handlers first, then let
+            // each enabled pack add its own. (No packs registered in v0.2
+            // until the L2E pack lifts in step 8.)
+            let mut action_registry = actions::builtin_registry();
+            for pack in packs::enabled_packs() {
+                pack.register_actions(&mut action_registry);
+            }
+            let actions_arc = Arc::new(action_registry);
+
             handle.manage(AppState {
                 db: db_arc.clone(),
                 http: http.clone(),
                 health: health_arc.clone(),
+                actions: actions_arc,
             });
 
             handle.global_shortcut().register(primary_shortcut)?;

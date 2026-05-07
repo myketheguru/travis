@@ -71,12 +71,19 @@ impl Default for ToolRegistry {
 /// without a user-confirmation gate. Write tools (defer_task, set_reminder,
 /// draft_invoice, write_clipboard) flow through the proposed_action path so
 /// the user keeps a veto.
-pub fn read_only_registry() -> ToolRegistry {
+///
+/// `packs` is the list of enabled packs that may contribute additional
+/// read-only tools. Pass [`crate::packs::enabled_packs()`] for the default
+/// build.
+pub fn read_only_registry(packs: &[&dyn crate::packs::PackHandle]) -> ToolRegistry {
     let mut reg = ToolRegistry::new();
     reg.register(Box::new(web_fetch::WebFetchTool));
     reg.register(Box::new(search_memory::SearchMemoryTool));
     reg.register(Box::new(list_open_tasks::ListOpenTasksTool));
     reg.register(Box::new(clipboard::ReadClipboardTool));
     reg.register(Box::new(open_url::OpenUrlTool));
+    for pack in packs {
+        pack.register_tools(&mut reg);
+    }
     reg
 }
