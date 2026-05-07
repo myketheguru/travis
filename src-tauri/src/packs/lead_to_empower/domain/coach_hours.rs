@@ -110,6 +110,30 @@ pub async fn upsert(
 
     let _ = behavioral::log_event(pool, "coach_hours_logged", Some("coach_hours"), Some(id), None).await;
 
+    // Spine event — surfaces the entry in cross-pack activity timelines.
+    let attrs = serde_json::json!({
+        "coach_hours_id": row.id,
+        "coach_id": row.coach_id,
+        "school_id": row.school_id,
+        "session_date": row.session_date,
+        "hours": row.hours,
+    })
+    .to_string();
+    if let Err(e) = crate::spine::event::record(
+        pool,
+        crate::spine::event::RecordParams {
+            entity_id: None,
+            kind: "coach_hours_logged",
+            pack_slug: Some("lead-to-empower"),
+            occurred_at: None,
+            attributes_json: Some(&attrs),
+        },
+    )
+    .await
+    {
+        tracing::warn!("spine event sync (coach_hours): {e}");
+    }
+
     Ok(row)
 }
 

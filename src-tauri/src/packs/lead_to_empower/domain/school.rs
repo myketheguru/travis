@@ -80,6 +80,23 @@ pub async fn upsert(pool: &SqlitePool, input: SchoolInput) -> Result<School, Dom
     .bind(id)
     .fetch_one(pool)
     .await?;
+
+    // Spine sync — register the school as an entity so it shows up in
+    // cross-pack retrieval. Best-effort; failures don't fail the upsert.
+    if let Err(e) = crate::spine::entity::upsert(
+        pool,
+        crate::spine::entity::UpsertParams {
+            kind: "school",
+            display_name: &row.name,
+            pack_slug: Some("lead-to-empower"),
+            attributes_json: None,
+        },
+    )
+    .await
+    {
+        tracing::warn!("spine entity sync (school upsert): {e}");
+    }
+
     Ok(row)
 }
 

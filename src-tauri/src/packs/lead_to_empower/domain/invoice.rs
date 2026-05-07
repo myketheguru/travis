@@ -87,6 +87,7 @@ pub async fn upsert(pool: &SqlitePool, input: InvoiceInput) -> Result<Invoice, D
 
     let amount_cents = (input.hours_total * input.rate_cents as f64).round() as i64;
 
+    let was_new = input.id.is_none();
     let id = match input.id {
         Some(id) => {
             sqlx::query(
@@ -132,7 +133,48 @@ pub async fn upsert(pool: &SqlitePool, input: InvoiceInput) -> Result<Invoice, D
         .last_insert_rowid(),
     };
 
-    fetch_one(pool, id).await
+    let inv = fetch_one(pool, id).await?;
+
+    // Spine sync — invoice number is the human-facing identifier.
+    if let Err(e) = crate::spine::entity::upsert(
+        pool,
+        crate::spine::entity::UpsertParams {
+            kind: "invoice",
+            display_name: &inv.number,
+            pack_slug: Some("lead-to-empower"),
+            attributes_json: None,
+        },
+    )
+    .await
+    {
+        tracing::warn!("spine entity sync (invoice): {e}");
+    }
+
+    if was_new {
+        let attrs = serde_json::json!({
+            "invoice_id": inv.id,
+            "number": inv.number,
+            "amount_cents": inv.amount_cents,
+            "recipient": inv.recipient,
+        })
+        .to_string();
+        if let Err(e) = crate::spine::event::record(
+            pool,
+            crate::spine::event::RecordParams {
+                entity_id: None,
+                kind: "invoice_drafted",
+                pack_slug: Some("lead-to-empower"),
+                occurred_at: None,
+                attributes_json: Some(&attrs),
+            },
+        )
+        .await
+        {
+            tracing::warn!("spine event sync (invoice drafted): {e}");
+        }
+    }
+
+    Ok(inv)
 }
 
 pub async fn fetch_one(pool: &SqlitePool, id: i64) -> Result<Invoice, DomainError> {
@@ -186,10 +228,34 @@ pub async fn transition_status(
     );
     sqlx::query(&sql).bind(new_status).bind(id).execute(pool).await?;
 
-    let kind = format!("invoice_{new_status}");
-    let _ = behavioral::log_event(pool, &kind, Some("invoice"), Some(id), None).await;
+    let event_kind = format!("invoice_{new_status}");
+    let _ = behavioral::log_event(pool, &event_kind, Some("invoice"), Some(id), None).await;
 
-    fetch_one(pool, id).await
+    let updated = fetch_one(pool, id).await?;
+
+    // Spine event — cross-pack activity timeline picks this up.
+    let attrs = serde_json::json!({
+        "invoice_id": updated.id,
+        "number": updated.number,
+        "new_status": new_status,
+    })
+    .to_string();
+    if let Err(e) = crate::spine::event::record(
+        pool,
+        crate::spine::event::RecordParams {
+            entity_id: None,
+            kind: &event_kind,
+            pack_slug: Some("lead-to-empower"),
+            occurred_at: None,
+            attributes_json: Some(&attrs),
+        },
+    )
+    .await
+    {
+        tracing::warn!("spine event sync (invoice transition): {e}");
+    }
+
+    Ok(updated)
 }
 
 async fn validate_for_send(pool: &SqlitePool, invoice: &Invoice) -> Result<(), DomainError> {

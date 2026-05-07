@@ -76,6 +76,23 @@ pub async fn upsert(pool: &SqlitePool, input: CoachInput) -> Result<Coach, Domai
     .bind(id)
     .fetch_one(pool)
     .await?;
+
+    // Spine sync — register the coach as an entity so it shows up in
+    // cross-pack retrieval. Best-effort; failures don't fail the upsert.
+    if let Err(e) = crate::spine::entity::upsert(
+        pool,
+        crate::spine::entity::UpsertParams {
+            kind: "coach",
+            display_name: &row.name,
+            pack_slug: Some("lead-to-empower"),
+            attributes_json: None,
+        },
+    )
+    .await
+    {
+        tracing::warn!("spine entity sync (coach upsert): {e}");
+    }
+
     Ok(row)
 }
 
