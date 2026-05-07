@@ -6,6 +6,9 @@ export type AppStatus = {
   version: string;
   dbReady: boolean;
   onboarded: boolean;
+  /// Slugs of packs compiled into this build. Used by the Manage tab
+  /// list to hide pack-supplied UI (e.g. Invoices when L2E is off).
+  enabledPacks: string[];
 };
 
 import type { UserProfile } from "../lib/ipc";

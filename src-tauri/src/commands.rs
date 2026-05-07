@@ -12,6 +12,9 @@ pub struct AppStatus {
     pub version: String,
     pub db_ready: bool,
     pub onboarded: bool,
+    /// Slugs of packs compiled into this build. The frontend uses this
+    /// to gate pack-supplied UI tabs (PACKS_AUDIT.md step 11).
+    pub enabled_packs: Vec<String>,
 }
 
 #[tauri::command]
@@ -47,10 +50,16 @@ pub async fn app_status(state: State<'_, AppState>) -> Result<AppStatus, String>
         "app_status: flag={onboarded_flag} profile={profile_exists} -> onboarded={onboarded}"
     );
 
+    let enabled_packs: Vec<String> = crate::packs::enabled_packs()
+        .iter()
+        .map(|p| p.slug().to_string())
+        .collect();
+
     Ok(AppStatus {
         version: env!("CARGO_PKG_VERSION").to_string(),
         db_ready: true,
         onboarded,
+        enabled_packs,
     })
 }
 

@@ -12,13 +12,13 @@ import { useAppStore } from "../stores/app";
 
 type Tab = "ask" | "threads" | "tasks" | "invoices" | "reminders" | "entities" | "summaries" | "asks";
 
-type TabDef = { id: Tab; label: string; diagnostic?: boolean };
+type TabDef = { id: Tab; label: string; diagnostic?: boolean; requiresPack?: string };
 
 const allTabs: TabDef[] = [
   { id: "ask",       label: "Ask" },
   { id: "threads",   label: "Threads" },
   { id: "tasks",     label: "Tasks" },
-  { id: "invoices",  label: "Invoices" },
+  { id: "invoices",  label: "Invoices",   requiresPack: "lead-to-empower" },
   { id: "reminders", label: "Reminders" },
   { id: "entities",  label: "Entities",   diagnostic: true },
   { id: "summaries", label: "Summaries",  diagnostic: true },
@@ -27,7 +27,12 @@ const allTabs: TabDef[] = [
 
 export default function Manage({ onClose }: { onClose: () => void }) {
   const showDiagnostics = useAppStore((s) => s.showDiagnostics);
-  const tabs = allTabs.filter((t) => !t.diagnostic || showDiagnostics);
+  const enabledPacks = useAppStore((s) => s.status?.enabledPacks ?? []);
+  const tabs = allTabs.filter((t) => {
+    if (t.diagnostic && !showDiagnostics) return false;
+    if (t.requiresPack && !enabledPacks.includes(t.requiresPack)) return false;
+    return true;
+  });
   const [tab, setTab] = useState<Tab>("ask");
 
   // If the active tab gets hidden by toggling diagnostics off, fall back to Ask.

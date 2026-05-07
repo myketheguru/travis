@@ -29,7 +29,7 @@ export default function App() {
         setProfile(p);
       }
     } catch {
-      setStatus({ version: "?", dbReady: false, onboarded: false });
+      setStatus({ version: "?", dbReady: false, onboarded: false, enabledPacks: [] });
     }
   }, [setStatus, setProfile]);
 
