@@ -9,6 +9,14 @@ edition = "2021"
 name = "travis_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = ["pack-lead-to-empower"]
+# Vertical packs (PACKS.md). Each gates compilation of one
+# `src/packs/<slug>/` submodule and its registration with
+# `enabled_packs()`. Disable a feature to ship a build without that
+# vertical's domain code, prompts, and action handlers.
+pack-lead-to-empower = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

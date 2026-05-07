@@ -14,6 +14,9 @@
 
 use sqlx::SqlitePool;
 
+#[cfg(feature = "pack-lead-to-empower")]
+pub mod lead_to_empower;
+
 /// A bundled pack. All methods take `&self` so [`PackHandle`] can live behind
 /// a `&'static dyn PackHandle` reference returned from [`enabled_packs`].
 pub trait PackHandle: Send + Sync {
@@ -80,10 +83,14 @@ pub struct PackMigration {
     pub sql: &'static str,
 }
 
-/// Packs compiled into this build. For v0.2 this is empty — the L2E pack
-/// is added in step 8 of the refactor (see PACKS_AUDIT.md).
+/// Packs compiled into this build. Each entry is a `&'static dyn
+/// PackHandle` reference to a unit struct under one of the per-pack
+/// modules below. Enable/disable a pack via its Cargo feature flag.
 pub fn enabled_packs() -> &'static [&'static dyn PackHandle] {
-    &[]
+    &[
+        #[cfg(feature = "pack-lead-to-empower")]
+        &lead_to_empower::LeadToEmpowerPack,
+    ]
 }
 
 /// Run pending migrations for every enabled pack. Idempotent — uses
