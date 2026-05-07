@@ -35,6 +35,10 @@ pub async fn list_emails_sent(
         .map_err(|e| e.to_string())
 }
 
+/// Send a rendered invoice PDF as an email attachment. L2E-specific
+/// (depends on the pack's invoice + PDF modules); compiled only when
+/// the `pack-lead-to-empower` feature is enabled.
+#[cfg(feature = "pack-lead-to-empower")]
 #[tauri::command]
 pub async fn send_invoice_email(
     state: State<'_, AppState>,
@@ -58,7 +62,7 @@ pub async fn send_invoice_email(
         })?;
 
     // Fetch invoice for subject / body.
-    let invoice = crate::domain::invoice::fetch_one(&state.db.pool, invoice_id)
+    let invoice = crate::packs::lead_to_empower::domain::invoice::fetch_one(&state.db.pool, invoice_id)
         .await
         .map_err(|e| format!("fetch invoice: {e}"))?;
 
@@ -70,7 +74,7 @@ pub async fn send_invoice_email(
         sanitize_filename(&invoice.number)
     ));
 
-    crate::pdf::export_invoice(&state.db.pool, invoice_id, &pdf_path, &profile)
+    crate::packs::lead_to_empower::pdf::export_invoice(&state.db.pool, invoice_id, &pdf_path, &profile)
         .await
         .map_err(|e| format!("render invoice pdf: {e}"))?;
 

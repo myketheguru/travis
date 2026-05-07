@@ -27,7 +27,7 @@ pub async fn export_invoice_pdf(
             "user profile not set up — finish onboarding before exporting invoices".to_string()
         })?;
 
-    let saved = crate::pdf::export_invoice(&state.db.pool, invoice_id, &dest, &profile)
+    let saved = super::pdf::export_invoice(&state.db.pool, invoice_id, &dest, &profile)
         .await
         .map_err(|e| format!("export invoice {invoice_id}: {e}"))?;
 
@@ -61,7 +61,7 @@ pub async fn export_invoice_pdf_preview(
         .map_err(|e| format!("create invoice cache dir: {e}"))?;
     let dest = dir.join(format!("invoice-{invoice_id}.pdf"));
 
-    let saved = crate::pdf::export_invoice(&state.db.pool, invoice_id, &dest, &profile)
+    let saved = super::pdf::export_invoice(&state.db.pool, invoice_id, &dest, &profile)
         .await
         .map_err(|e| format!("export invoice {invoice_id}: {e}"))?;
 

@@ -13,6 +13,9 @@
 
 mod actions;
 pub mod domain;
+pub mod domain_cmd;
+pub mod pdf;
+pub mod pdf_cmd;
 
 use crate::packs::PackHandle;
 

@@ -8,7 +8,6 @@ mod conversation;
 mod conversation_cmd;
 mod db;
 mod domain;
-mod domain_cmd;
 mod email;
 mod email_cmd;
 mod feedback;
@@ -23,8 +22,6 @@ mod memory;
 mod memory_cmd;
 mod overlay;
 mod packs;
-mod pdf;
-mod pdf_cmd;
 mod proactive;
 mod reminders;
 mod reminders_cmd;
@@ -33,9 +30,16 @@ mod spine;
 mod startup_error;
 mod summary;
 mod summary_cmd;
+mod task_cmd;
 mod telemetry;
 mod tools;
 mod updater_cmd;
+
+// L2E pack command surface, conditionally compiled. References under
+// `crate::packs::lead_to_empower::{domain_cmd, pdf_cmd}` get aliased
+// here so the invoke_handler list below stays readable.
+#[cfg(feature = "pack-lead-to-empower")]
+use crate::packs::lead_to_empower::{domain_cmd, pdf_cmd};
 
 use std::sync::Arc;
 use tauri::menu::{Menu, MenuItem};
@@ -280,27 +284,27 @@ pub fn run() {
             commands::chat,
             overlay::toggle_overlay,
             overlay::hide_overlay,
-            domain_cmd::db_stats,
-            domain_cmd::list_coaches,
-            domain_cmd::upsert_coach,
-            domain_cmd::delete_coach,
-            domain_cmd::list_schools,
-            domain_cmd::upsert_school,
-            domain_cmd::delete_school,
-            domain_cmd::list_coach_hours,
-            domain_cmd::log_coach_hours,
-            domain_cmd::delete_coach_hours,
-            domain_cmd::list_signing_sheets,
-            domain_cmd::upsert_signing_sheet,
-            domain_cmd::delete_signing_sheet,
-            domain_cmd::list_invoices,
-            domain_cmd::upsert_invoice,
-            domain_cmd::transition_invoice,
-            domain_cmd::delete_invoice,
-            domain_cmd::list_tasks,
-            domain_cmd::upsert_task,
-            domain_cmd::set_task_status,
-            domain_cmd::delete_task,
+            #[cfg(feature = "pack-lead-to-empower")] domain_cmd::db_stats,
+            #[cfg(feature = "pack-lead-to-empower")] domain_cmd::list_coaches,
+            #[cfg(feature = "pack-lead-to-empower")] domain_cmd::upsert_coach,
+            #[cfg(feature = "pack-lead-to-empower")] domain_cmd::delete_coach,
+            #[cfg(feature = "pack-lead-to-empower")] domain_cmd::list_schools,
+            #[cfg(feature = "pack-lead-to-empower")] domain_cmd::upsert_school,
+            #[cfg(feature = "pack-lead-to-empower")] domain_cmd::delete_school,
+            #[cfg(feature = "pack-lead-to-empower")] domain_cmd::list_coach_hours,
+            #[cfg(feature = "pack-lead-to-empower")] domain_cmd::log_coach_hours,
+            #[cfg(feature = "pack-lead-to-empower")] domain_cmd::delete_coach_hours,
+            #[cfg(feature = "pack-lead-to-empower")] domain_cmd::list_signing_sheets,
+            #[cfg(feature = "pack-lead-to-empower")] domain_cmd::upsert_signing_sheet,
+            #[cfg(feature = "pack-lead-to-empower")] domain_cmd::delete_signing_sheet,
+            #[cfg(feature = "pack-lead-to-empower")] domain_cmd::list_invoices,
+            #[cfg(feature = "pack-lead-to-empower")] domain_cmd::upsert_invoice,
+            #[cfg(feature = "pack-lead-to-empower")] domain_cmd::transition_invoice,
+            #[cfg(feature = "pack-lead-to-empower")] domain_cmd::delete_invoice,
+            task_cmd::list_tasks,
+            task_cmd::upsert_task,
+            task_cmd::set_task_status,
+            task_cmd::delete_task,
             journal::journal_ingest,
             journal::list_journal_entries,
             memory_cmd::index_all_journal_entries,
@@ -318,12 +322,12 @@ pub fn run() {
             summary_cmd::generate_weekly_summary,
             identity_cmd::list_entities,
             identity_cmd::get_profile_blurb,
-            pdf_cmd::export_invoice_pdf,
-            pdf_cmd::export_invoice_pdf_preview,
+            #[cfg(feature = "pack-lead-to-empower")] pdf_cmd::export_invoice_pdf,
+            #[cfg(feature = "pack-lead-to-empower")] pdf_cmd::export_invoice_pdf_preview,
             email_cmd::get_smtp_config,
             email_cmd::set_smtp_config,
             email_cmd::list_emails_sent,
-            email_cmd::send_invoice_email,
+            #[cfg(feature = "pack-lead-to-empower")] email_cmd::send_invoice_email,
             email_cmd::send_email_gmail,
             email_cmd::send_email_outlook,
             flags_cmd::refresh_flags,

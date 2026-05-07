@@ -132,36 +132,4 @@ pub async fn delete_invoice(state: State<'_, AppState>, id: i64) -> Result<(), S
     domain::invoice::delete(&state.db.pool, id).await.map_err(err)
 }
 
-#[tauri::command]
-pub async fn list_tasks(
-    state: State<'_, AppState>,
-    filter: Option<domain::task::TaskFilter>,
-) -> Result<Vec<domain::task::Task>, String> {
-    domain::task::list(&state.db.pool, filter.unwrap_or_default())
-        .await
-        .map_err(err)
-}
-
-#[tauri::command]
-pub async fn upsert_task(
-    state: State<'_, AppState>,
-    input: domain::task::TaskInput,
-) -> Result<domain::task::Task, String> {
-    domain::task::upsert(&state.db.pool, input).await.map_err(err)
-}
-
-#[tauri::command]
-pub async fn set_task_status(
-    state: State<'_, AppState>,
-    id: i64,
-    status: String,
-) -> Result<domain::task::Task, String> {
-    domain::task::set_status(&state.db.pool, id, &status)
-        .await
-        .map_err(err)
-}
-
-#[tauri::command]
-pub async fn delete_task(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    domain::task::delete(&state.db.pool, id).await.map_err(err)
-}
+// Task commands moved to crate::task_cmd (task is core, not L2E).
