@@ -146,15 +146,16 @@ pub struct ExtractedTask {
     pub notes: Option<String>,
 }
 
+/// Pack-aware bag of named-entity mentions extracted from a journal note.
+///
+/// Buckets are pluralised entity kinds declared by enabled packs — for the
+/// L2E pack, that's `coaches` / `schools` / `depts`. The shape stays a
+/// `HashMap` so a future pack with different entity kinds (e.g. tutoring
+/// declaring `tutors` / `students` / `parents`) just adds buckets without
+/// any core schema change.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct EntityMentions {
-    #[serde(default)]
-    pub coaches: Vec<String>,
-    #[serde(default)]
-    pub schools: Vec<String>,
-    #[serde(default)]
-    pub depts: Vec<String>,
-}
+#[serde(transparent)]
+pub struct EntityMentions(pub std::collections::HashMap<String, Vec<String>>);
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -271,7 +272,31 @@ fn parse_extraction(raw: &str) -> Result<Extraction, serde_json::Error> {
 
 /// JSON Schema for the `report_extraction` tool — mirrors the `Extraction`
 /// struct. Provider-validated, so the model can't return malformed shapes.
-fn build_extraction_tool() -> ToolDef {
+///
+/// `action_kinds` is the live action registry's kinds (so pack-supplied
+/// handlers like `propose_invoice_draft` are valid only when the pack is
+/// enabled). `entity_kinds` is the union of every enabled pack's declared
+/// kinds; each becomes a pluralised bucket under `entities` in the schema.
+fn build_extraction_tool(action_kinds: &[&str], entity_kinds: &[&str]) -> ToolDef {
+    let entity_props: serde_json::Map<String, serde_json::Value> = entity_kinds
+        .iter()
+        .map(|k| {
+            (
+                format!("{k}s"),
+                serde_json::json!({
+                    "type": "array",
+                    "items": { "type": "string" }
+                }),
+            )
+        })
+        .collect();
+    let entity_props = serde_json::Value::Object(entity_props);
+
+    let action_kind_enum: Vec<serde_json::Value> = action_kinds
+        .iter()
+        .map(|k| serde_json::Value::String((*k).to_string()))
+        .collect();
+
     ToolDef {
         name: "report_extraction".into(),
         description: "Report your structured response: a brief conversational reply for the user, plus any tasks/entities/reminders/etc you extracted from their note. Always call this tool exactly once.".into(),
@@ -302,11 +327,7 @@ fn build_extraction_tool() -> ToolDef {
                 },
                 "entities": {
                     "type": "object",
-                    "properties": {
-                        "coaches": { "type": "array", "items": { "type": "string" } },
-                        "schools": { "type": "array", "items": { "type": "string" } },
-                        "depts": { "type": "array", "items": { "type": "string" } }
-                    }
+                    "properties": entity_props
                 },
                 "reminders": {
                     "type": "array",
@@ -347,7 +368,7 @@ fn build_extraction_tool() -> ToolDef {
                         "properties": {
                             "kind": {
                                 "type": "string",
-                                "enum": ["defer_task", "propose_invoice_draft", "set_reminder", "write_clipboard", "run_shell_command", "send_email", "update_profile_context"]
+                                "enum": action_kind_enum
                             },
                             "rationale": { "type": "string", "description": "Short human-readable explanation shown verbatim on the confirm card." },
                             "params": {
@@ -563,7 +584,12 @@ pub async fn journal_ingest(
     // finalizing via `report_extraction`. We loop, dispatching tool calls and
     // feeding results back, until the model emits report_extraction or we hit
     // the iteration cap (then we force the extraction tool).
-    let extraction_tool = build_extraction_tool();
+    let action_kinds: Vec<&'static str> = state.actions.kinds();
+    let entity_kinds: Vec<&'static str> = crate::packs::enabled_packs()
+        .iter()
+        .flat_map(|p| p.entity_kinds().iter().copied())
+        .collect();
+    let extraction_tool = build_extraction_tool(&action_kinds, &entity_kinds);
     let extraction_name = extraction_tool.name.clone();
     let read_registry = tools::read_only_registry(crate::packs::enabled_packs());
     let mut tool_defs: Vec<ToolDef> = vec![extraction_tool.clone()];
@@ -782,14 +808,17 @@ pub async fn journal_ingest(
         }
 
         if ok {
-            for name in &extraction.entities.coaches {
-                identity::record_mention(&state.db.pool, "coach", name).await;
-            }
-            for name in &extraction.entities.schools {
-                identity::record_mention(&state.db.pool, "school", name).await;
-            }
-            for name in &extraction.entities.depts {
-                identity::record_mention(&state.db.pool, "dept", name).await;
+            // Record mentions for every entity kind declared by an enabled
+            // pack. Bucket name in the JSON is pluralised entity kind.
+            for pack in crate::packs::enabled_packs() {
+                for kind in pack.entity_kinds() {
+                    let bucket = format!("{kind}s");
+                    if let Some(names) = extraction.entities.0.get(&bucket) {
+                        for name in names {
+                            identity::record_mention(&state.db.pool, kind, name).await;
+                        }
+                    }
+                }
             }
         }
     }
@@ -832,7 +861,7 @@ pub async fn journal_ingest(
     if !is_conversational {
         for a in &extraction.proposed_actions {
             let kind = a.kind.trim();
-            if !actions::supported_kinds().contains(&kind) {
+            if !action_kinds.contains(&kind) {
                 tracing::warn!("ignoring unsupported proposed action kind: {kind}");
                 continue;
             }

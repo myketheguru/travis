@@ -727,24 +727,9 @@ impl ActionHandler for UpdateProfileContextHandler {
     }
 }
 
-// ---------- Legacy free-function shim (journal extraction still uses) ----------
-//
-// Step 9 generalises the journal extraction prompt to derive its action
-// list from the live registry. Until then this thin shim returns the
-// built-in kinds so journal.rs keeps working. Pack-supplied kinds will
-// not flow through this list — but they don't yet exist.
-
-pub fn supported_kinds() -> &'static [&'static str] {
-    &[
-        "defer_task",
-        "propose_invoice_draft",
-        "set_reminder",
-        "write_clipboard",
-        "run_shell_command",
-        "send_email",
-        "update_profile_context",
-    ]
-}
+// supported_kinds() removed — callers (journal extraction) now consult
+// the live ActionRegistry via state.actions.kinds() so pack-supplied
+// handlers participate. See step 9 of PACKS_AUDIT.md.
 
 // ---------- IPC ----------
 

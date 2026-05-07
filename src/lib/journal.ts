@@ -3,11 +3,11 @@ import type { Task } from "./domain";
 import type { Thread } from "./conversation";
 import type { ProposedAction } from "./actions";
 
-export type EntityMentions = {
-  coaches: string[];
-  schools: string[];
-  depts: string[];
-};
+/// Pack-aware bag of named-entity mentions extracted from a journal note.
+/// Keys are pluralised entity kinds declared by the enabled packs (for the
+/// L2E pack: `coaches`, `schools`, `depts`). Missing keys mean the LLM
+/// returned no matches for that bucket — read with `?? []` to be safe.
+export type EntityMentions = Record<string, string[]>;
 
 export type ExtractedReminder = {
   text: string;

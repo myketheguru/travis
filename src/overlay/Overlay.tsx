@@ -171,9 +171,9 @@ export default function Overlay() {
       parts.push(`${r.tasksCreated.length} new`);
     }
     const entities = [
-      ...r.entities.coaches.map((n) => `Coach ${n}`),
-      ...r.entities.schools,
-      ...r.entities.depts,
+      ...(r.entities.coaches ?? []).map((n) => `Coach ${n}`),
+      ...(r.entities.schools ?? []),
+      ...(r.entities.depts ?? []),
     ];
     if (entities.length > 0) {
       const list = entities.slice(0, 2).join(" · ") + (entities.length > 2 ? `…` : "");
