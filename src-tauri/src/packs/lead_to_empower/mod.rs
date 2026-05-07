@@ -12,6 +12,7 @@
 //! modules, `pdf/`, and the L2E commands move next.
 
 mod actions;
+pub mod domain;
 
 use crate::packs::PackHandle;
 
