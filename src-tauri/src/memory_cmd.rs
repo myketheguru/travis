@@ -236,8 +236,9 @@ offer to log it.",
         first = first,
     );
 
-    // Append vertical-pack guidance (PACKS_AUDIT.md step 10).
-    let pack_fragment = crate::packs::prompt_fragment();
+    // Append vertical-pack guidance (PACKS_AUDIT.md step 10). Only
+    // runtime-enabled packs contribute fragments.
+    let pack_fragment = crate::packs::prompt_fragment(&state.enabled_packs);
     if !pack_fragment.is_empty() {
         system.push_str("\n\n");
         system.push_str(&pack_fragment);

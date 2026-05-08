@@ -17,7 +17,7 @@ use crate::secrets;
 use crate::telemetry;
 use crate::AppState;
 
-fn build_system_prompt(profile: &UserProfile) -> String {
+fn build_system_prompt(profile: &UserProfile, pack_fragment: &str) -> String {
     let name = profile.name.trim();
     let first = name.split_whitespace().next().unwrap_or(name);
     let role = profile.role.trim();
@@ -135,10 +135,9 @@ You also have access to read-only tools you can call autonomously during the con
 
     // Append vertical-pack guidance — each enabled pack contributes a
     // prompt fragment describing its domain (PACKS_AUDIT.md step 10).
-    let pack_fragment = crate::packs::prompt_fragment();
     if !pack_fragment.is_empty() {
         prompt.push_str("\n\n");
-        prompt.push_str(&pack_fragment);
+        prompt.push_str(pack_fragment);
     }
     prompt
 }
@@ -594,13 +593,14 @@ pub async fn journal_ingest(
     // feeding results back, until the model emits report_extraction or we hit
     // the iteration cap (then we force the extraction tool).
     let action_kinds: Vec<&'static str> = state.actions.kinds();
-    let entity_kinds: Vec<&'static str> = crate::packs::enabled_packs()
+    let entity_kinds: Vec<&'static str> = state
+        .enabled_packs
         .iter()
         .flat_map(|p| p.entity_kinds().iter().copied())
         .collect();
     let extraction_tool = build_extraction_tool(&action_kinds, &entity_kinds);
     let extraction_name = extraction_tool.name.clone();
-    let read_registry = tools::read_only_registry(crate::packs::enabled_packs());
+    let read_registry = tools::read_only_registry(&state.enabled_packs);
     let mut tool_defs: Vec<ToolDef> = vec![extraction_tool.clone()];
     tool_defs.extend(read_registry.definitions());
 
@@ -622,7 +622,10 @@ pub async fn journal_ingest(
                 ToolChoice::Auto
             };
             let opts = ChatWithToolsOptions {
-                system: Some(build_system_prompt(&profile)),
+                system: Some(build_system_prompt(
+                    &profile,
+                    &crate::packs::prompt_fragment(&state.enabled_packs),
+                )),
                 cache_system: true,
                 temperature: Some(0.3),
                 max_tokens: Some(1500),
@@ -819,7 +822,7 @@ pub async fn journal_ingest(
         if ok {
             // Record mentions for every entity kind declared by an enabled
             // pack. Bucket name in the JSON is pluralised entity kind.
-            for pack in crate::packs::enabled_packs() {
+            for pack in &state.enabled_packs {
                 for kind in pack.entity_kinds() {
                     let bucket = format!("{kind}s");
                     if let Some(names) = extraction.entities.0.get(&bucket) {

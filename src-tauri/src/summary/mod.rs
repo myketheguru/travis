@@ -20,28 +20,26 @@ pub struct Summary {
     pub created_at: String,
 }
 
-fn daily_system_prompt(profile: &UserProfile) -> String {
+fn daily_system_prompt(profile: &UserProfile, pack_fragment: &str) -> String {
     let mut prompt = format!(
         "You generate brief operational summaries for the user.\n\n{}\n\nOutput 2-4 sentences. No headers. Focus on what got done and what's outstanding.",
         profile.context_block(),
     );
-    let pack_fragment = crate::packs::prompt_fragment();
     if !pack_fragment.is_empty() {
         prompt.push_str("\n\n");
-        prompt.push_str(&pack_fragment);
+        prompt.push_str(pack_fragment);
     }
     prompt
 }
 
-fn weekly_system_prompt(profile: &UserProfile) -> String {
+fn weekly_system_prompt(profile: &UserProfile, pack_fragment: &str) -> String {
     let mut prompt = format!(
         "You generate brief operational weekly summaries for the user.\n\n{}\n\nIdentify 1-2 patterns or recurring themes from the week. Output 4-6 sentences. No headers. Focus on what got done, what's outstanding, and patterns.",
         profile.context_block(),
     );
-    let pack_fragment = crate::packs::prompt_fragment();
     if !pack_fragment.is_empty() {
         prompt.push_str("\n\n");
-        prompt.push_str(&pack_fragment);
+        prompt.push_str(pack_fragment);
     }
     prompt
 }
@@ -226,7 +224,10 @@ pub async fn generate_daily(state: &AppState, date: &str) -> anyhow::Result<Summ
         .chat(
             vec![Message::user(user_msg)],
             ChatOptions {
-                system: Some(daily_system_prompt(&profile)),
+                system: Some(daily_system_prompt(
+                    &profile,
+                    &crate::packs::prompt_fragment(&state.enabled_packs),
+                )),
                 cache_system: true,
                 json_mode: false,
                 temperature: Some(0.3),
@@ -345,7 +346,10 @@ pub async fn generate_weekly(state: &AppState, week_start: &str) -> anyhow::Resu
         .chat(
             vec![Message::user(user_msg)],
             ChatOptions {
-                system: Some(weekly_system_prompt(&profile)),
+                system: Some(weekly_system_prompt(
+                    &profile,
+                    &crate::packs::prompt_fragment(&state.enabled_packs),
+                )),
                 cache_system: true,
                 json_mode: false,
                 temperature: Some(0.3),

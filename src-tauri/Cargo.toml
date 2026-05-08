@@ -10,17 +10,13 @@ name = "travis_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
-default = ["pack-lead-to-empower"]
-# Vertical packs (PACKS.md). Each gates compilation of one
-# `src/packs/<slug>/` submodule and its registration with
-# `enabled_packs()`. Disable a feature to ship a build without that
-# vertical's domain code, prompts, and action handlers.
-#
-# Until the runtime pack-selection layer lands, only one pack ships
-# in the default build (`pack-lead-to-empower`). Build with
-# `--features pack-tutoring` to add the tutoring pack to a build,
-# or with `--no-default-features --features pack-tutoring` for a
-# tutoring-only build.
+# Default builds bundle every shipped pack. Users pick which packs to
+# enable at runtime via onboarding or Settings → Packs (toggling
+# writes `meta.pack.<slug>.enabled`). The Cargo features themselves
+# are kept as a build-time lever for distros / contributors who want
+# to ship narrow binaries — e.g. `--no-default-features --features
+# pack-tutoring` for a tutoring-only build.
+default = ["pack-lead-to-empower", "pack-tutoring"]
 pack-lead-to-empower = []
 pack-tutoring        = []
 

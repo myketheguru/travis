@@ -16,7 +16,7 @@ use std::time::Duration;
 use chrono::{Datelike, Timelike};
 use serde::Deserialize;
 use sqlx::SqlitePool;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_notification::NotificationExt;
 use tokio::time::sleep;
 
@@ -413,7 +413,7 @@ fn build_nudge_tool() -> ToolDef {
     }
 }
 
-fn build_system_prompt(profile: &UserProfile) -> String {
+fn build_system_prompt(profile: &UserProfile, pack_fragment: &str) -> String {
     let first = profile.first_name();
     let mut prompt = format!(
         r#"You are Travis, a personal operations assistant.
@@ -443,10 +443,9 @@ Output via the report_nudge tool exactly once. If unsure, set shouldNudge=false.
     );
 
     // Append vertical-pack guidance (PACKS_AUDIT.md step 10).
-    let pack_fragment = crate::packs::prompt_fragment();
     if !pack_fragment.is_empty() {
         prompt.push_str("\n\n");
-        prompt.push_str(&pack_fragment);
+        prompt.push_str(pack_fragment);
     }
     prompt
 }
@@ -548,7 +547,15 @@ async fn tick(
         .chat_with_tools(
             vec![Message::user(user_msg)],
             ChatWithToolsOptions {
-                system: Some(build_system_prompt(&profile)),
+                system: Some({
+                    // Pull the runtime-enabled pack list off AppState
+                    // so disabled packs don't contribute to the
+                    // proactive nudge prompt.
+                    let state = app.state::<crate::AppState>();
+                    let pack_fragment =
+                        crate::packs::prompt_fragment(&state.enabled_packs);
+                    build_system_prompt(&profile, &pack_fragment)
+                }),
                 cache_system: true,
                 temperature: Some(0.5),
                 max_tokens: Some(400),

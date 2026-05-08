@@ -50,7 +50,8 @@ pub async fn app_status(state: State<'_, AppState>) -> Result<AppStatus, String>
         "app_status: flag={onboarded_flag} profile={profile_exists} -> onboarded={onboarded}"
     );
 
-    let enabled_packs: Vec<String> = crate::packs::enabled_packs()
+    let enabled_packs: Vec<String> = state
+        .enabled_packs
         .iter()
         .map(|p| p.slug().to_string())
         .collect();

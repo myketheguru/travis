@@ -8,9 +8,23 @@
 //! - declared entity kinds (so identity::record_mention accepts them)
 //! - declared action kinds (registered with the action dispatcher)
 //!
-//! For v0.2, packs are compiled in. Their migrations are bundled at compile
-//! time as `&'static [PackMigration]`. User-installable packs (drag-and-drop
-//! `.zip` → run) come in Phase 2 of the roadmap.
+//! ## Two layers of pack gating
+//!
+//! 1. **Compile-time** — Cargo feature `pack-<slug>` controls whether the
+//!    pack module compiles into the binary. [`compiled_in_packs`] returns
+//!    every pack that did. Used by distros / contributors building narrow
+//!    binaries (`--no-default-features --features pack-tutoring`).
+//!
+//! 2. **Runtime** — `meta.pack.<slug>.enabled` (per-DB) controls whether
+//!    a compiled-in pack actually participates. [`resolve_enabled_packs`]
+//!    reads the flag and filters; the resolved list lives on
+//!    [`crate::AppState::enabled_packs`]. Toggling requires app restart
+//!    because action/tool registries are built once at startup.
+//!
+//! Migrations run for every compiled-in pack regardless of the runtime
+//! flag — that way toggling a pack on later doesn't trigger a migration
+//! that could fail. Cost is empty unused tables for disabled packs
+//! (negligible in SQLite).
 
 use sqlx::SqlitePool;
 
@@ -21,7 +35,7 @@ pub mod lead_to_empower;
 pub mod tutoring;
 
 /// A bundled pack. All methods take `&self` so [`PackHandle`] can live behind
-/// a `&'static dyn PackHandle` reference returned from [`enabled_packs`].
+/// a `&'static dyn PackHandle` reference returned from [`compiled_in_packs`].
 pub trait PackHandle: Send + Sync {
     /// Stable identifier — must match the `[pack].slug` field in the
     /// pack manifest. Lowercase, hyphens, no whitespace.
@@ -33,6 +47,22 @@ pub trait PackHandle: Send + Sync {
     /// Pack version, semver. Compared against `pack.travis_min` in the
     /// manifest at install time (currently a no-op for compiled-in packs).
     fn version(&self) -> &'static str;
+
+    /// One-line description of the vertical this pack supports. Shown to
+    /// users in the onboarding pack picker and Settings → Packs panel.
+    fn description(&self) -> &'static str {
+        ""
+    }
+
+    /// First-encounter state — whether this pack should be enabled by
+    /// default the first time a user encounters it (no `meta.pack.<slug>.
+    /// enabled` row exists yet). Existing packs that shipped before
+    /// runtime selection landed return `true` to preserve their users'
+    /// experience. New packs returning `false` requires the user to opt
+    /// in via onboarding or Settings → Packs.
+    fn default_enabled(&self) -> bool {
+        false
+    }
 
     /// Migrations the pack contributes, in apply order. Numbering is
     /// independent of core's `_sqlx_migrations`; tracked per-pack in
@@ -70,8 +100,8 @@ pub trait PackHandle: Send + Sync {
     }
 
     /// Add this pack's action handlers to the action registry. Called
-    /// once at startup before [`AppState`] is constructed. Default: no
-    /// handlers.
+    /// once at startup before [`crate::AppState`] is constructed. Default:
+    /// no handlers.
     fn register_actions(&self, registry: &mut crate::actions::ActionRegistry) {
         let _ = registry;
     }
@@ -86,10 +116,9 @@ pub struct PackMigration {
     pub sql: &'static str,
 }
 
-/// Packs compiled into this build. Each entry is a `&'static dyn
-/// PackHandle` reference to a unit struct under one of the per-pack
-/// modules below. Enable/disable a pack via its Cargo feature flag.
-pub fn enabled_packs() -> &'static [&'static dyn PackHandle] {
+/// Every pack that's been compiled into this build. The Cargo features
+/// `pack-<slug>` control which entries are present.
+pub fn compiled_in_packs() -> &'static [&'static dyn PackHandle] {
     &[
         #[cfg(feature = "pack-lead-to-empower")]
         &lead_to_empower::LeadToEmpowerPack,
@@ -98,13 +127,77 @@ pub fn enabled_packs() -> &'static [&'static dyn PackHandle] {
     ]
 }
 
-/// Run pending migrations for every enabled pack. Idempotent — uses
-/// `meta.pack.<slug>.schema_version` to track the highest-applied number
-/// and skips anything already done.
+/// Format the meta key that holds a pack's runtime-enabled flag.
+fn enabled_meta_key(slug: &str) -> String {
+    format!("pack.{slug}.enabled")
+}
+
+/// Read a pack's `meta.pack.<slug>.enabled` flag, falling back to the
+/// pack's [`PackHandle::default_enabled`] when no row exists.
+pub async fn is_pack_enabled(
+    pool: &SqlitePool,
+    pack: &dyn PackHandle,
+) -> anyhow::Result<bool> {
+    let key = enabled_meta_key(pack.slug());
+    let row: Option<(String,)> = sqlx::query_as("SELECT value FROM meta WHERE key = ?1")
+        .bind(&key)
+        .fetch_optional(pool)
+        .await?;
+    Ok(match row {
+        Some((v,)) => v == "true",
+        None => pack.default_enabled(),
+    })
+}
+
+/// Write a pack's runtime-enabled flag. Idempotent. Settings → Packs and
+/// the onboarding pack picker call this.
+pub async fn set_pack_enabled(
+    pool: &SqlitePool,
+    slug: &str,
+    enabled: bool,
+) -> anyhow::Result<()> {
+    let key = enabled_meta_key(slug);
+    let value = if enabled { "true" } else { "false" };
+    sqlx::query(
+        "INSERT INTO meta(key, value, updated_at)
+         VALUES (?1, ?2, CURRENT_TIMESTAMP)
+         ON CONFLICT(key) DO UPDATE SET
+            value = excluded.value,
+            updated_at = CURRENT_TIMESTAMP",
+    )
+    .bind(&key)
+    .bind(value)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Resolve which compiled-in packs are enabled at runtime, reading
+/// `meta.pack.<slug>.enabled` for each and falling back to the pack's
+/// [`PackHandle::default_enabled`] when no flag exists.
+///
+/// Called once at app startup. The result populates
+/// [`crate::AppState::enabled_packs`]; runtime changes via
+/// [`set_pack_enabled`] take effect on next launch.
+pub async fn resolve_enabled_packs(
+    pool: &SqlitePool,
+) -> anyhow::Result<Vec<&'static dyn PackHandle>> {
+    let mut out: Vec<&'static dyn PackHandle> = Vec::new();
+    for pack in compiled_in_packs() {
+        if is_pack_enabled(pool, *pack).await? {
+            out.push(*pack);
+        }
+    }
+    Ok(out)
+}
+
+/// Run pending migrations for every compiled-in pack — regardless of
+/// runtime-enable state. Idempotent; uses `meta.pack.<slug>.schema_version`
+/// to skip anything already done.
 ///
 /// Called once from `db::Db::open` after core migrations succeed.
 pub async fn run_pack_migrations(pool: &SqlitePool) -> anyhow::Result<()> {
-    for pack in enabled_packs() {
+    for pack in compiled_in_packs() {
         run_one_pack(pool, *pack).await?;
     }
     Ok(())
@@ -158,19 +251,12 @@ async fn current_version(pool: &SqlitePool, key: &str) -> anyhow::Result<i64> {
     Ok(row.and_then(|(v,)| v.parse::<i64>().ok()).unwrap_or(0))
 }
 
-/// True when a pack with the given slug is enabled in this build. Used by
-/// the frontend gating logic (`app_status` exposes this) to show or hide
-/// pack-supplied UI tabs.
-pub fn is_enabled(slug: &str) -> bool {
-    enabled_packs().iter().any(|p| p.slug() == slug)
-}
-
-/// Concatenated system-prompt fragments from every enabled pack, separated
-/// by blank lines. Empty string when no fragments. Append to a core prompt
-/// to give the LLM pack-specific operational context (entity vocabulary,
-/// example queries, vertical-specific behaviour).
-pub fn prompt_fragment() -> String {
-    let parts: Vec<&'static str> = enabled_packs()
+/// Concatenated system-prompt fragments from the supplied packs, separated
+/// by blank lines. Empty string when no fragments. Pass
+/// [`crate::AppState::enabled_packs`] (or any subset) to limit which
+/// packs contribute.
+pub fn prompt_fragment(packs: &[&dyn PackHandle]) -> String {
+    let parts: Vec<&'static str> = packs
         .iter()
         .filter_map(|p| p.prompt_fragment())
         .collect();

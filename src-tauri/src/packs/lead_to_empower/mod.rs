@@ -36,6 +36,17 @@ impl PackHandle for LeadToEmpowerPack {
         "0.1.0"
     }
 
+    fn description(&self) -> &'static str {
+        "After-school enrichment program operations — coaches placed at \
+         schools, billable hours, signed timesheets, NYC DoF invoicing."
+    }
+
+    fn default_enabled(&self) -> bool {
+        // Existing v0.2.0 builds shipped with L2E enabled by default;
+        // returning true preserves that behaviour for users upgrading.
+        true
+    }
+
     fn prompt_fragment(&self) -> Option<&'static str> {
         Some(PROMPT_FRAGMENT)
     }

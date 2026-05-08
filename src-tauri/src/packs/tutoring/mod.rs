@@ -38,6 +38,15 @@ impl PackHandle for TutoringPack {
         "0.1.0"
     }
 
+    fn description(&self) -> &'static str {
+        "1:1 tutoring agency operations — tutors paired with students, \
+         session logs, periodic progress reports to parents, billing \
+         the parent for hours."
+    }
+
+    // default_enabled defaults to false — new packs require the user to
+    // opt in explicitly via onboarding or Settings → Packs.
+
     fn migrations(&self) -> &'static [PackMigration] {
         MIGRATIONS
     }

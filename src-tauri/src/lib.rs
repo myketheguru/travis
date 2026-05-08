@@ -52,6 +52,10 @@ pub struct AppState {
     pub http: reqwest::Client,
     pub health: Arc<health::Health>,
     pub actions: Arc<actions::ActionRegistry>,
+    /// Compiled-in packs that the user has enabled at runtime
+    /// (`meta.pack.<slug>.enabled`). Resolved once at startup; toggling
+    /// via [`packs::set_pack_enabled`] takes effect on next launch.
+    pub enabled_packs: Vec<&'static dyn packs::PackHandle>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -157,11 +161,30 @@ pub fn run() {
             let db_arc = Arc::new(db);
             let health_arc = Arc::new(health::Health::new());
 
+            // Resolve which compiled-in packs the user has enabled at
+            // runtime via `meta.pack.<slug>.enabled` (PACKS.md "two
+            // layers of pack gating"). First-encounter packs fall back
+            // to PackHandle::default_enabled.
+            let enabled_packs = match tauri::async_runtime::block_on(
+                packs::resolve_enabled_packs(&db_arc.pool),
+            ) {
+                Ok(list) => list,
+                Err(e) => {
+                    startup_error::die(
+                        Some(&data_dir),
+                        format!(
+                            "Travis couldn't resolve which packs are enabled.\n\n\
+                             Details: {e}"
+                        ),
+                    );
+                }
+            };
+
             // Build the action registry: core handlers first, then let
-            // each enabled pack add its own. (No packs registered in v0.2
-            // until the L2E pack lifts in step 8.)
+            // each enabled pack add its own. Disabled packs don't
+            // register, so the LLM doesn't see their action kinds.
             let mut action_registry = actions::builtin_registry();
-            for pack in packs::enabled_packs() {
+            for pack in &enabled_packs {
                 pack.register_actions(&mut action_registry);
             }
             let actions_arc = Arc::new(action_registry);
@@ -171,6 +194,7 @@ pub fn run() {
                 http: http.clone(),
                 health: health_arc.clone(),
                 actions: actions_arc,
+                enabled_packs,
             });
 
             handle.global_shortcut().register(primary_shortcut)?;
