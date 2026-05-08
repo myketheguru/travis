@@ -160,7 +160,238 @@ pub async fn pack_table_list(
     Ok(result)
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableGetParams {
+    pub pack_slug: String,
+    pub table_slug: String,
+    pub id: i64,
+}
+
+/// Auto-CRUD single-row fetch. Returns a JSON object keyed by field slug,
+/// or an error if the row doesn't exist.
+#[tauri::command]
+pub async fn pack_table_get(
+    state: State<'_, AppState>,
+    params: TableGetParams,
+) -> Result<serde_json::Value, String> {
+    let table = lookup_table(&state, &params.pack_slug, &params.table_slug)?;
+    let columns = table
+        .fields
+        .iter()
+        .map(|f| f.slug)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!("SELECT {columns} FROM {} WHERE id = ?1", table.slug);
+    let row = sqlx::query(&sql)
+        .bind(params.id)
+        .fetch_optional(&state.db.pool)
+        .await
+        .map_err(|e| format!("query {}: {e}", table.slug))?;
+    row.map(|r| row_to_json(&r, table.fields))
+        .ok_or_else(|| format!("not found: {}#{}", table.slug, params.id))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableUpsertParams {
+    pub pack_slug: String,
+    pub table_slug: String,
+    pub payload: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Auto-CRUD insert / update. Builds SQL from the table's writable fields
+/// (every field except the auto-managed `id` and `Timestamp`-typed
+/// columns). Spine-syncs to `entity` when the table declares
+/// `entity_kind`. Returns the resulting row.
+#[tauri::command]
+pub async fn pack_table_upsert(
+    state: State<'_, AppState>,
+    params: TableUpsertParams,
+) -> Result<serde_json::Value, String> {
+    let table = lookup_table(&state, &params.pack_slug, &params.table_slug)?;
+
+    // Validate required fields are present and non-null.
+    for f in table.fields {
+        if f.required && !is_managed_field(f.slug, &f.field_type) {
+            match params.payload.get(f.slug) {
+                None | Some(serde_json::Value::Null) => {
+                    return Err(format!("required field '{}' is missing", f.slug));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let writable: Vec<&packs::FieldDef> = table
+        .fields
+        .iter()
+        .filter(|f| !is_managed_field(f.slug, &f.field_type))
+        .collect();
+
+    let existing_id = params.payload.get("id").and_then(|v| v.as_i64());
+
+    let id = if let Some(existing) = existing_id {
+        let set_clause = writable
+            .iter()
+            .enumerate()
+            .map(|(i, f)| format!("{} = ?{}", f.slug, i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let updated_clause = if table.fields.iter().any(|f| f.slug == "updated_at") {
+            ", updated_at = CURRENT_TIMESTAMP"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "UPDATE {} SET {set_clause}{updated_clause} WHERE id = ?{}",
+            table.slug,
+            writable.len() + 1,
+        );
+
+        let mut q = sqlx::query(&sql);
+        for f in &writable {
+            let v = params
+                .payload
+                .get(f.slug)
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            q = bind_for_field(q, &f.field_type, v);
+        }
+        q = q.bind(existing);
+        q.execute(&state.db.pool)
+            .await
+            .map_err(|e| format!("update {}: {e}", table.slug))?;
+        existing
+    } else {
+        let columns = writable.iter().map(|f| f.slug).collect::<Vec<_>>().join(", ");
+        let placeholders = (1..=writable.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "INSERT INTO {} ({columns}) VALUES ({placeholders})",
+            table.slug,
+        );
+
+        let mut q = sqlx::query(&sql);
+        for f in &writable {
+            let v = params
+                .payload
+                .get(f.slug)
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            q = bind_for_field(q, &f.field_type, v);
+        }
+        let result = q
+            .execute(&state.db.pool)
+            .await
+            .map_err(|e| format!("insert {}: {e}", table.slug))?;
+        result.last_insert_rowid()
+    };
+
+    // Spine sync — register the row's display field as an entity for
+    // cross-pack retrieval.
+    if let Some(kind) = table.entity_kind {
+        let display_sql = format!(
+            "SELECT {} FROM {} WHERE id = ?1",
+            table.display_field, table.slug
+        );
+        let display_value: Result<Option<String>, _> = sqlx::query_scalar(&display_sql)
+            .bind(id)
+            .fetch_optional(&state.db.pool)
+            .await
+            .map(|opt| opt.flatten());
+        if let Ok(Some(name)) = display_value {
+            if let Err(e) = crate::spine::entity::upsert(
+                &state.db.pool,
+                crate::spine::entity::UpsertParams {
+                    kind,
+                    display_name: &name,
+                    pack_slug: Some(params.pack_slug.as_str()),
+                    attributes_json: None,
+                },
+            )
+            .await
+            {
+                tracing::warn!("spine entity sync ({} {}): {e}", params.pack_slug, table.slug);
+            }
+        }
+    }
+
+    // Return the resulting row in the same shape as pack_table_get.
+    let columns = table
+        .fields
+        .iter()
+        .map(|f| f.slug)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!("SELECT {columns} FROM {} WHERE id = ?1", table.slug);
+    let row = sqlx::query(&sql)
+        .bind(id)
+        .fetch_one(&state.db.pool)
+        .await
+        .map_err(|e| format!("refetch {}: {e}", table.slug))?;
+    Ok(row_to_json(&row, table.fields))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableDeleteParams {
+    pub pack_slug: String,
+    pub table_slug: String,
+    pub id: i64,
+}
+
+/// Auto-CRUD delete. ON DELETE CASCADE / SET NULL clauses on FKs handle
+/// dependent rows; pack code can override (compile a typed delete cmd) if
+/// the cascade rules need to be different.
+#[tauri::command]
+pub async fn pack_table_delete(
+    state: State<'_, AppState>,
+    params: TableDeleteParams,
+) -> Result<(), String> {
+    let table = lookup_table(&state, &params.pack_slug, &params.table_slug)?;
+    let sql = format!("DELETE FROM {} WHERE id = ?1", table.slug);
+    sqlx::query(&sql)
+        .bind(params.id)
+        .execute(&state.db.pool)
+        .await
+        .map_err(|e| format!("delete {}: {e}", table.slug))?;
+    Ok(())
+}
+
 // ---------- helpers ----------
+
+/// Fields the auto-CRUD upsert never binds — `id` is auto-incremented;
+/// `Timestamp`-typed fields are DB-managed (CURRENT_TIMESTAMP defaults
+/// or the special `updated_at` clause in UPDATE).
+fn is_managed_field(slug: &str, field_type: &FieldType) -> bool {
+    slug == "id" || matches!(field_type, FieldType::Timestamp)
+}
+
+/// Bind a JSON value to a sqlx Query in the right SQL type for a given
+/// FieldType. Always binds owned values so lifetimes don't fight us.
+fn bind_for_field<'q>(
+    q: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+    field_type: &FieldType,
+    value: serde_json::Value,
+) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
+    use serde_json::Value;
+    match field_type {
+        FieldType::Integer | FieldType::Currency | FieldType::Ref { .. } => {
+            q.bind(value.as_i64())
+        }
+        FieldType::Number => q.bind(value.as_f64()),
+        FieldType::Bool => q.bind(value.as_bool()),
+        FieldType::Json => match value {
+            Value::Null => q.bind(None::<String>),
+            other => q.bind(Some(other.to_string())),
+        },
+        // Every text-shaped field stores TEXT in SQLite.
+        _ => q.bind(value.as_str().map(|s| s.to_string())),
+    }
+}
 
 fn lookup_table<'a>(
     state: &'a State<'_, AppState>,

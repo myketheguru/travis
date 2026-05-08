@@ -86,3 +86,35 @@ export type TableListParams = {
 /** Auto-CRUD list. Returns each row as a flat object keyed by field slug. */
 export const packTableList = (params: TableListParams) =>
   invoke<Record<string, unknown>[]>("pack_table_list", { params });
+
+export type TableGetParams = {
+  packSlug: string;
+  tableSlug: string;
+  id: number;
+};
+
+/** Auto-CRUD single-row fetch. Throws if the row doesn't exist. */
+export const packTableGet = (params: TableGetParams) =>
+  invoke<Record<string, unknown>>("pack_table_get", { params });
+
+export type TableUpsertParams = {
+  packSlug: string;
+  tableSlug: string;
+  payload: Record<string, unknown>;
+};
+
+/** Auto-CRUD insert / update. If `payload.id` is present and non-null,
+ * the row is updated; otherwise a new row is inserted. Returns the
+ * resulting row. */
+export const packTableUpsert = (params: TableUpsertParams) =>
+  invoke<Record<string, unknown>>("pack_table_upsert", { params });
+
+export type TableDeleteParams = {
+  packSlug: string;
+  tableSlug: string;
+  id: number;
+};
+
+/** Auto-CRUD delete. Cascades follow the SQL FK definitions. */
+export const packTableDelete = (params: TableDeleteParams) =>
+  invoke<void>("pack_table_delete", { params });

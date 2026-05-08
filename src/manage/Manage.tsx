@@ -10,7 +10,7 @@ import ThreadsTab from "./tabs/ThreadsTab";
 import InvoicesTab from "./tabs/InvoicesTab";
 import { useAppStore } from "../stores/app";
 import { packSchemas, type PackSchema, type TableDef } from "../lib/packs";
-import { ListView } from "../lib/autoCRUD";
+import { TableTab } from "../lib/autoCRUD";
 
 type CoreTabId =
   | "ask"
@@ -158,7 +158,7 @@ export default function Manage({ onClose }: { onClose: () => void }) {
         {active?.kind === "core" && active.id === "summaries" && <SummariesTab />}
         {active?.kind === "core" && active.id === "asks" && <AsksTab />}
         {active?.kind === "pack" && (
-          <ListView pack={active.pack} table={active.table} />
+          <TableTab pack={active.pack} table={active.table} />
         )}
       </div>
     </main>
