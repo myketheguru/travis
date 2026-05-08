@@ -12,6 +12,7 @@ pub struct Conversation {
     pub link_id: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
+    pub workspace_id: i64,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -34,21 +35,25 @@ pub struct Thread {
 
 pub async fn open(
     pool: &SqlitePool,
+    workspace_id: i64,
     kind: &str,
     title: Option<&str>,
 ) -> Result<Conversation, sqlx::Error> {
-    let id = sqlx::query("INSERT INTO conversation (kind, title) VALUES (?1, ?2)")
-        .bind(kind)
-        .bind(title)
-        .execute(pool)
-        .await?
-        .last_insert_rowid();
+    let id = sqlx::query(
+        "INSERT INTO conversation (kind, title, workspace_id) VALUES (?1, ?2, ?3)",
+    )
+    .bind(kind)
+    .bind(title)
+    .bind(workspace_id)
+    .execute(pool)
+    .await?
+    .last_insert_rowid();
     fetch(pool, id).await
 }
 
 pub async fn fetch(pool: &SqlitePool, id: i64) -> Result<Conversation, sqlx::Error> {
     sqlx::query_as::<_, Conversation>(
-        "SELECT id, kind, title, status, link_kind, link_id, created_at, updated_at
+        "SELECT id, kind, title, status, link_kind, link_id, created_at, updated_at, workspace_id
          FROM conversation WHERE id=?1",
     )
     .bind(id)
@@ -128,34 +133,54 @@ pub struct ConversationFilter {
 
 pub async fn list(
     pool: &SqlitePool,
+    visible_ids: &[i64],
     filter: ConversationFilter,
     limit: i64,
 ) -> Result<Vec<Conversation>, sqlx::Error> {
     let lim = limit.clamp(1, 500);
-    sqlx::query_as::<_, Conversation>(
-        "SELECT id, kind, title, status, link_kind, link_id, created_at, updated_at
+    let n_ws = visible_ids.len();
+    let ws_clause: String = (4..4 + n_ws)
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT id, kind, title, status, link_kind, link_id, created_at, updated_at, workspace_id
          FROM conversation
          WHERE (?1 IS NULL OR status = ?1)
            AND (?2 IS NULL OR kind = ?2)
-         ORDER BY updated_at DESC LIMIT ?3",
-    )
-    .bind(&filter.status)
-    .bind(&filter.kind)
-    .bind(lim)
-    .fetch_all(pool)
-    .await
+           AND workspace_id IN ({ws_clause})
+         ORDER BY updated_at DESC LIMIT ?3"
+    );
+    let mut q = sqlx::query_as::<_, Conversation>(&sql)
+        .bind(&filter.status)
+        .bind(&filter.kind)
+        .bind(lim);
+    for id in visible_ids {
+        q = q.bind(id);
+    }
+    q.fetch_all(pool).await
 }
 
 pub async fn most_recent_awaiting_user(
     pool: &SqlitePool,
+    visible_ids: &[i64],
 ) -> Result<Option<Conversation>, sqlx::Error> {
-    sqlx::query_as::<_, Conversation>(
-        "SELECT id, kind, title, status, link_kind, link_id, created_at, updated_at
+    let n_ws = visible_ids.len();
+    let ws_clause: String = (1..1 + n_ws)
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT id, kind, title, status, link_kind, link_id, created_at, updated_at, workspace_id
          FROM conversation
-         WHERE status = 'awaiting_user'
+         WHERE workspace_id IN ({ws_clause})
+           AND status = 'awaiting_user'
            AND datetime(updated_at) > datetime('now','-24 hours')
-         ORDER BY updated_at DESC LIMIT 1",
-    )
-    .fetch_optional(pool)
-    .await
+         ORDER BY updated_at DESC LIMIT 1"
+    );
+    let mut q = sqlx::query_as::<_, Conversation>(&sql);
+    for id in visible_ids {
+        q = q.bind(id);
+    }
+    q.fetch_optional(pool).await
 }

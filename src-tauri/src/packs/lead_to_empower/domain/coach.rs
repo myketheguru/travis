@@ -7,6 +7,7 @@ use super::DomainError;
 #[serde(rename_all = "camelCase")]
 pub struct Coach {
     pub id: i64,
+    pub workspace_id: i64,
     pub name: String,
     pub email: Option<String>,
     pub rate_cents: Option<i64>,
@@ -25,17 +26,27 @@ pub struct CoachInput {
     pub notes: Option<String>,
 }
 
-pub async fn list(pool: &SqlitePool) -> Result<Vec<Coach>, DomainError> {
-    let rows = sqlx::query_as::<_, Coach>(
-        "SELECT id, name, email, rate_cents, notes, created_at, updated_at
-         FROM coach ORDER BY name COLLATE NOCASE",
-    )
-    .fetch_all(pool)
-    .await?;
-    Ok(rows)
+pub async fn list(pool: &SqlitePool, workspace_ids: &[i64]) -> Result<Vec<Coach>, DomainError> {
+    let placeholders = (1..=workspace_ids.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT id, workspace_id, name, email, rate_cents, notes, created_at, updated_at
+         FROM coach WHERE workspace_id IN ({placeholders}) ORDER BY name COLLATE NOCASE"
+    );
+    let mut q = sqlx::query_as::<_, Coach>(&sql);
+    for ws in workspace_ids {
+        q = q.bind(ws);
+    }
+    Ok(q.fetch_all(pool).await?)
 }
 
-pub async fn upsert(pool: &SqlitePool, input: CoachInput) -> Result<Coach, DomainError> {
+pub async fn upsert(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    input: CoachInput,
+) -> Result<Coach, DomainError> {
     let name = input.name.trim().to_string();
     if name.is_empty() {
         return Err(DomainError::invalid("name is required"));
@@ -58,8 +69,9 @@ pub async fn upsert(pool: &SqlitePool, input: CoachInput) -> Result<Coach, Domai
         }
         None => {
             sqlx::query(
-                "INSERT INTO coach (name, email, rate_cents, notes) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO coach (workspace_id, name, email, rate_cents, notes) VALUES (?1, ?2, ?3, ?4, ?5)",
             )
+            .bind(workspace_id)
             .bind(&name)
             .bind(&input.email)
             .bind(input.rate_cents)
@@ -71,7 +83,7 @@ pub async fn upsert(pool: &SqlitePool, input: CoachInput) -> Result<Coach, Domai
     };
 
     let row = sqlx::query_as::<_, Coach>(
-        "SELECT id, name, email, rate_cents, notes, created_at, updated_at FROM coach WHERE id=?1",
+        "SELECT id, workspace_id, name, email, rate_cents, notes, created_at, updated_at FROM coach WHERE id=?1",
     )
     .bind(id)
     .fetch_one(pool)
@@ -86,6 +98,10 @@ pub async fn upsert(pool: &SqlitePool, input: CoachInput) -> Result<Coach, Domai
             display_name: &row.name,
             pack_slug: Some("lead-to-empower"),
             attributes_json: None,
+            // Typed-pack code path; matches the row's workspace_id
+            // which falls through to the migration DEFAULT 1. The
+            // auto-CRUD path stamps the actual active workspace.
+            workspace_id: row.workspace_id,
         },
     )
     .await

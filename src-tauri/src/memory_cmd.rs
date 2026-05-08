@@ -154,7 +154,7 @@ pub async fn ask_travis(
                 .map_err(|e| e.to_string())?;
             if existing.status == "resolved" {
                 let title = q.chars().take(60).collect::<String>();
-                conversation::open(&state.db.pool, "qa", Some(&title))
+                conversation::open(&state.db.pool, state.workspace.read().await.active_id, "qa", Some(&title))
                     .await
                     .map_err(|e| e.to_string())?
                     .id
@@ -164,7 +164,7 @@ pub async fn ask_travis(
         }
         None => {
             let title = q.chars().take(60).collect::<String>();
-            conversation::open(&state.db.pool, "qa", Some(&title))
+            conversation::open(&state.db.pool, state.workspace.read().await.active_id, "qa", Some(&title))
                 .await
                 .map_err(|e| e.to_string())?
                 .id
@@ -182,8 +182,10 @@ pub async fn ask_travis(
         .await
         .map_err(|e| e.to_string())?;
 
+    let ws_state = state.workspace.read().await.clone();
     let open_tasks = task::list(
         &state.db.pool,
+        &ws_state,
         TaskFilter {
             status: Some("open".into()),
             ..Default::default()

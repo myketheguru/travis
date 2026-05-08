@@ -3,6 +3,7 @@ use sqlx::SqlitePool;
 
 use super::DomainError;
 use crate::behavioral;
+use crate::workspaces;
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +25,7 @@ pub struct Task {
     pub completed_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub workspace_id: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,36 +51,67 @@ pub struct TaskFilter {
     pub link_id: Option<i64>,
 }
 
-pub async fn list(pool: &SqlitePool, filter: TaskFilter) -> Result<Vec<Task>, DomainError> {
-    let rows = sqlx::query_as::<_, Task>(
-        "SELECT id, title, description, status, priority, due_at,
-                entity_id, link_kind, link_id,
-                source, completed_at, created_at, updated_at
+const SELECT_FIELDS: &str =
+    "id, title, description, status, priority, due_at, entity_id, \
+     link_kind, link_id, source, completed_at, created_at, updated_at, \
+     workspace_id";
+
+fn ws_in_clause(start: usize, n: usize) -> String {
+    (start..start + n)
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+pub async fn list(
+    pool: &SqlitePool,
+    workspace: &workspaces::State,
+    filter: TaskFilter,
+) -> Result<Vec<Task>, DomainError> {
+    let n_ws = workspace.visible_ids.len();
+    let ws_clause = ws_in_clause(1, n_ws);
+    let f1 = n_ws + 1;
+    let f2 = n_ws + 2;
+    let f3 = n_ws + 3;
+
+    let sql = format!(
+        "SELECT {SELECT_FIELDS}
          FROM task
-         WHERE (?1 IS NULL OR status = ?1)
-           AND (?2 IS NULL OR link_kind = ?2)
-           AND (?3 IS NULL OR link_id = ?3)
+         WHERE workspace_id IN ({ws_clause})
+           AND (?{f1} IS NULL OR status = ?{f1})
+           AND (?{f2} IS NULL OR link_kind = ?{f2})
+           AND (?{f3} IS NULL OR link_id = ?{f3})
          ORDER BY
            CASE status WHEN 'open' THEN 0 WHEN 'snoozed' THEN 1 WHEN 'done' THEN 2 ELSE 3 END,
            priority DESC,
            COALESCE(due_at, '9999'),
-           id DESC",
-    )
-    .bind(&filter.status)
-    .bind(&filter.link_kind)
-    .bind(filter.link_id)
-    .fetch_all(pool)
-    .await?;
+           id DESC"
+    );
+    let mut q = sqlx::query_as::<_, Task>(&sql);
+    for id in &workspace.visible_ids {
+        q = q.bind(id);
+    }
+    q = q
+        .bind(&filter.status)
+        .bind(&filter.link_kind)
+        .bind(filter.link_id);
+    let rows = q.fetch_all(pool).await?;
     Ok(rows)
 }
 
-pub async fn upsert(pool: &SqlitePool, input: TaskInput) -> Result<Task, DomainError> {
+pub async fn upsert(
+    pool: &SqlitePool,
+    workspace: &workspaces::State,
+    input: TaskInput,
+) -> Result<Task, DomainError> {
     let title = input.title.trim().to_string();
     if title.is_empty() {
         return Err(DomainError::invalid("title is required"));
     }
     if input.link_kind.is_some() != input.link_id.is_some() {
-        return Err(DomainError::invalid("link_kind and link_id must be set together"));
+        return Err(DomainError::invalid(
+            "link_kind and link_id must be set together",
+        ));
     }
 
     let priority = input.priority.unwrap_or(0);
@@ -87,29 +120,39 @@ pub async fn upsert(pool: &SqlitePool, input: TaskInput) -> Result<Task, DomainE
     let was_new = input.id.is_none();
     let id = match input.id {
         Some(id) => {
-            sqlx::query(
+            let n_ws = workspace.visible_ids.len();
+            let ws_clause = ws_in_clause(10, n_ws);
+            let sql = format!(
                 "UPDATE task SET title=?1, description=?2, priority=?3, due_at=?4,
                     entity_id=?5, link_kind=?6, link_id=?7, source=?8,
                     updated_at=CURRENT_TIMESTAMP
-                 WHERE id=?9",
-            )
-            .bind(&title)
-            .bind(&input.description)
-            .bind(priority)
-            .bind(&input.due_at)
-            .bind(input.entity_id)
-            .bind(&input.link_kind)
-            .bind(input.link_id)
-            .bind(&source)
-            .bind(id)
-            .execute(pool)
-            .await?;
+                 WHERE id=?9 AND workspace_id IN ({ws_clause})"
+            );
+            let mut q = sqlx::query(&sql)
+                .bind(&title)
+                .bind(&input.description)
+                .bind(priority)
+                .bind(&input.due_at)
+                .bind(input.entity_id)
+                .bind(&input.link_kind)
+                .bind(input.link_id)
+                .bind(&source)
+                .bind(id);
+            for ws_id in &workspace.visible_ids {
+                q = q.bind(ws_id);
+            }
+            let res = q.execute(pool).await?;
+            if res.rows_affected() == 0 {
+                return Err(DomainError::invalid(format!(
+                    "task #{id} not found in any visible workspace"
+                )));
+            }
             id
         }
         None => sqlx::query(
             "INSERT INTO task (title, description, priority, due_at,
-                               entity_id, link_kind, link_id, source)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                               entity_id, link_kind, link_id, source, workspace_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )
         .bind(&title)
         .bind(&input.description)
@@ -119,6 +162,7 @@ pub async fn upsert(pool: &SqlitePool, input: TaskInput) -> Result<Task, DomainE
         .bind(&input.link_kind)
         .bind(input.link_id)
         .bind(&source)
+        .bind(workspace.active_id)
         .execute(pool)
         .await?
         .last_insert_rowid(),
@@ -127,23 +171,34 @@ pub async fn upsert(pool: &SqlitePool, input: TaskInput) -> Result<Task, DomainE
     let kind = if was_new { "task_created" } else { "task_updated" };
     let _ = behavioral::log_event(pool, kind, Some("task"), Some(id), None).await;
 
-    fetch_one(pool, id).await
+    fetch_one(pool, workspace, id).await
 }
 
-pub async fn fetch_one(pool: &SqlitePool, id: i64) -> Result<Task, DomainError> {
-    let row = sqlx::query_as::<_, Task>(
-        "SELECT id, title, description, status, priority, due_at,
-                entity_id, link_kind, link_id,
-                source, completed_at, created_at, updated_at
-         FROM task WHERE id=?1",
-    )
-    .bind(id)
-    .fetch_one(pool)
-    .await?;
+pub async fn fetch_one(
+    pool: &SqlitePool,
+    workspace: &workspaces::State,
+    id: i64,
+) -> Result<Task, DomainError> {
+    let n_ws = workspace.visible_ids.len();
+    let ws_clause = ws_in_clause(2, n_ws);
+    let sql = format!(
+        "SELECT {SELECT_FIELDS} FROM task
+         WHERE id=?1 AND workspace_id IN ({ws_clause})"
+    );
+    let mut q = sqlx::query_as::<_, Task>(&sql).bind(id);
+    for ws_id in &workspace.visible_ids {
+        q = q.bind(ws_id);
+    }
+    let row = q.fetch_one(pool).await?;
     Ok(row)
 }
 
-pub async fn set_status(pool: &SqlitePool, id: i64, status: &str) -> Result<Task, DomainError> {
+pub async fn set_status(
+    pool: &SqlitePool,
+    workspace: &workspaces::State,
+    id: i64,
+    status: &str,
+) -> Result<Task, DomainError> {
     if !["open", "done", "snoozed", "dropped"].contains(&status) {
         return Err(DomainError::invalid(format!("unknown task status: {status}")));
     }
@@ -154,19 +209,43 @@ pub async fn set_status(pool: &SqlitePool, id: i64, status: &str) -> Result<Task
     } else {
         ""
     };
+
+    let n_ws = workspace.visible_ids.len();
+    let ws_clause = ws_in_clause(3, n_ws);
     let sql = format!(
         "UPDATE task SET status = ?1, updated_at = CURRENT_TIMESTAMP{completed_clause}
-         WHERE id = ?2"
+         WHERE id = ?2 AND workspace_id IN ({ws_clause})"
     );
-    sqlx::query(&sql).bind(status).bind(id).execute(pool).await?;
+    let mut q = sqlx::query(&sql).bind(status).bind(id);
+    for ws_id in &workspace.visible_ids {
+        q = q.bind(ws_id);
+    }
+    q.execute(pool).await?;
 
-    let kind = if status == "done" { "task_completed" } else { "task_status_changed" };
+    let kind = if status == "done" {
+        "task_completed"
+    } else {
+        "task_status_changed"
+    };
     let _ = behavioral::log_event(pool, kind, Some("task"), Some(id), None).await;
 
-    fetch_one(pool, id).await
+    fetch_one(pool, workspace, id).await
 }
 
-pub async fn delete(pool: &SqlitePool, id: i64) -> Result<(), DomainError> {
-    sqlx::query("DELETE FROM task WHERE id=?1").bind(id).execute(pool).await?;
+pub async fn delete(
+    pool: &SqlitePool,
+    workspace: &workspaces::State,
+    id: i64,
+) -> Result<(), DomainError> {
+    let n_ws = workspace.visible_ids.len();
+    let ws_clause = ws_in_clause(2, n_ws);
+    let sql = format!(
+        "DELETE FROM task WHERE id=?1 AND workspace_id IN ({ws_clause})"
+    );
+    let mut q = sqlx::query(&sql).bind(id);
+    for ws_id in &workspace.visible_ids {
+        q = q.bind(ws_id);
+    }
+    q.execute(pool).await?;
     Ok(())
 }

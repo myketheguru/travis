@@ -52,10 +52,14 @@ impl Tool for ListOpenTasksTool {
     }
 
     async fn execute(&self, ctx: &ToolContext, input: Value) -> anyhow::Result<String> {
+        use tauri::Manager;
         let p: Input = serde_json::from_value(input)?;
         let limit = p.limit.unwrap_or(20).min(100);
+        let app_state = ctx.app.state::<crate::AppState>();
+        let ws = app_state.workspace.read().await.clone();
         let rows = task::list(
             &ctx.db.pool,
+            &ws,
             TaskFilter {
                 status: p.status,
                 link_kind: p.link_kind,

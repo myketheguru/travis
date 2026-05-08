@@ -143,12 +143,23 @@ pub async fn pack_table_list(
         .collect::<Vec<_>>()
         .join(", ");
 
+    // Workspace filter — every scoped pack table has workspace_id;
+    // the auto-CRUD reads only rows from visible workspaces.
+    let visible_ids = state.workspace.read().await.visible_ids.clone();
+    let placeholders = workspace_in_placeholders(visible_ids.len());
+
     let sql = format!(
-        "SELECT {columns} FROM {table} ORDER BY {sort} {sort_dir} LIMIT {limit} OFFSET {offset}",
+        "SELECT {columns} FROM {table} \
+         WHERE workspace_id IN ({placeholders}) \
+         ORDER BY {sort} {sort_dir} LIMIT {limit} OFFSET {offset}",
         table = table.slug,
     );
 
-    let rows = sqlx::query(&sql)
+    let mut q = sqlx::query(&sql);
+    for id in &visible_ids {
+        q = q.bind(id);
+    }
+    let rows = q
         .fetch_all(&state.db.pool)
         .await
         .map_err(|e| format!("query {}: {e}", table.slug))?;
@@ -169,7 +180,7 @@ pub struct TableGetParams {
 }
 
 /// Auto-CRUD single-row fetch. Returns a JSON object keyed by field slug,
-/// or an error if the row doesn't exist.
+/// or an error if the row doesn't exist OR isn't in a visible workspace.
 #[tauri::command]
 pub async fn pack_table_get(
     state: State<'_, AppState>,
@@ -182,9 +193,19 @@ pub async fn pack_table_get(
         .map(|f| f.slug)
         .collect::<Vec<_>>()
         .join(", ");
-    let sql = format!("SELECT {columns} FROM {} WHERE id = ?1", table.slug);
-    let row = sqlx::query(&sql)
-        .bind(params.id)
+
+    let visible_ids = state.workspace.read().await.visible_ids.clone();
+    let placeholders = workspace_in_placeholders(visible_ids.len());
+
+    let sql = format!(
+        "SELECT {columns} FROM {} WHERE id = ? AND workspace_id IN ({placeholders})",
+        table.slug,
+    );
+    let mut q = sqlx::query(&sql).bind(params.id);
+    for id in &visible_ids {
+        q = q.bind(id);
+    }
+    let row = q
         .fetch_optional(&state.db.pool)
         .await
         .map_err(|e| format!("query {}: {e}", table.slug))?;
@@ -231,7 +252,11 @@ pub async fn pack_table_upsert(
 
     let existing_id = params.payload.get("id").and_then(|v| v.as_i64());
 
+    let ws = state.workspace.read().await.clone();
+
     let id = if let Some(existing) = existing_id {
+        // Updates can only target rows in visible workspaces. The
+        // workspace_id stays whatever it was — we don't move rows.
         let set_clause = writable
             .iter()
             .enumerate()
@@ -243,10 +268,12 @@ pub async fn pack_table_upsert(
         } else {
             ""
         };
+        let id_placeholder = writable.len() + 1;
+        let placeholders = workspace_in_placeholders(ws.visible_ids.len());
         let sql = format!(
-            "UPDATE {} SET {set_clause}{updated_clause} WHERE id = ?{}",
+            "UPDATE {} SET {set_clause}{updated_clause} \
+             WHERE id = ?{id_placeholder} AND workspace_id IN ({placeholders})",
             table.slug,
-            writable.len() + 1,
         );
 
         let mut q = sqlx::query(&sql);
@@ -259,13 +286,29 @@ pub async fn pack_table_upsert(
             q = bind_for_field(q, &f.field_type, v);
         }
         q = q.bind(existing);
-        q.execute(&state.db.pool)
+        for id in &ws.visible_ids {
+            q = q.bind(id);
+        }
+        let res = q
+            .execute(&state.db.pool)
             .await
             .map_err(|e| format!("update {}: {e}", table.slug))?;
+        if res.rows_affected() == 0 {
+            return Err(format!(
+                "row {}#{} not found in any visible workspace",
+                table.slug, existing
+            ));
+        }
         existing
     } else {
-        let columns = writable.iter().map(|f| f.slug).collect::<Vec<_>>().join(", ");
-        let placeholders = (1..=writable.len())
+        // Inserts stamp the active workspace.
+        let columns = writable
+            .iter()
+            .map(|f| f.slug)
+            .chain(std::iter::once("workspace_id"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let placeholders = (1..=writable.len() + 1)
             .map(|i| format!("?{i}"))
             .collect::<Vec<_>>()
             .join(", ");
@@ -283,6 +326,7 @@ pub async fn pack_table_upsert(
                 .unwrap_or(serde_json::Value::Null);
             q = bind_for_field(q, &f.field_type, v);
         }
+        q = q.bind(ws.active_id);
         let result = q
             .execute(&state.db.pool)
             .await
@@ -310,6 +354,7 @@ pub async fn pack_table_upsert(
                     display_name: &name,
                     pack_slug: Some(params.pack_slug.as_str()),
                     attributes_json: None,
+                    workspace_id: ws.active_id,
                 },
             )
             .await
@@ -397,23 +442,42 @@ pub async fn pack_alerts(state: State<'_, AppState>) -> Result<Vec<AlertResult>,
 
 /// Auto-CRUD delete. ON DELETE CASCADE / SET NULL clauses on FKs handle
 /// dependent rows; pack code can override (compile a typed delete cmd) if
-/// the cascade rules need to be different.
+/// the cascade rules need to be different. Only rows in visible workspaces
+/// are deletable.
 #[tauri::command]
 pub async fn pack_table_delete(
     state: State<'_, AppState>,
     params: TableDeleteParams,
 ) -> Result<(), String> {
     let table = lookup_table(&state, &params.pack_slug, &params.table_slug)?;
-    let sql = format!("DELETE FROM {} WHERE id = ?1", table.slug);
-    sqlx::query(&sql)
-        .bind(params.id)
-        .execute(&state.db.pool)
+    let visible_ids = state.workspace.read().await.visible_ids.clone();
+    let placeholders = workspace_in_placeholders(visible_ids.len());
+    let sql = format!(
+        "DELETE FROM {} WHERE id = ? AND workspace_id IN ({placeholders})",
+        table.slug
+    );
+    let mut q = sqlx::query(&sql).bind(params.id);
+    for id in &visible_ids {
+        q = q.bind(id);
+    }
+    q.execute(&state.db.pool)
         .await
         .map_err(|e| format!("delete {}: {e}", table.slug))?;
     Ok(())
 }
 
 // ---------- helpers ----------
+
+/// Build a comma-separated `?` placeholder list of length `n` for use
+/// in a SQL `IN (...)` clause. Caller binds `n` values in order.
+fn workspace_in_placeholders(n: usize) -> String {
+    if n == 0 {
+        // No visible workspaces — return a clause that matches nothing.
+        // Caller's sqlx binding is empty in this case.
+        return "NULL".into();
+    }
+    vec!["?"; n].join(", ")
+}
 
 /// Fields the auto-CRUD upsert never binds — `id` is auto-incremented;
 /// `Timestamp`-typed fields are DB-managed (CURRENT_TIMESTAMP defaults

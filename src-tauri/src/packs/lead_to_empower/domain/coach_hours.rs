@@ -8,6 +8,7 @@ use crate::behavioral;
 #[serde(rename_all = "camelCase")]
 pub struct CoachHours {
     pub id: i64,
+    pub workspace_id: i64,
     pub coach_id: i64,
     pub school_id: i64,
     pub session_date: String,
@@ -39,28 +40,38 @@ pub struct CoachHoursFilter {
 
 pub async fn list(
     pool: &SqlitePool,
+    workspace_ids: &[i64],
     filter: CoachHoursFilter,
 ) -> Result<Vec<CoachHours>, DomainError> {
-    let rows = sqlx::query_as::<_, CoachHours>(
-        "SELECT id, coach_id, school_id, session_date, hours, description, created_at, updated_at
+    let ws_start = 5usize;
+    let ws_placeholders = (ws_start..ws_start + workspace_ids.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT id, workspace_id, coach_id, school_id, session_date, hours, description, created_at, updated_at
          FROM coach_hours
          WHERE (?1 IS NULL OR coach_id = ?1)
            AND (?2 IS NULL OR school_id = ?2)
            AND (?3 IS NULL OR session_date >= ?3)
            AND (?4 IS NULL OR session_date <= ?4)
-         ORDER BY session_date DESC, id DESC",
-    )
-    .bind(filter.coach_id)
-    .bind(filter.school_id)
-    .bind(&filter.period_start)
-    .bind(&filter.period_end)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows)
+           AND workspace_id IN ({ws_placeholders})
+         ORDER BY session_date DESC, id DESC"
+    );
+    let mut q = sqlx::query_as::<_, CoachHours>(&sql)
+        .bind(filter.coach_id)
+        .bind(filter.school_id)
+        .bind(&filter.period_start)
+        .bind(&filter.period_end);
+    for ws in workspace_ids {
+        q = q.bind(ws);
+    }
+    Ok(q.fetch_all(pool).await?)
 }
 
 pub async fn upsert(
     pool: &SqlitePool,
+    workspace_id: i64,
     input: CoachHoursInput,
 ) -> Result<CoachHours, DomainError> {
     if input.hours <= 0.0 {
@@ -87,9 +98,10 @@ pub async fn upsert(
             id
         }
         None => sqlx::query(
-            "INSERT INTO coach_hours (coach_id, school_id, session_date, hours, description)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO coach_hours (workspace_id, coach_id, school_id, session_date, hours, description)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )
+        .bind(workspace_id)
         .bind(input.coach_id)
         .bind(input.school_id)
         .bind(&input.session_date)
@@ -101,7 +113,7 @@ pub async fn upsert(
     };
 
     let row = sqlx::query_as::<_, CoachHours>(
-        "SELECT id, coach_id, school_id, session_date, hours, description, created_at, updated_at
+        "SELECT id, workspace_id, coach_id, school_id, session_date, hours, description, created_at, updated_at
          FROM coach_hours WHERE id=?1",
     )
     .bind(id)
@@ -127,6 +139,7 @@ pub async fn upsert(
             pack_slug: Some("lead-to-empower"),
             occurred_at: None,
             attributes_json: Some(&attrs),
+            workspace_id: row.workspace_id,
         },
     )
     .await

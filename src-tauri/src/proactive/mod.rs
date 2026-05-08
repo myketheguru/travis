@@ -459,7 +459,12 @@ async fn get_or_create_nudge_conversation(pool: &SqlitePool) -> anyhow::Result<i
     if let Some((id,)) = row {
         return Ok(id);
     }
-    let conv = conversation::open(pool, "nudge", Some(NUDGE_THREAD_TITLE))
+    // Nudge thread lives in the active workspace at the time of
+    // creation. Subsequent nudges land in the same thread regardless
+    // of workspace switches (it's identified by kind='nudge'); a
+    // future polish could create one nudge thread per workspace.
+    let active_id = crate::workspaces::read_active_id(pool).await?;
+    let conv = conversation::open(pool, active_id, "nudge", Some(NUDGE_THREAD_TITLE))
         .await
         .map_err(|e| anyhow::anyhow!("create nudge thread: {e}"))?;
     Ok(conv.id)

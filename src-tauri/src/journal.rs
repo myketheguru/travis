@@ -476,7 +476,7 @@ pub async fn journal_ingest(
                 .map_err(|e| e.to_string())?;
             if existing.status == "resolved" {
                 let title = raw.chars().take(60).collect::<String>();
-                conversation::open(&state.db.pool, "journal", Some(&title))
+                conversation::open(&state.db.pool, state.workspace.read().await.active_id, "journal", Some(&title))
                     .await
                     .map_err(|e| e.to_string())?
                     .id
@@ -486,19 +486,24 @@ pub async fn journal_ingest(
         }
         None => {
             let title = raw.chars().take(60).collect::<String>();
-            conversation::open(&state.db.pool, "journal", Some(&title))
+            let active_ws = state.workspace.read().await.active_id;
+            conversation::open(&state.db.pool, active_ws, "journal", Some(&title))
                 .await
                 .map_err(|e| e.to_string())?
                 .id
         }
     };
 
-    let entry_id: i64 = sqlx::query("INSERT INTO journal_entry (raw_text) VALUES (?1)")
-        .bind(&raw)
-        .execute(&state.db.pool)
-        .await
-        .map_err(|e| e.to_string())?
-        .last_insert_rowid();
+    let active_ws_id = state.workspace.read().await.active_id;
+    let entry_id: i64 = sqlx::query(
+        "INSERT INTO journal_entry (raw_text, workspace_id) VALUES (?1, ?2)",
+    )
+    .bind(&raw)
+    .bind(active_ws_id)
+    .execute(&state.db.pool)
+    .await
+    .map_err(|e| e.to_string())?
+    .last_insert_rowid();
 
     // Append the user's message to the conversation thread.
     let _ = conversation::append(&state.db.pool, conv_id, "user", &raw, None).await;
@@ -539,8 +544,10 @@ pub async fn journal_ingest(
     .map_err(|e| e.to_string())?;
 
     // Pull current open tasks so the LLM can detect completions.
+    let ws_state = state.workspace.read().await.clone();
     let open_tasks = task::list(
         &state.db.pool,
+        &ws_state,
         TaskFilter {
             status: Some("open".into()),
             link_kind: None,
@@ -740,6 +747,7 @@ pub async fn journal_ingest(
             };
             let task = task::upsert(
                 &state.db.pool,
+                &ws_state,
                 TaskInput {
                     id: None,
                     title: truncated,
@@ -762,7 +770,7 @@ pub async fn journal_ingest(
                 tracing::warn!("LLM returned completedTaskId {tid} not in open list — ignoring");
                 continue;
             }
-            match task::set_status(&state.db.pool, *tid, "done").await {
+            match task::set_status(&state.db.pool, &ws_state, *tid, "done").await {
                 Ok(t) => completed.push(t),
                 Err(e) => tracing::warn!("failed to mark task {tid} done: {e}"),
             }

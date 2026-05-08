@@ -7,6 +7,7 @@ use super::DomainError;
 #[serde(rename_all = "camelCase")]
 pub struct Session {
     pub id: i64,
+    pub workspace_id: i64,
     pub tutor_id: i64,
     pub student_id: i64,
     pub subject: Option<String>,
@@ -43,9 +44,18 @@ pub struct SessionFilter {
     pub period_end: Option<String>,
 }
 
-pub async fn list(pool: &SqlitePool, filter: SessionFilter) -> Result<Vec<Session>, DomainError> {
-    let rows = sqlx::query_as::<_, Session>(
-        "SELECT id, tutor_id, student_id, subject, session_date, duration_minutes,
+pub async fn list(
+    pool: &SqlitePool,
+    workspace_ids: &[i64],
+    filter: SessionFilter,
+) -> Result<Vec<Session>, DomainError> {
+    let ws_start = 6usize;
+    let ws_placeholders = (ws_start..ws_start + workspace_ids.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT id, workspace_id, tutor_id, student_id, subject, session_date, duration_minutes,
                 status, notes, homework, created_at, updated_at
          FROM session
          WHERE (?1 IS NULL OR tutor_id = ?1)
@@ -53,19 +63,26 @@ pub async fn list(pool: &SqlitePool, filter: SessionFilter) -> Result<Vec<Sessio
            AND (?3 IS NULL OR status = ?3)
            AND (?4 IS NULL OR session_date >= ?4)
            AND (?5 IS NULL OR session_date <= ?5)
-         ORDER BY session_date DESC, id DESC",
-    )
-    .bind(filter.tutor_id)
-    .bind(filter.student_id)
-    .bind(&filter.status)
-    .bind(&filter.period_start)
-    .bind(&filter.period_end)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows)
+           AND workspace_id IN ({ws_placeholders})
+         ORDER BY session_date DESC, id DESC"
+    );
+    let mut q = sqlx::query_as::<_, Session>(&sql)
+        .bind(filter.tutor_id)
+        .bind(filter.student_id)
+        .bind(&filter.status)
+        .bind(&filter.period_start)
+        .bind(&filter.period_end);
+    for ws in workspace_ids {
+        q = q.bind(ws);
+    }
+    Ok(q.fetch_all(pool).await?)
 }
 
-pub async fn upsert(pool: &SqlitePool, input: SessionInput) -> Result<Session, DomainError> {
+pub async fn upsert(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    input: SessionInput,
+) -> Result<Session, DomainError> {
     if input.duration_minutes <= 0 {
         return Err(DomainError::invalid("duration_minutes must be positive"));
     }
@@ -98,10 +115,11 @@ pub async fn upsert(pool: &SqlitePool, input: SessionInput) -> Result<Session, D
             id
         }
         None => sqlx::query(
-            "INSERT INTO session (tutor_id, student_id, subject, session_date,
+            "INSERT INTO session (workspace_id, tutor_id, student_id, subject, session_date,
                 duration_minutes, status, notes, homework)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )
+        .bind(workspace_id)
         .bind(input.tutor_id)
         .bind(input.student_id)
         .bind(&input.subject)
@@ -116,7 +134,7 @@ pub async fn upsert(pool: &SqlitePool, input: SessionInput) -> Result<Session, D
     };
 
     let row = sqlx::query_as::<_, Session>(
-        "SELECT id, tutor_id, student_id, subject, session_date, duration_minutes,
+        "SELECT id, workspace_id, tutor_id, student_id, subject, session_date, duration_minutes,
                 status, notes, homework, created_at, updated_at
          FROM session WHERE id=?1",
     )
@@ -149,6 +167,7 @@ pub async fn upsert(pool: &SqlitePool, input: SessionInput) -> Result<Session, D
             pack_slug: Some("tutoring"),
             occurred_at: None,
             attributes_json: Some(&attrs),
+            workspace_id: row.workspace_id,
         },
     )
     .await

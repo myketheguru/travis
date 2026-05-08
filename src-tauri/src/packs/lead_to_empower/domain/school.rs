@@ -7,6 +7,7 @@ use super::DomainError;
 #[serde(rename_all = "camelCase")]
 pub struct School {
     pub id: i64,
+    pub workspace_id: i64,
     pub name: String,
     pub district: Option<String>,
     pub contact_name: Option<String>,
@@ -27,17 +28,27 @@ pub struct SchoolInput {
     pub notes: Option<String>,
 }
 
-pub async fn list(pool: &SqlitePool) -> Result<Vec<School>, DomainError> {
-    let rows = sqlx::query_as::<_, School>(
-        "SELECT id, name, district, contact_name, contact_email, notes, created_at, updated_at
-         FROM school ORDER BY name COLLATE NOCASE",
-    )
-    .fetch_all(pool)
-    .await?;
-    Ok(rows)
+pub async fn list(pool: &SqlitePool, workspace_ids: &[i64]) -> Result<Vec<School>, DomainError> {
+    let placeholders = (1..=workspace_ids.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT id, workspace_id, name, district, contact_name, contact_email, notes, created_at, updated_at
+         FROM school WHERE workspace_id IN ({placeholders}) ORDER BY name COLLATE NOCASE"
+    );
+    let mut q = sqlx::query_as::<_, School>(&sql);
+    for ws in workspace_ids {
+        q = q.bind(ws);
+    }
+    Ok(q.fetch_all(pool).await?)
 }
 
-pub async fn upsert(pool: &SqlitePool, input: SchoolInput) -> Result<School, DomainError> {
+pub async fn upsert(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    input: SchoolInput,
+) -> Result<School, DomainError> {
     let name = input.name.trim().to_string();
     if name.is_empty() {
         return Err(DomainError::invalid("name is required"));
@@ -60,9 +71,10 @@ pub async fn upsert(pool: &SqlitePool, input: SchoolInput) -> Result<School, Dom
             id
         }
         None => sqlx::query(
-            "INSERT INTO school (name, district, contact_name, contact_email, notes)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO school (workspace_id, name, district, contact_name, contact_email, notes)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )
+        .bind(workspace_id)
         .bind(&name)
         .bind(&input.district)
         .bind(&input.contact_name)
@@ -74,7 +86,7 @@ pub async fn upsert(pool: &SqlitePool, input: SchoolInput) -> Result<School, Dom
     };
 
     let row = sqlx::query_as::<_, School>(
-        "SELECT id, name, district, contact_name, contact_email, notes, created_at, updated_at
+        "SELECT id, workspace_id, name, district, contact_name, contact_email, notes, created_at, updated_at
          FROM school WHERE id=?1",
     )
     .bind(id)
@@ -90,6 +102,7 @@ pub async fn upsert(pool: &SqlitePool, input: SchoolInput) -> Result<School, Dom
             display_name: &row.name,
             pack_slug: Some("lead-to-empower"),
             attributes_json: None,
+            workspace_id: row.workspace_id,
         },
     )
     .await

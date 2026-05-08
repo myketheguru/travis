@@ -117,17 +117,25 @@ pub struct Applied {
     pub json: String,
 }
 
-async fn apply_defer_task(pool: &SqlitePool, params_json: &str) -> anyhow::Result<Applied> {
+async fn apply_defer_task(
+    pool: &SqlitePool,
+    app: &AppHandle,
+    params_json: &str,
+) -> anyhow::Result<Applied> {
+    use tauri::Manager;
     let p: DeferTaskParams = serde_json::from_str(params_json)?;
     if p.new_due_at.trim().is_empty() {
         anyhow::bail!("newDueAt is required");
     }
-    let existing = task::fetch_one(pool, p.task_id)
+    let state = app.state::<AppState>();
+    let ws = state.workspace.read().await.clone();
+    let existing = task::fetch_one(pool, &ws, p.task_id)
         .await
         .map_err(|e| anyhow::anyhow!("task {} not found: {e}", p.task_id))?;
 
     let updated = task::upsert(
         pool,
+        &ws,
         TaskInput {
             id: Some(existing.id),
             title: existing.title.clone(),
@@ -677,8 +685,8 @@ struct DeferTaskHandler;
 #[async_trait::async_trait]
 impl ActionHandler for DeferTaskHandler {
     fn kind(&self) -> &'static str { "defer_task" }
-    async fn apply(&self, pool: &SqlitePool, _app: &AppHandle, params_json: &str) -> anyhow::Result<Applied> {
-        apply_defer_task(pool, params_json).await
+    async fn apply(&self, pool: &SqlitePool, app: &AppHandle, params_json: &str) -> anyhow::Result<Applied> {
+        apply_defer_task(pool, app, params_json).await
     }
 }
 

@@ -32,6 +32,9 @@ pub struct RecordParams<'a> {
     /// being indexed retroactively).
     pub occurred_at: Option<&'a str>,
     pub attributes_json: Option<&'a str>,
+    /// Workspace this event belongs to. Pack code should pass the
+    /// active workspace id.
+    pub workspace_id: i64,
 }
 
 /// Append an event row. Returns the row id.
@@ -42,8 +45,8 @@ pub async fn record(pool: &SqlitePool, p: RecordParams<'_>) -> anyhow::Result<i6
     }
     let id: (i64,) = if let Some(at) = p.occurred_at {
         sqlx::query_as(
-            "INSERT INTO event (entity_id, kind, pack_slug, occurred_at, attributes_json)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO event (entity_id, kind, pack_slug, occurred_at, attributes_json, workspace_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              RETURNING id",
         )
         .bind(p.entity_id)
@@ -51,18 +54,20 @@ pub async fn record(pool: &SqlitePool, p: RecordParams<'_>) -> anyhow::Result<i6
         .bind(p.pack_slug)
         .bind(at)
         .bind(p.attributes_json)
+        .bind(p.workspace_id)
         .fetch_one(pool)
         .await?
     } else {
         sqlx::query_as(
-            "INSERT INTO event (entity_id, kind, pack_slug, attributes_json)
-             VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO event (entity_id, kind, pack_slug, attributes_json, workspace_id)
+             VALUES (?1, ?2, ?3, ?4, ?5)
              RETURNING id",
         )
         .bind(p.entity_id)
         .bind(kind)
         .bind(p.pack_slug)
         .bind(p.attributes_json)
+        .bind(p.workspace_id)
         .fetch_one(pool)
         .await?
     };

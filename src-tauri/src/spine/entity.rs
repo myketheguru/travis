@@ -32,6 +32,9 @@ pub struct UpsertParams<'a> {
     pub display_name: &'a str,
     pub pack_slug: Option<&'a str>,
     pub attributes_json: Option<&'a str>,
+    /// Workspace this entity belongs to. Pack code should pass the
+    /// active workspace id (typically `state.workspace.read().await.active_id`).
+    pub workspace_id: i64,
 }
 
 /// Upsert an entity row. Returns the row id. Idempotent on
@@ -55,9 +58,9 @@ pub async fn upsert(pool: &SqlitePool, p: UpsertParams<'_>) -> anyhow::Result<i6
     let id: (i64,) = sqlx::query_as(
         "INSERT INTO entity
              (kind, normalized_name, display_name,
-              pack_slug, attributes_json,
+              pack_slug, attributes_json, workspace_id,
               mentions_count, first_seen, last_seen)
-         VALUES (?1, ?2, ?3, ?4, ?5, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
          ON CONFLICT(kind, normalized_name) DO UPDATE SET
             display_name    = excluded.display_name,
             pack_slug       = COALESCE(excluded.pack_slug, entity.pack_slug),
@@ -70,6 +73,7 @@ pub async fn upsert(pool: &SqlitePool, p: UpsertParams<'_>) -> anyhow::Result<i6
     .bind(display)
     .bind(p.pack_slug)
     .bind(p.attributes_json)
+    .bind(p.workspace_id)
     .fetch_one(pool)
     .await?;
 

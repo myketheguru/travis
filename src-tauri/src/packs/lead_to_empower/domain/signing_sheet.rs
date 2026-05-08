@@ -7,6 +7,7 @@ use super::DomainError;
 #[serde(rename_all = "camelCase")]
 pub struct SigningSheet {
     pub id: i64,
+    pub workspace_id: i64,
     pub coach_id: i64,
     pub school_id: i64,
     pub period_start: String,
@@ -43,27 +44,37 @@ pub struct SigningSheetFilter {
 
 pub async fn list(
     pool: &SqlitePool,
+    workspace_ids: &[i64],
     filter: SigningSheetFilter,
 ) -> Result<Vec<SigningSheet>, DomainError> {
-    let rows = sqlx::query_as::<_, SigningSheet>(
-        "SELECT id, coach_id, school_id, period_start, period_end, signed_at, signed_by,
+    let ws_start = 4usize;
+    let ws_placeholders = (ws_start..ws_start + workspace_ids.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT id, workspace_id, coach_id, school_id, period_start, period_end, signed_at, signed_by,
                 pdf_path, notes, created_at, updated_at
          FROM signing_sheet
          WHERE (?1 IS NULL OR coach_id = ?1)
            AND (?2 IS NULL OR school_id = ?2)
            AND (?3 IS NULL OR (signed_at IS NOT NULL) = ?3)
-         ORDER BY period_end DESC, id DESC",
-    )
-    .bind(filter.coach_id)
-    .bind(filter.school_id)
-    .bind(filter.signed)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows)
+           AND workspace_id IN ({ws_placeholders})
+         ORDER BY period_end DESC, id DESC"
+    );
+    let mut q = sqlx::query_as::<_, SigningSheet>(&sql)
+        .bind(filter.coach_id)
+        .bind(filter.school_id)
+        .bind(filter.signed);
+    for ws in workspace_ids {
+        q = q.bind(ws);
+    }
+    Ok(q.fetch_all(pool).await?)
 }
 
 pub async fn upsert(
     pool: &SqlitePool,
+    workspace_id: i64,
     input: SigningSheetInput,
 ) -> Result<SigningSheet, DomainError> {
     if input.period_start > input.period_end {
@@ -91,10 +102,11 @@ pub async fn upsert(
             id
         }
         None => sqlx::query(
-            "INSERT INTO signing_sheet (coach_id, school_id, period_start, period_end,
+            "INSERT INTO signing_sheet (workspace_id, coach_id, school_id, period_start, period_end,
                 signed_at, signed_by, pdf_path, notes)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )
+        .bind(workspace_id)
         .bind(input.coach_id)
         .bind(input.school_id)
         .bind(&input.period_start)
@@ -109,7 +121,7 @@ pub async fn upsert(
     };
 
     let row = sqlx::query_as::<_, SigningSheet>(
-        "SELECT id, coach_id, school_id, period_start, period_end, signed_at, signed_by,
+        "SELECT id, workspace_id, coach_id, school_id, period_start, period_end, signed_at, signed_by,
                 pdf_path, notes, created_at, updated_at
          FROM signing_sheet WHERE id=?1",
     )
@@ -129,21 +141,24 @@ pub async fn delete(pool: &SqlitePool, id: i64) -> Result<(), DomainError> {
 
 pub async fn find_match(
     pool: &SqlitePool,
+    workspace_id: i64,
     coach_id: i64,
     school_id: Option<i64>,
     period_start: &str,
     period_end: &str,
 ) -> Result<Option<SigningSheet>, DomainError> {
     let row = sqlx::query_as::<_, SigningSheet>(
-        "SELECT id, coach_id, school_id, period_start, period_end, signed_at, signed_by,
+        "SELECT id, workspace_id, coach_id, school_id, period_start, period_end, signed_at, signed_by,
                 pdf_path, notes, created_at, updated_at
          FROM signing_sheet
-         WHERE coach_id = ?1
-           AND (?2 IS NULL OR school_id = ?2)
-           AND period_start <= ?3
-           AND period_end >= ?4
+         WHERE workspace_id = ?1
+           AND coach_id = ?2
+           AND (?3 IS NULL OR school_id = ?3)
+           AND period_start <= ?4
+           AND period_end >= ?5
          ORDER BY period_end DESC LIMIT 1",
     )
+    .bind(workspace_id)
     .bind(coach_id)
     .bind(school_id)
     .bind(period_start)

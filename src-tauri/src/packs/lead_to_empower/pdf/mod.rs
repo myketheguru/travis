@@ -127,7 +127,9 @@ pub async fn export_invoice(
         period_start: Some(inv.period_start.clone()),
         period_end: Some(inv.period_end.clone()),
     };
-    let mut items = coach_hours::list(pool, filter)
+    // Scope to the invoice's workspace — coach_hours rows must come
+     // from the same world the invoice lives in.
+     let mut items = coach_hours::list(pool, &[inv.workspace_id], filter)
         .await
         .map_err(|e| anyhow!("list coach_hours: {e}"))?;
     // Render chronologically (list() returns DESC).

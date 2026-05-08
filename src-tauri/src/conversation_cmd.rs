@@ -9,8 +9,10 @@ pub async fn list_conversations(
     filter: Option<ConversationFilter>,
     limit: Option<i64>,
 ) -> Result<Vec<Conversation>, String> {
+    let visible = state.workspace.read().await.visible_ids.clone();
     conversation::list(
         &state.db.pool,
+        &visible,
         filter.unwrap_or_default(),
         limit.unwrap_or(50),
     )
@@ -39,7 +41,8 @@ pub async fn get_thread(
 pub async fn active_conversation(
     state: State<'_, AppState>,
 ) -> Result<Option<Thread>, String> {
-    let conv = conversation::most_recent_awaiting_user(&state.db.pool)
+    let visible = state.workspace.read().await.visible_ids.clone();
+    let conv = conversation::most_recent_awaiting_user(&state.db.pool, &visible)
         .await
         .map_err(|e| e.to_string())?;
     if let Some(c) = conv {

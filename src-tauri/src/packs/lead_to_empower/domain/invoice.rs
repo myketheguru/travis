@@ -8,6 +8,7 @@ use crate::behavioral;
 #[serde(rename_all = "camelCase")]
 pub struct Invoice {
     pub id: i64,
+    pub workspace_id: i64,
     pub number: String,
     pub recipient: String,
     pub coach_id: Option<i64>,
@@ -49,24 +50,40 @@ pub struct InvoiceFilter {
     pub coach_id: Option<i64>,
 }
 
-pub async fn list(pool: &SqlitePool, filter: InvoiceFilter) -> Result<Vec<Invoice>, DomainError> {
-    let rows = sqlx::query_as::<_, Invoice>(
-        "SELECT id, number, recipient, coach_id, school_id, signing_sheet_id,
+pub async fn list(
+    pool: &SqlitePool,
+    workspace_ids: &[i64],
+    filter: InvoiceFilter,
+) -> Result<Vec<Invoice>, DomainError> {
+    let ws_start = 3usize;
+    let ws_placeholders = (ws_start..ws_start + workspace_ids.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT id, workspace_id, number, recipient, coach_id, school_id, signing_sheet_id,
                 period_start, period_end, hours_total, rate_cents, amount_cents,
                 status, issued_at, paid_at, notes, created_at, updated_at
          FROM invoice
          WHERE (?1 IS NULL OR status = ?1)
            AND (?2 IS NULL OR coach_id = ?2)
-         ORDER BY period_end DESC, id DESC",
-    )
-    .bind(&filter.status)
-    .bind(filter.coach_id)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows)
+           AND workspace_id IN ({ws_placeholders})
+         ORDER BY period_end DESC, id DESC"
+    );
+    let mut q = sqlx::query_as::<_, Invoice>(&sql)
+        .bind(&filter.status)
+        .bind(filter.coach_id);
+    for ws in workspace_ids {
+        q = q.bind(ws);
+    }
+    Ok(q.fetch_all(pool).await?)
 }
 
-pub async fn upsert(pool: &SqlitePool, input: InvoiceInput) -> Result<Invoice, DomainError> {
+pub async fn upsert(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    input: InvoiceInput,
+) -> Result<Invoice, DomainError> {
     let number = input.number.trim().to_string();
     let recipient = input.recipient.trim().to_string();
     if number.is_empty() {
@@ -113,10 +130,11 @@ pub async fn upsert(pool: &SqlitePool, input: InvoiceInput) -> Result<Invoice, D
             id
         }
         None => sqlx::query(
-            "INSERT INTO invoice (number, recipient, coach_id, school_id, signing_sheet_id,
+            "INSERT INTO invoice (workspace_id, number, recipient, coach_id, school_id, signing_sheet_id,
                 period_start, period_end, hours_total, rate_cents, amount_cents, notes)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         )
+        .bind(workspace_id)
         .bind(&number)
         .bind(&recipient)
         .bind(input.coach_id)
@@ -143,6 +161,7 @@ pub async fn upsert(pool: &SqlitePool, input: InvoiceInput) -> Result<Invoice, D
             display_name: &inv.number,
             pack_slug: Some("lead-to-empower"),
             attributes_json: None,
+            workspace_id: inv.workspace_id,
         },
     )
     .await
@@ -166,6 +185,7 @@ pub async fn upsert(pool: &SqlitePool, input: InvoiceInput) -> Result<Invoice, D
                 pack_slug: Some("lead-to-empower"),
                 occurred_at: None,
                 attributes_json: Some(&attrs),
+                workspace_id: inv.workspace_id,
             },
         )
         .await
@@ -179,7 +199,7 @@ pub async fn upsert(pool: &SqlitePool, input: InvoiceInput) -> Result<Invoice, D
 
 pub async fn fetch_one(pool: &SqlitePool, id: i64) -> Result<Invoice, DomainError> {
     let row = sqlx::query_as::<_, Invoice>(
-        "SELECT id, number, recipient, coach_id, school_id, signing_sheet_id,
+        "SELECT id, workspace_id, number, recipient, coach_id, school_id, signing_sheet_id,
                 period_start, period_end, hours_total, rate_cents, amount_cents,
                 status, issued_at, paid_at, notes, created_at, updated_at
          FROM invoice WHERE id=?1",
@@ -248,6 +268,7 @@ pub async fn transition_status(
             pack_slug: Some("lead-to-empower"),
             occurred_at: None,
             attributes_json: Some(&attrs),
+            workspace_id: updated.workspace_id,
         },
     )
     .await
@@ -277,6 +298,7 @@ async fn validate_for_send(pool: &SqlitePool, invoice: &Invoice) -> Result<(), D
         }
         None => signing_sheet::find_match(
             pool,
+            invoice.workspace_id,
             coach_id,
             invoice.school_id,
             &invoice.period_start,

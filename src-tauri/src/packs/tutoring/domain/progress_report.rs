@@ -7,6 +7,7 @@ use super::DomainError;
 #[serde(rename_all = "camelCase")]
 pub struct ProgressReport {
     pub id: i64,
+    pub workspace_id: i64,
     pub student_id: i64,
     pub period_start: String,
     pub period_end: String,
@@ -38,25 +39,35 @@ pub struct ProgressReportFilter {
 
 pub async fn list(
     pool: &SqlitePool,
+    workspace_ids: &[i64],
     filter: ProgressReportFilter,
 ) -> Result<Vec<ProgressReport>, DomainError> {
-    let rows = sqlx::query_as::<_, ProgressReport>(
-        "SELECT id, student_id, period_start, period_end, content, sent_at, sent_to,
+    let ws_start = 3usize;
+    let ws_placeholders = (ws_start..ws_start + workspace_ids.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT id, workspace_id, student_id, period_start, period_end, content, sent_at, sent_to,
                 created_at, updated_at
          FROM progress_report
          WHERE (?1 IS NULL OR student_id = ?1)
            AND (?2 IS NULL OR (sent_at IS NOT NULL) = ?2)
-         ORDER BY period_end DESC, id DESC",
-    )
-    .bind(filter.student_id)
-    .bind(filter.sent)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows)
+           AND workspace_id IN ({ws_placeholders})
+         ORDER BY period_end DESC, id DESC"
+    );
+    let mut q = sqlx::query_as::<_, ProgressReport>(&sql)
+        .bind(filter.student_id)
+        .bind(filter.sent);
+    for ws in workspace_ids {
+        q = q.bind(ws);
+    }
+    Ok(q.fetch_all(pool).await?)
 }
 
 pub async fn upsert(
     pool: &SqlitePool,
+    workspace_id: i64,
     input: ProgressReportInput,
 ) -> Result<ProgressReport, DomainError> {
     if input.period_start > input.period_end {
@@ -85,10 +96,11 @@ pub async fn upsert(
             id
         }
         None => sqlx::query(
-            "INSERT INTO progress_report (student_id, period_start, period_end, content,
+            "INSERT INTO progress_report (workspace_id, student_id, period_start, period_end, content,
                 sent_at, sent_to)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )
+        .bind(workspace_id)
         .bind(input.student_id)
         .bind(&input.period_start)
         .bind(&input.period_end)
@@ -101,7 +113,7 @@ pub async fn upsert(
     };
 
     let row = sqlx::query_as::<_, ProgressReport>(
-        "SELECT id, student_id, period_start, period_end, content, sent_at, sent_to,
+        "SELECT id, workspace_id, student_id, period_start, period_end, content, sent_at, sent_to,
                 created_at, updated_at
          FROM progress_report WHERE id=?1",
     )
@@ -130,6 +142,7 @@ pub async fn upsert(
             pack_slug: Some("tutoring"),
             occurred_at: None,
             attributes_json: Some(&attrs),
+            workspace_id: row.workspace_id,
         },
     )
     .await

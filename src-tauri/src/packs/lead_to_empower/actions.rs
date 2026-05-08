@@ -6,7 +6,7 @@
 
 use serde::Deserialize;
 use sqlx::SqlitePool;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::actions::{ActionHandler, Applied};
 use crate::domain::coach_hours;
@@ -23,10 +23,12 @@ impl ActionHandler for ProposeInvoiceDraftHandler {
     async fn apply(
         &self,
         pool: &SqlitePool,
-        _app: &AppHandle,
+        app: &AppHandle,
         params_json: &str,
     ) -> anyhow::Result<Applied> {
-        apply(pool, params_json).await
+        let state = app.state::<crate::AppState>();
+        let workspace_id = state.workspace.read().await.active_id;
+        apply(pool, workspace_id, params_json).await
     }
 }
 
@@ -42,23 +44,30 @@ struct Params {
     recipient: Option<String>,
 }
 
-async fn resolve_or_create_coach(pool: &SqlitePool, name: &str) -> anyhow::Result<(i64, String)> {
+async fn resolve_or_create_coach(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    name: &str,
+) -> anyhow::Result<(i64, String)> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         anyhow::bail!("coach name required");
     }
     let existing: Option<(i64, String)> = sqlx::query_as(
         "SELECT id, name FROM coach
-         WHERE LOWER(TRIM(name)) = LOWER(TRIM(?1))
+         WHERE workspace_id = ?1
+           AND LOWER(TRIM(name)) = LOWER(TRIM(?2))
          ORDER BY id ASC LIMIT 1",
     )
+    .bind(workspace_id)
     .bind(trimmed)
     .fetch_optional(pool)
     .await?;
     if let Some((id, name)) = existing {
         return Ok((id, name));
     }
-    let id = sqlx::query("INSERT INTO coach (name) VALUES (?1)")
+    let id = sqlx::query("INSERT INTO coach (workspace_id, name) VALUES (?1, ?2)")
+        .bind(workspace_id)
         .bind(trimmed)
         .execute(pool)
         .await?
@@ -66,23 +75,30 @@ async fn resolve_or_create_coach(pool: &SqlitePool, name: &str) -> anyhow::Resul
     Ok((id, trimmed.to_string()))
 }
 
-async fn resolve_or_create_school(pool: &SqlitePool, name: &str) -> anyhow::Result<(i64, String)> {
+async fn resolve_or_create_school(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    name: &str,
+) -> anyhow::Result<(i64, String)> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         anyhow::bail!("school name required");
     }
     let existing: Option<(i64, String)> = sqlx::query_as(
         "SELECT id, name FROM school
-         WHERE LOWER(TRIM(name)) = LOWER(TRIM(?1))
+         WHERE workspace_id = ?1
+           AND LOWER(TRIM(name)) = LOWER(TRIM(?2))
          ORDER BY id ASC LIMIT 1",
     )
+    .bind(workspace_id)
     .bind(trimmed)
     .fetch_optional(pool)
     .await?;
     if let Some((id, name)) = existing {
         return Ok((id, name));
     }
-    let id = sqlx::query("INSERT INTO school (name) VALUES (?1)")
+    let id = sqlx::query("INSERT INTO school (workspace_id, name) VALUES (?1, ?2)")
+        .bind(workspace_id)
         .bind(trimmed)
         .execute(pool)
         .await?
@@ -124,12 +140,16 @@ fn fmt_cents(cents: i64) -> String {
     }
 }
 
-async fn apply(pool: &SqlitePool, params_json: &str) -> anyhow::Result<Applied> {
+async fn apply(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    params_json: &str,
+) -> anyhow::Result<Applied> {
     let p: Params = serde_json::from_str(params_json)?;
-    let (coach_id, coach_name) = resolve_or_create_coach(pool, &p.coach_name).await?;
+    let (coach_id, coach_name) = resolve_or_create_coach(pool, workspace_id, &p.coach_name).await?;
 
     let school_pair = if let Some(s) = p.school_name.as_ref() {
-        Some(resolve_or_create_school(pool, s).await?)
+        Some(resolve_or_create_school(pool, workspace_id, s).await?)
     } else {
         None
     };
@@ -168,6 +188,7 @@ async fn apply(pool: &SqlitePool, params_json: &str) -> anyhow::Result<Applied> 
     let number = next_invoice_number(pool).await?;
     let inv = invoice::upsert(
         pool,
+        workspace_id,
         InvoiceInput {
             id: None,
             number: number.clone(),
