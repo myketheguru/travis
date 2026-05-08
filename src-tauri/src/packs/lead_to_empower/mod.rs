@@ -18,7 +18,7 @@ pub mod pdf;
 pub mod pdf_cmd;
 mod tables;
 
-use crate::packs::{PackHandle, TableDef};
+use crate::packs::{AlertDef, AlertSeverity, PackHandle, TableDef};
 
 const SLUG: &str = "lead-to-empower";
 
@@ -67,7 +67,45 @@ impl PackHandle for LeadToEmpowerPack {
     fn tables(&self) -> &'static [TableDef] {
         tables::TABLES
     }
+
+    fn alerts(&self) -> &'static [AlertDef] {
+        ALERTS
+    }
 }
+
+// Operational alerts — the layer-2 metric L2E sells on. Without these,
+// the Splash screen shows "you have N invoices"; with them, it shows
+// "you have $X in hours waiting to be invoiced" — actionable.
+static ALERTS: &[AlertDef] = &[
+    AlertDef {
+        slug: "uninvoiced_hours",
+        label: "Hours not yet invoiced",
+        severity: AlertSeverity::Money,
+        // Counts coach_hours rows with no covering non-void invoice for
+        // the same coach in the same period. Sample fields are NULL for
+        // v1; the alert page can drill in once we wire ref-resolution.
+        sql: "SELECT COUNT(*) AS count, \
+                     NULL AS sample_label, \
+                     NULL AS sample_id \
+              FROM coach_hours h \
+              WHERE NOT EXISTS ( \
+                SELECT 1 FROM invoice i \
+                WHERE i.coach_id = h.coach_id \
+                  AND h.session_date BETWEEN i.period_start AND i.period_end \
+                  AND i.status != 'void' \
+              )",
+    },
+    AlertDef {
+        slug: "unsigned_sheets",
+        label: "Signing sheets awaiting signature",
+        severity: AlertSeverity::Action,
+        sql: "SELECT COUNT(*) AS count, \
+                     NULL AS sample_label, \
+                     NULL AS sample_id \
+              FROM signing_sheet \
+              WHERE signed_at IS NULL",
+    },
+];
 
 /// System-prompt fragment contributed by the L2E pack. Currently unused
 /// — step 10 of the pack refactor (PACKS_AUDIT.md) wires the system-

@@ -366,6 +366,7 @@ pub fn run() {
             packs_cmd::pack_table_get,
             packs_cmd::pack_table_upsert,
             packs_cmd::pack_table_delete,
+            packs_cmd::pack_alerts,
             updater_cmd::check_for_update,
             updater_cmd::install_update,
             health::health_status,

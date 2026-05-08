@@ -118,3 +118,21 @@ export type TableDeleteParams = {
 /** Auto-CRUD delete. Cascades follow the SQL FK definitions. */
 export const packTableDelete = (params: TableDeleteParams) =>
   invoke<void>("pack_table_delete", { params });
+
+export type AlertSeverity = "money" | "action" | "info";
+
+export type AlertResult = {
+  packSlug: string;
+  packName: string;
+  alertSlug: string;
+  label: string;
+  severity: AlertSeverity;
+  count: number;
+  sampleLabel: string | null;
+  sampleId: number | null;
+};
+
+/** Operational alerts from every enabled pack. Returns rows with
+ * non-zero counts only. The Splash screen renders these as the
+ * pack-supplied "metric to capitalise on". */
+export const packAlerts = () => invoke<AlertResult[]>("pack_alerts");

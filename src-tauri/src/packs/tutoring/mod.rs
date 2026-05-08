@@ -20,7 +20,7 @@
 pub mod domain;
 mod tables;
 
-use crate::packs::{PackHandle, PackMigration, TableDef};
+use crate::packs::{AlertDef, AlertSeverity, PackHandle, PackMigration, TableDef};
 
 const SLUG: &str = "tutoring";
 
@@ -67,7 +67,34 @@ impl PackHandle for TutoringPack {
     fn tables(&self) -> &'static [TableDef] {
         tables::TABLES
     }
+
+    fn alerts(&self) -> &'static [AlertDef] {
+        ALERTS
+    }
 }
+
+static ALERTS: &[AlertDef] = &[
+    AlertDef {
+        slug: "drafted_unsent_reports",
+        label: "Progress reports drafted but not sent",
+        severity: AlertSeverity::Action,
+        sql: "SELECT COUNT(*) AS count, \
+                     NULL AS sample_label, \
+                     NULL AS sample_id \
+              FROM progress_report \
+              WHERE sent_at IS NULL",
+    },
+    AlertDef {
+        slug: "no_show_sessions",
+        label: "No-show sessions to follow up",
+        severity: AlertSeverity::Action,
+        sql: "SELECT COUNT(*) AS count, \
+                     NULL AS sample_label, \
+                     NULL AS sample_id \
+              FROM session \
+              WHERE status = 'no_show'",
+    },
+];
 
 const TUTORING_INIT_SQL: &str = include_str!("migrations/0001_init.sql");
 

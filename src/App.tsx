@@ -6,6 +6,7 @@ import HealthBanner from "./components/HealthBanner";
 import { useAppStore } from "./stores/app";
 import { getAppStatus, getUserProfile } from "./lib/ipc";
 import { dbStats, type DbStats } from "./lib/domain";
+import { packAlerts, type AlertResult } from "./lib/packs";
 import Onboarding from "./onboarding/Onboarding";
 import Settings from "./settings/Settings";
 import Manage from "./manage/Manage";
@@ -129,9 +130,11 @@ function Splash({
 }) {
   const first = name ? name.split(" ")[0] : null;
   const [stats, setStats] = useState<DbStats | null>(null);
+  const [alerts, setAlerts] = useState<AlertResult[]>([]);
 
   const refreshStats = useCallback(() => {
     dbStats().then(setStats).catch(() => setStats(null));
+    packAlerts().then(setAlerts).catch(() => setAlerts([]));
   }, []);
 
   useEffect(() => {
@@ -208,6 +211,26 @@ function Splash({
         animate={{ opacity: 1 }}
         transition={{ delay: 0.6, duration: 0.6 }}
       >
+        {alerts.length > 0 && (
+          <div className="flex flex-col items-center gap-1 mb-2">
+            {alerts.map((a) => (
+              <span
+                key={`${a.packSlug}.${a.alertSlug}`}
+                className={
+                  "text-[11px] tracking-wide " +
+                  (a.severity === "money"
+                    ? "text-warn"
+                    : a.severity === "action"
+                    ? "text-pulse-2"
+                    : "text-bone-3")
+                }
+              >
+                <span className="font-mono">{a.count}</span>{" "}
+                {a.label.toLowerCase()}
+              </span>
+            ))}
+          </div>
+        )}
         {stats && (
           <div className="flex items-center gap-3 text-[11px] tracking-wide font-mono opacity-70 mb-1">
             <span><span className="text-bone-2">{stats.tasksOpen}</span> tasks</span>

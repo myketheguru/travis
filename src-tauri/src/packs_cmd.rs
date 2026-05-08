@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use tauri::State;
 
-use crate::packs::{self, FieldType, TableDef};
+use crate::packs::{self, AlertSeverity, FieldType, TableDef};
 use crate::AppState;
 
 #[derive(Serialize)]
@@ -341,6 +341,58 @@ pub struct TableDeleteParams {
     pub pack_slug: String,
     pub table_slug: String,
     pub id: i64,
+}
+
+/// Operational alerts from every enabled pack. Runs each pack's
+/// `alerts()` SQL and returns rows with non-zero counts. The Splash
+/// screen renders these as the "metric to capitalise on" — a sharper
+/// signal than raw entity counts.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlertResult {
+    pub pack_slug: String,
+    pub pack_name: String,
+    pub alert_slug: String,
+    pub label: String,
+    pub severity: AlertSeverity,
+    pub count: i64,
+    pub sample_label: Option<String>,
+    pub sample_id: Option<i64>,
+}
+
+#[tauri::command]
+pub async fn pack_alerts(state: State<'_, AppState>) -> Result<Vec<AlertResult>, String> {
+    let mut out = Vec::new();
+    for pack in &state.enabled_packs {
+        for alert in pack.alerts() {
+            let row: Result<(i64, Option<String>, Option<i64>), sqlx::Error> =
+                sqlx::query_as(alert.sql).fetch_one(&state.db.pool).await;
+            match row {
+                Ok((count, sample_label, sample_id)) => {
+                    if count > 0 {
+                        out.push(AlertResult {
+                            pack_slug: pack.slug().to_string(),
+                            pack_name: pack.name().to_string(),
+                            alert_slug: alert.slug.to_string(),
+                            label: alert.label.to_string(),
+                            severity: alert.severity,
+                            count,
+                            sample_label,
+                            sample_id,
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "alert {}/{} sql failed: {e}",
+                        pack.slug(),
+                        alert.slug
+                    );
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Auto-CRUD delete. ON DELETE CASCADE / SET NULL clauses on FKs handle

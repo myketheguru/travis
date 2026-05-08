@@ -114,6 +114,17 @@ pub trait PackHandle: Send + Sync {
     fn tables(&self) -> &'static [TableDef] {
         &[]
     }
+
+    /// Operational alerts — the layer-2 "metric to capitalise on" per
+    /// PLUGIN_PLATFORM.md. Each alert is a SQL query that returns one
+    /// row with three columns: `count` (i64, the headline number),
+    /// `sample_label` (Option<TEXT>, optional human-readable identifier
+    /// for a representative affected row), `sample_id` (Option<i64>,
+    /// optional id for navigating to the row). Surfaces in the Splash
+    /// screen and feeds the proactive-nudge prompt.
+    fn alerts(&self) -> &'static [AlertDef] {
+        &[]
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +238,35 @@ pub struct ListViewDef {
 pub enum SortDir {
     Asc,
     Desc,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlertDef {
+    /// Stable identifier per pack — used for telemetry / dismiss state.
+    pub slug: &'static str,
+
+    /// Human-facing alert label, e.g. "Uninvoiced billable hours".
+    pub label: &'static str,
+
+    pub severity: AlertSeverity,
+
+    /// SQL that returns exactly one row with three columns:
+    ///   count: INTEGER NOT NULL
+    ///   sample_label: TEXT NULL
+    ///   sample_id: INTEGER NULL
+    pub sql: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AlertSeverity {
+    /// Dollars at risk — the highest-priority alert kind.
+    Money,
+    /// Things that need an action soon (overdue items, stuck workflows).
+    Action,
+    /// Informational state that's worth knowing about but not urgent.
+    Info,
 }
 
 /// A single SQL migration file, bundled into the binary at compile time.
