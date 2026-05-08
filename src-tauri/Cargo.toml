@@ -15,7 +15,14 @@ default = ["pack-lead-to-empower"]
 # `src/packs/<slug>/` submodule and its registration with
 # `enabled_packs()`. Disable a feature to ship a build without that
 # vertical's domain code, prompts, and action handlers.
+#
+# Until the runtime pack-selection layer lands, only one pack ships
+# in the default build (`pack-lead-to-empower`). Build with
+# `--features pack-tutoring` to add the tutoring pack to a build,
+# or with `--no-default-features --features pack-tutoring` for a
+# tutoring-only build.
 pack-lead-to-empower = []
+pack-tutoring        = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

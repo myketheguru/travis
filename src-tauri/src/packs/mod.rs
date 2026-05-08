@@ -17,6 +17,9 @@ use sqlx::SqlitePool;
 #[cfg(feature = "pack-lead-to-empower")]
 pub mod lead_to_empower;
 
+#[cfg(feature = "pack-tutoring")]
+pub mod tutoring;
+
 /// A bundled pack. All methods take `&self` so [`PackHandle`] can live behind
 /// a `&'static dyn PackHandle` reference returned from [`enabled_packs`].
 pub trait PackHandle: Send + Sync {
@@ -90,6 +93,8 @@ pub fn enabled_packs() -> &'static [&'static dyn PackHandle] {
     &[
         #[cfg(feature = "pack-lead-to-empower")]
         &lead_to_empower::LeadToEmpowerPack,
+        #[cfg(feature = "pack-tutoring")]
+        &tutoring::TutoringPack,
     ]
 }
 

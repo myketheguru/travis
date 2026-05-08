@@ -8,7 +8,10 @@
 # version, sqlx refuses to open the DB on subsequent runs ("migration N
 # was previously applied but has been modified"). Pinning these to LF
 # avoids that mismatch.
-src-tauri/migrations/*.sql text eol=lf
+#
+# Covers both core migrations (src-tauri/migrations/) and per-pack
+# migrations (src-tauri/src/packs/<slug>/migrations/).
+**/*.sql text eol=lf
 
 # Same logic for any shell scripts CI executes — keep them LF.
 *.sh                              text eol=lf
