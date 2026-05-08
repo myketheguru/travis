@@ -15,3 +15,74 @@ export const listPacks = () => invoke<PackInfo[]>("list_packs");
  * next launch — surface a "Restart Travis" hint after calling. */
 export const setPackEnabled = (slug: string, enabled: boolean) =>
   invoke<void>("set_pack_enabled", { slug, enabled });
+
+// ---------------------------------------------------------------------------
+// Plugin platform — schema metadata + auto-CRUD (PLUGIN_PLATFORM.md)
+// ---------------------------------------------------------------------------
+
+export type FieldType =
+  | { kind: "text" }
+  | { kind: "longText" }
+  | { kind: "email" }
+  | { kind: "phone" }
+  | { kind: "integer" }
+  | { kind: "number" }
+  | { kind: "currency" }
+  | { kind: "date" }
+  | { kind: "dateTime" }
+  | { kind: "bool" }
+  | { kind: "enum"; options: string[] }
+  | { kind: "ref"; table: string }
+  | { kind: "json" }
+  | { kind: "timestamp" };
+
+export type FieldDef = {
+  slug: string;
+  label: string;
+  fieldType: FieldType;
+  required: boolean;
+  help: string | null;
+  defaultInList: boolean;
+};
+
+export type SortDir = "asc" | "desc";
+
+export type ListViewDef = {
+  columns: string[];
+  defaultSort: string | null;
+  defaultSortDir: SortDir;
+  pageSize: number;
+};
+
+export type TableDef = {
+  slug: string;
+  displayName: string;
+  singularName: string;
+  displayField: string;
+  entityKind: string | null;
+  fields: FieldDef[];
+  primary: boolean;
+  listView: ListViewDef;
+};
+
+export type PackSchema = {
+  slug: string;
+  name: string;
+  tables: TableDef[];
+};
+
+/** Schema metadata for every enabled pack. Drives the auto-CRUD UI. */
+export const packSchemas = () => invoke<PackSchema[]>("pack_schemas");
+
+export type TableListParams = {
+  packSlug: string;
+  tableSlug: string;
+  sort?: string;
+  sortDir?: SortDir;
+  limit?: number;
+  offset?: number;
+};
+
+/** Auto-CRUD list. Returns each row as a flat object keyed by field slug. */
+export const packTableList = (params: TableListParams) =>
+  invoke<Record<string, unknown>[]>("pack_table_list", { params });

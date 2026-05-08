@@ -16,8 +16,9 @@ pub mod domain;
 pub mod domain_cmd;
 pub mod pdf;
 pub mod pdf_cmd;
+mod tables;
 
-use crate::packs::PackHandle;
+use crate::packs::{PackHandle, TableDef};
 
 const SLUG: &str = "lead-to-empower";
 
@@ -61,6 +62,10 @@ impl PackHandle for LeadToEmpowerPack {
 
     fn register_actions(&self, registry: &mut crate::actions::ActionRegistry) {
         registry.register(Box::new(actions::ProposeInvoiceDraftHandler));
+    }
+
+    fn tables(&self) -> &'static [TableDef] {
+        tables::TABLES
     }
 }
 

@@ -105,6 +105,128 @@ pub trait PackHandle: Send + Sync {
     fn register_actions(&self, registry: &mut crate::actions::ActionRegistry) {
         let _ = registry;
     }
+
+    /// Schema metadata for the pack's typed tables. Drives auto-CRUD UI
+    /// (frontend renders list/detail/edit views by reading this) and
+    /// the auto-CRUD Tauri commands (build SQL from the field metadata).
+    /// See [PLUGIN_PLATFORM.md](../../../../PLUGIN_PLATFORM.md) for the
+    /// full spec. Default: no tables (auto-UI does nothing for this pack).
+    fn tables(&self) -> &'static [TableDef] {
+        &[]
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Schema metadata — drives auto-CRUD UI and the generic Tauri commands
+// (PLUGIN_PLATFORM.md). Every type is `'static` so the metadata lives in
+// the binary's read-only data section; pack authors declare table defs in
+// `static` slots in their `mod.rs`.
+// ---------------------------------------------------------------------------
+
+use serde::Serialize;
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableDef {
+    /// SQLite table name. Must match an actual table the pack's
+    /// migrations created.
+    pub slug: &'static str,
+
+    /// Plural display name shown in nav and tab labels: "Tutors".
+    pub display_name: &'static str,
+
+    /// Singular display name shown in detail views: "Tutor".
+    pub singular_name: &'static str,
+
+    /// The field whose value is the row's human-facing identifier.
+    /// Used for refs, spine entity registration, and detail-page titles.
+    /// Almost always "name".
+    pub display_field: &'static str,
+
+    /// When set, every auto-CRUD upsert syncs to `entity` with this
+    /// kind. Match to the pack's `entity_kinds()` declaration.
+    pub entity_kind: Option<&'static str>,
+
+    /// Per-field metadata.
+    pub fields: &'static [FieldDef],
+
+    /// Should this table appear as a top-level tab in Manage?
+    /// Secondary tables (join logs, audit) set false.
+    pub primary: bool,
+
+    /// List-view configuration.
+    pub list_view: ListViewDef,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FieldDef {
+    /// SQL column name.
+    pub slug: &'static str,
+
+    /// Form label.
+    pub label: &'static str,
+
+    pub field_type: FieldType,
+
+    /// Required at create time.
+    pub required: bool,
+
+    /// Help text shown under the form input.
+    pub help: Option<&'static str>,
+
+    /// Whether to include this field in the list view's default columns.
+    pub default_in_list: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum FieldType {
+    /// Single-line free text.
+    Text,
+    /// Multi-line free text → renders as `<textarea>`.
+    LongText,
+    Email,
+    Phone,
+    /// 64-bit integer (SQLite's INTEGER).
+    Integer,
+    /// Floating-point number.
+    Number,
+    /// Stored as integer cents; rendered as $X.YY.
+    Currency,
+    /// ISO 8601 date (YYYY-MM-DD).
+    Date,
+    /// ISO 8601 timestamp.
+    DateTime,
+    /// Boolean — checkbox in forms, yes/no in list.
+    Bool,
+    /// One of a fixed set of values — dropdown.
+    Enum { options: &'static [&'static str] },
+    /// Foreign key into another pack table. Renders as a typeahead
+    /// picker; list view shows the referenced row's `display_field`.
+    Ref { table: &'static str },
+    /// Free-form JSON. Read-only in auto-UI.
+    Json,
+    /// Read-only field populated by the database (e.g. `created_at`).
+    Timestamp,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListViewDef {
+    /// Columns to show, by field slug, in order. Empty = every field
+    /// where `default_in_list = true`.
+    pub columns: &'static [&'static str],
+    pub default_sort: Option<&'static str>,
+    pub default_sort_dir: SortDir,
+    pub page_size: u32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SortDir {
+    Asc,
+    Desc,
 }
 
 /// A single SQL migration file, bundled into the binary at compile time.

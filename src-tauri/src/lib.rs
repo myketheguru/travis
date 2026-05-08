@@ -361,6 +361,8 @@ pub fn run() {
             flags_cmd::set_flags_url,
             packs_cmd::list_packs,
             packs_cmd::set_pack_enabled,
+            packs_cmd::pack_schemas,
+            packs_cmd::pack_table_list,
             updater_cmd::check_for_update,
             updater_cmd::install_update,
             health::health_status,

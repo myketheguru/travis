@@ -18,8 +18,9 @@
 //! Cargo flag becomes a build-trim option only.
 
 pub mod domain;
+mod tables;
 
-use crate::packs::{PackHandle, PackMigration};
+use crate::packs::{PackHandle, PackMigration, TableDef};
 
 const SLUG: &str = "tutoring";
 
@@ -61,6 +62,10 @@ impl PackHandle for TutoringPack {
 
     fn action_kinds(&self) -> &'static [&'static str] {
         &[]
+    }
+
+    fn tables(&self) -> &'static [TableDef] {
+        tables::TABLES
     }
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import AskTab from "./tabs/AskTab";
 import TasksTab from "./tabs/TasksTab";
@@ -9,38 +9,102 @@ import AsksTab from "./tabs/AsksTab";
 import ThreadsTab from "./tabs/ThreadsTab";
 import InvoicesTab from "./tabs/InvoicesTab";
 import { useAppStore } from "../stores/app";
+import { packSchemas, type PackSchema, type TableDef } from "../lib/packs";
+import { ListView } from "../lib/autoCRUD";
 
-type Tab = "ask" | "threads" | "tasks" | "invoices" | "reminders" | "entities" | "summaries" | "asks";
+type CoreTabId =
+  | "ask"
+  | "threads"
+  | "tasks"
+  | "invoices"
+  | "reminders"
+  | "entities"
+  | "summaries"
+  | "asks";
 
-type TabDef = { id: Tab; label: string; diagnostic?: boolean; requiresPack?: string };
+type CoreTab = {
+  kind: "core";
+  id: CoreTabId;
+  label: string;
+  diagnostic?: boolean;
+  requiresPack?: string;
+};
 
-const allTabs: TabDef[] = [
-  { id: "ask",       label: "Ask" },
-  { id: "threads",   label: "Threads" },
-  { id: "tasks",     label: "Tasks" },
-  { id: "invoices",  label: "Invoices",   requiresPack: "lead-to-empower" },
-  { id: "reminders", label: "Reminders" },
-  { id: "entities",  label: "Entities",   diagnostic: true },
-  { id: "summaries", label: "Summaries",  diagnostic: true },
-  { id: "asks",      label: "Asks of me", diagnostic: true },
+type PackTab = {
+  kind: "pack";
+  id: string; // pack:<packSlug>:<tableSlug>
+  label: string;
+  pack: PackSchema;
+  table: TableDef;
+};
+
+type Tab = CoreTab | PackTab;
+
+const coreTabsBefore: CoreTab[] = [
+  { kind: "core", id: "ask",       label: "Ask" },
+  { kind: "core", id: "threads",   label: "Threads" },
+  { kind: "core", id: "tasks",     label: "Tasks" },
 ];
+
+const coreTabsAfter: CoreTab[] = [
+  { kind: "core", id: "invoices",  label: "Invoices",   requiresPack: "lead-to-empower" },
+  { kind: "core", id: "reminders", label: "Reminders" },
+  { kind: "core", id: "entities",  label: "Entities",   diagnostic: true },
+  { kind: "core", id: "summaries", label: "Summaries",  diagnostic: true },
+  { kind: "core", id: "asks",      label: "Asks of me", diagnostic: true },
+];
+
+// Pack tables that are rendered by hand-written components instead of
+// auto-CRUD. The auto-tab generator skips these to avoid double tabs.
+// Once the custom-UI-override mechanism lands (slice 6), this list goes
+// away — packs declare their overrides in metadata.
+const HAND_WRITTEN_TABLES = new Set<string>([
+  "lead-to-empower:invoice", // L2E InvoicesTab.tsx
+]);
 
 export default function Manage({ onClose }: { onClose: () => void }) {
   const showDiagnostics = useAppStore((s) => s.showDiagnostics);
   const enabledPacks = useAppStore((s) => s.status?.enabledPacks ?? []);
-  const tabs = allTabs.filter((t) => {
-    if (t.diagnostic && !showDiagnostics) return false;
-    if (t.requiresPack && !enabledPacks.includes(t.requiresPack)) return false;
-    return true;
-  });
-  const [tab, setTab] = useState<Tab>("ask");
+  const [schemas, setSchemas] = useState<PackSchema[] | null>(null);
+  const [tab, setTab] = useState<string>("ask");
 
-  // If the active tab gets hidden by toggling diagnostics off, fall back to Ask.
+  useEffect(() => {
+    packSchemas().then(setSchemas).catch(() => setSchemas([]));
+  }, []);
+
+  const tabs = useMemo<Tab[]>(() => {
+    const packTabs: PackTab[] = (schemas ?? []).flatMap((pack) =>
+      pack.tables
+        .filter((t) => t.primary)
+        .filter((t) => !HAND_WRITTEN_TABLES.has(`${pack.slug}:${t.slug}`))
+        .map<PackTab>((t) => ({
+          kind: "pack",
+          id: `pack:${pack.slug}:${t.slug}`,
+          label: t.displayName,
+          pack,
+          table: t,
+        })),
+    );
+
+    const all: Tab[] = [...coreTabsBefore, ...packTabs, ...coreTabsAfter];
+    return all.filter((t) => {
+      if (t.kind === "core") {
+        if (t.diagnostic && !showDiagnostics) return false;
+        if (t.requiresPack && !enabledPacks.includes(t.requiresPack)) return false;
+      }
+      return true;
+    });
+  }, [schemas, showDiagnostics, enabledPacks]);
+
+  // If the active tab disappears (diagnostics toggled off, pack disabled),
+  // fall back to Ask.
   useEffect(() => {
     if (!tabs.find((t) => t.id === tab)) {
       setTab("ask");
     }
   }, [tabs, tab]);
+
+  const active = tabs.find((t) => t.id === tab);
 
   return (
     <main className="relative h-full w-full overflow-hidden flex flex-col">
@@ -62,13 +126,13 @@ export default function Manage({ onClose }: { onClose: () => void }) {
         <p className="text-bone-3 text-xs mt-1">Browse, query, and act on what Travis knows.</p>
       </motion.div>
 
-      <div className="px-10 border-b border-white/[0.05] flex items-center gap-1">
+      <div className="px-10 border-b border-white/[0.05] flex items-center gap-1 overflow-x-auto">
         {tabs.map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
             className={
-              "relative px-3 py-2.5 text-xs tracking-wider transition-colors " +
+              "relative px-3 py-2.5 text-xs tracking-wider transition-colors whitespace-nowrap " +
               (tab === t.id ? "text-bone" : "text-bone-3 hover:text-bone-2")
             }
           >
@@ -85,14 +149,17 @@ export default function Manage({ onClose }: { onClose: () => void }) {
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {tab === "ask" && <AskTab />}
-        {tab === "threads" && <ThreadsTab />}
-        {tab === "tasks" && <TasksTab />}
-        {tab === "invoices" && <InvoicesTab />}
-        {tab === "reminders" && <RemindersTab />}
-        {tab === "entities" && <EntitiesTab />}
-        {tab === "summaries" && <SummariesTab />}
-        {tab === "asks" && <AsksTab />}
+        {active?.kind === "core" && active.id === "ask" && <AskTab />}
+        {active?.kind === "core" && active.id === "threads" && <ThreadsTab />}
+        {active?.kind === "core" && active.id === "tasks" && <TasksTab />}
+        {active?.kind === "core" && active.id === "invoices" && <InvoicesTab />}
+        {active?.kind === "core" && active.id === "reminders" && <RemindersTab />}
+        {active?.kind === "core" && active.id === "entities" && <EntitiesTab />}
+        {active?.kind === "core" && active.id === "summaries" && <SummariesTab />}
+        {active?.kind === "core" && active.id === "asks" && <AsksTab />}
+        {active?.kind === "pack" && (
+          <ListView pack={active.pack} table={active.table} />
+        )}
       </div>
     </main>
   );
