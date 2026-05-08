@@ -20,7 +20,11 @@ pub struct Summary {
     pub created_at: String,
 }
 
-fn daily_system_prompt(profile: &UserProfile, pack_fragment: &str) -> String {
+fn daily_system_prompt(
+    profile: &UserProfile,
+    pack_fragment: &str,
+    workspace_block: &str,
+) -> String {
     let mut prompt = format!(
         "You generate brief operational summaries for the user.\n\n{}\n\nOutput 2-4 sentences. No headers. Focus on what got done and what's outstanding.",
         profile.context_block(),
@@ -29,10 +33,18 @@ fn daily_system_prompt(profile: &UserProfile, pack_fragment: &str) -> String {
         prompt.push_str("\n\n");
         prompt.push_str(pack_fragment);
     }
+    if !workspace_block.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(workspace_block);
+    }
     prompt
 }
 
-fn weekly_system_prompt(profile: &UserProfile, pack_fragment: &str) -> String {
+fn weekly_system_prompt(
+    profile: &UserProfile,
+    pack_fragment: &str,
+    workspace_block: &str,
+) -> String {
     let mut prompt = format!(
         "You generate brief operational weekly summaries for the user.\n\n{}\n\nIdentify 1-2 patterns or recurring themes from the week. Output 4-6 sentences. No headers. Focus on what got done, what's outstanding, and patterns.",
         profile.context_block(),
@@ -40,6 +52,10 @@ fn weekly_system_prompt(profile: &UserProfile, pack_fragment: &str) -> String {
     if !pack_fragment.is_empty() {
         prompt.push_str("\n\n");
         prompt.push_str(pack_fragment);
+    }
+    if !workspace_block.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(workspace_block);
     }
     prompt
 }
@@ -220,6 +236,12 @@ pub async fn generate_daily(state: &AppState, date: &str) -> anyhow::Result<Summ
 
     let user_msg = day.render(date);
 
+    let workspace_block = crate::workspaces::prompt_context_block(
+        &state.db.pool,
+        state.workspace.read().await.active_id,
+    )
+    .await;
+
     let resp = provider
         .chat(
             vec![Message::user(user_msg)],
@@ -227,6 +249,7 @@ pub async fn generate_daily(state: &AppState, date: &str) -> anyhow::Result<Summ
                 system: Some(daily_system_prompt(
                     &profile,
                     &crate::packs::prompt_fragment(&state.enabled_packs),
+                    &workspace_block,
                 )),
                 cache_system: true,
                 json_mode: false,
@@ -342,6 +365,12 @@ pub async fn generate_weekly(state: &AppState, week_start: &str) -> anyhow::Resu
         user_msg.push('\n');
     }
 
+    let workspace_block = crate::workspaces::prompt_context_block(
+        &state.db.pool,
+        state.workspace.read().await.active_id,
+    )
+    .await;
+
     let resp = provider
         .chat(
             vec![Message::user(user_msg)],
@@ -349,6 +378,7 @@ pub async fn generate_weekly(state: &AppState, week_start: &str) -> anyhow::Resu
                 system: Some(weekly_system_prompt(
                     &profile,
                     &crate::packs::prompt_fragment(&state.enabled_packs),
+                    &workspace_block,
                 )),
                 cache_system: true,
                 json_mode: false,

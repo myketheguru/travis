@@ -297,6 +297,31 @@ pub fn run() {
             telemetry::sender::spawn(handle.clone(), db_arc.clone(), http.clone());
             proactive::spawn(handle.clone(), db_arc.clone(), http.clone(), health_arc.clone());
 
+            // Auto-close idle conversations: fire once at startup, then
+            // daily. Cheap UPDATE; no side effects beyond status change.
+            {
+                let pool = db_arc.pool.clone();
+                tauri::async_runtime::spawn(async move {
+                    // One pass right away — covers the case where the
+                    // app was closed during the would-be tick.
+                    match crate::conversation::auto_close_idle(&pool).await {
+                        Ok(n) if n > 0 => tracing::info!("auto-closed {n} idle conversations"),
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!("auto-close idle conversations: {e}"),
+                    }
+                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(86_400));
+                    ticker.tick().await; // skip the immediate first tick
+                    loop {
+                        ticker.tick().await;
+                        match crate::conversation::auto_close_idle(&pool).await {
+                            Ok(n) if n > 0 => tracing::info!("auto-closed {n} idle conversations"),
+                            Ok(_) => {}
+                            Err(e) => tracing::warn!("auto-close idle conversations: {e}"),
+                        }
+                    }
+                });
+            }
+
             let pool = db_arc.pool.clone();
             let http_clone = http.clone();
             tauri::async_runtime::spawn(async move {

@@ -17,7 +17,11 @@ use crate::secrets;
 use crate::telemetry;
 use crate::AppState;
 
-fn build_system_prompt(profile: &UserProfile, pack_fragment: &str) -> String {
+fn build_system_prompt(
+    profile: &UserProfile,
+    pack_fragment: &str,
+    workspace_block: &str,
+) -> String {
     let name = profile.name.trim();
     let first = name.split_whitespace().next().unwrap_or(name);
     let role = profile.role.trim();
@@ -138,6 +142,10 @@ You also have access to read-only tools you can call autonomously during the con
     if !pack_fragment.is_empty() {
         prompt.push_str("\n\n");
         prompt.push_str(pack_fragment);
+    }
+    if !workspace_block.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(workspace_block);
     }
     prompt
 }
@@ -582,9 +590,22 @@ pub async fn journal_ingest(
 
     // Pull semantic memory hits so Travis can answer questions grounded in past notes.
     let entities_hint = extract_entity_hints(&raw);
-    let mem_hits = memory::retrieve(&state.db.pool, &raw, &entities_hint, 5)
-        .await
-        .unwrap_or_default();
+    let ws_snapshot = state.workspace.read().await.clone();
+    let mem_hits = memory::retrieve(
+        &state.db.pool,
+        &ws_snapshot.visible_ids,
+        &raw,
+        &entities_hint,
+        5,
+    )
+    .await
+    .unwrap_or_default();
+
+    let workspace_block = crate::workspaces::prompt_context_block(
+        &state.db.pool,
+        ws_snapshot.active_id,
+    )
+    .await;
 
     let user_msg = format!(
         "Today is {today}.\n\nOPEN TASKS (id · title):\n{open}\n\nRELEVANT MEMORY:\n{mem}\n\nNew turn:\n{raw}",
@@ -632,6 +653,7 @@ pub async fn journal_ingest(
                 system: Some(build_system_prompt(
                     &profile,
                     &crate::packs::prompt_fragment(&state.enabled_packs),
+                    &workspace_block,
                 )),
                 cache_system: true,
                 temperature: Some(0.3),
@@ -844,7 +866,11 @@ pub async fn journal_ingest(
     }
 
     // Semantic indexing happens for both — conversational notes are still memory.
-    if let Err(e) = memory::index_journal_entry(&state.db.pool, entry_id, &raw).await {
+    // The embedding row inherits the journal entry's workspace_id so
+    // retrieval can scope by workspace at scan time.
+    if let Err(e) =
+        memory::index_journal_entry(&state.db.pool, active_ws_id, entry_id, &raw).await
+    {
         tracing::warn!("failed to index journal entry #{entry_id} for semantic memory: {e}");
     }
 

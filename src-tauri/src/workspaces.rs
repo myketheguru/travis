@@ -130,6 +130,35 @@ pub async fn fetch_optional(
 }
 
 // ---------------------------------------------------------------------------
+// Prompt context — surfaces the active workspace to the LLM so it can
+// frame answers in the right "world" and avoid bleeding personal-life
+// detail into a work workspace's responses.
+// ---------------------------------------------------------------------------
+
+/// Render the active-workspace block injected into system prompts.
+/// Empty string when the workspace can't be fetched (extremely rare —
+/// startup guarantees the row exists). Sensitive workspaces get an
+/// extra line so the model knows to treat the context tighter.
+pub async fn prompt_context_block(pool: &SqlitePool, active_id: i64) -> String {
+    let Ok(ws) = fetch_one(pool, active_id).await else {
+        return String::new();
+    };
+    let mut out = format!(
+        "ACTIVE WORKSPACE: {} ({})",
+        ws.name.trim(),
+        ws.category
+    );
+    if ws.is_sensitive() {
+        out.push_str(
+            "\n  This is a sensitive workspace — keep responses scoped to it. \
+             Don't mix in details from other workspaces, and don't speculate \
+             outside what's been shared here.",
+        );
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Active workspace + visibility
 // ---------------------------------------------------------------------------
 

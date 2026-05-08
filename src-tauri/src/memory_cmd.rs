@@ -19,20 +19,23 @@ pub struct AskResponse {
 }
 
 /// Bulk (re)index every journal entry's raw_text. Idempotent — replaces existing rows.
+///
+/// Re-uses each journal entry's stored workspace_id so embeddings
+/// stay scoped to the same world as their source.
 #[tauri::command]
 pub async fn index_all_journal_entries(state: State<'_, AppState>) -> Result<usize, String> {
-    let rows: Vec<(i64, String)> =
-        sqlx::query_as("SELECT id, raw_text FROM journal_entry ORDER BY id ASC")
+    let rows: Vec<(i64, String, i64)> =
+        sqlx::query_as("SELECT id, raw_text, workspace_id FROM journal_entry ORDER BY id ASC")
             .fetch_all(&state.db.pool)
             .await
             .map_err(|e| e.to_string())?;
 
     let mut count = 0usize;
-    for (id, raw) in rows {
+    for (id, raw, ws_id) in rows {
         if raw.trim().is_empty() {
             continue;
         }
-        match memory::index_journal_entry(&state.db.pool, id, &raw).await {
+        match memory::index_journal_entry(&state.db.pool, ws_id, id, &raw).await {
             Ok(()) => count += 1,
             Err(e) => {
                 tracing::warn!("index_all: failed for journal#{id}: {e}");
@@ -178,11 +181,16 @@ pub async fn ask_travis(
     // Retrieval is grounded in the LATEST question only — prior turns provide
     // conversational context, fresh retrieval picks the most relevant snippets.
     let entities = extract_entities(&q);
-    let hits = memory::retrieve(&state.db.pool, &q, &entities, 5)
-        .await
-        .map_err(|e| e.to_string())?;
-
     let ws_state = state.workspace.read().await.clone();
+    let hits = memory::retrieve(
+        &state.db.pool,
+        &ws_state.visible_ids,
+        &q,
+        &entities,
+        5,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     let open_tasks = task::list(
         &state.db.pool,
         &ws_state,
@@ -244,6 +252,17 @@ offer to log it.",
     if !pack_fragment.is_empty() {
         system.push_str("\n\n");
         system.push_str(&pack_fragment);
+    }
+
+    // Workspace context — frames the answer in the active world.
+    let workspace_block = crate::workspaces::prompt_context_block(
+        &state.db.pool,
+        state.workspace.read().await.active_id,
+    )
+    .await;
+    if !workspace_block.is_empty() {
+        system.push_str("\n\n");
+        system.push_str(&workspace_block);
     }
 
     // Build history from conversation_message — drop the just-appended user

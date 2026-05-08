@@ -161,6 +161,29 @@ pub async fn list(
     q.fetch_all(pool).await
 }
 
+/// Auto-close any conversation that's been idle for 7+ days.
+///
+/// Runs on app startup and on a daily schedule. Closes any
+/// conversation in `awaiting_user` status whose updated_at is older
+/// than the cutoff. Returns the number of rows updated.
+///
+/// Why a job: long-running awaiting_user conversations clog the
+/// "where did we leave off" surface (most_recent_awaiting_user) and
+/// stale workspaces feel cluttered. 7d is short enough that real
+/// follow-ups still fall in the window, long enough that paused work
+/// doesn't get yanked away.
+pub async fn auto_close_idle(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
+    let res = sqlx::query(
+        "UPDATE conversation
+         SET status = 'closed', updated_at = updated_at
+         WHERE status = 'awaiting_user'
+           AND datetime(updated_at) < datetime('now', '-7 days')",
+    )
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
 pub async fn most_recent_awaiting_user(
     pool: &SqlitePool,
     visible_ids: &[i64],

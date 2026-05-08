@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tauri::Manager;
 
 use crate::llm::ToolDef;
 use crate::memory;
@@ -49,7 +50,9 @@ impl Tool for SearchMemoryTool {
         }
         let limit = p.limit.unwrap_or(5).min(15);
         let entities = p.entities.unwrap_or_default();
-        let hits = memory::retrieve(&ctx.db.pool, q, &entities, limit)
+        let app_state = ctx.app.state::<crate::AppState>();
+        let visible = app_state.workspace.read().await.visible_ids.clone();
+        let hits = memory::retrieve(&ctx.db.pool, &visible, q, &entities, limit)
             .await
             .map_err(|e| anyhow::anyhow!("retrieve: {e}"))?;
         if hits.is_empty() {

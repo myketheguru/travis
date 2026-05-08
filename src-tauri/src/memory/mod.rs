@@ -19,8 +19,13 @@ pub struct MemoryHit {
 }
 
 /// Embed `text` and store it under (source_kind, source_id), replacing any prior row.
+///
+/// `workspace_id` is denormalised onto the embedding row so retrieval
+/// can scan-and-filter by workspace without joining back to the
+/// source table. Pass the workspace the source row belongs to.
 pub async fn upsert_embedding(
     pool: &SqlitePool,
+    workspace_id: i64,
     source_kind: &str,
     source_id: i64,
     text: &str,
@@ -36,9 +41,10 @@ pub async fn upsert_embedding(
         .execute(&mut *tx)
         .await?;
     sqlx::query(
-        "INSERT INTO embedding (source_kind, source_id, text, vector)
-         VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO embedding (workspace_id, source_kind, source_id, text, vector)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
     )
+    .bind(workspace_id)
     .bind(source_kind)
     .bind(source_id)
     .bind(text)
@@ -52,10 +58,11 @@ pub async fn upsert_embedding(
 /// Index a journal entry's raw text under kind="journal".
 pub async fn index_journal_entry(
     pool: &SqlitePool,
+    workspace_id: i64,
     entry_id: i64,
     raw_text: &str,
 ) -> anyhow::Result<()> {
-    upsert_embedding(pool, "journal", entry_id, raw_text).await
+    upsert_embedding(pool, workspace_id, "journal", entry_id, raw_text).await
 }
 
 #[derive(sqlx::FromRow)]
@@ -65,6 +72,8 @@ struct EmbeddingRow {
     text: String,
     vector: Vec<u8>,
     created_at: String,
+    #[allow(dead_code)]
+    workspace_id: i64,
 }
 
 fn cosine(a: &[f32], b: &[f32]) -> f64 {
@@ -146,23 +155,37 @@ fn now_epoch() -> i64 {
 }
 
 /// Retrieve top-`limit` memory hits scored by 0.4*similarity + 0.3*recency + 0.3*entity_match.
+///
+/// `workspace_ids` scopes the candidate pool: pass the visible-set
+/// from `AppState::workspace`. Sensitive workspaces collapse to a
+/// single id; non-sensitive ones expand across cross-visible peers.
 pub async fn retrieve(
     pool: &SqlitePool,
+    workspace_ids: &[i64],
     query: &str,
     query_entities: &[String],
     limit: usize,
 ) -> anyhow::Result<Vec<MemoryHit>> {
-    if limit == 0 {
+    if limit == 0 || workspace_ids.is_empty() {
         return Ok(Vec::new());
     }
 
     let q_vec = embed_one(query)?;
 
-    let rows: Vec<EmbeddingRow> = sqlx::query_as(
-        "SELECT source_kind, source_id, text, vector, created_at FROM embedding",
-    )
-    .fetch_all(pool)
-    .await?;
+    let placeholders = (1..=workspace_ids.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT source_kind, source_id, text, vector, created_at, workspace_id
+         FROM embedding
+         WHERE workspace_id IN ({placeholders})"
+    );
+    let mut q = sqlx::query_as::<_, EmbeddingRow>(&sql);
+    for ws in workspace_ids {
+        q = q.bind(ws);
+    }
+    let rows: Vec<EmbeddingRow> = q.fetch_all(pool).await?;
 
     if rows.is_empty() {
         return Ok(Vec::new());

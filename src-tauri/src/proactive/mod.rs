@@ -413,7 +413,11 @@ fn build_nudge_tool() -> ToolDef {
     }
 }
 
-fn build_system_prompt(profile: &UserProfile, pack_fragment: &str) -> String {
+fn build_system_prompt(
+    profile: &UserProfile,
+    pack_fragment: &str,
+    workspace_block: &str,
+) -> String {
     let first = profile.first_name();
     let mut prompt = format!(
         r#"You are Travis, a personal operations assistant.
@@ -446,6 +450,10 @@ Output via the report_nudge tool exactly once. If unsure, set shouldNudge=false.
     if !pack_fragment.is_empty() {
         prompt.push_str("\n\n");
         prompt.push_str(pack_fragment);
+    }
+    if !workspace_block.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(workspace_block);
     }
     prompt
 }
@@ -556,10 +564,13 @@ async fn tick(
                     // Pull the runtime-enabled pack list off AppState
                     // so disabled packs don't contribute to the
                     // proactive nudge prompt.
-                    let state = app.state::<crate::AppState>();
+                    let app_state = app.state::<crate::AppState>();
                     let pack_fragment =
-                        crate::packs::prompt_fragment(&state.enabled_packs);
-                    build_system_prompt(&profile, &pack_fragment)
+                        crate::packs::prompt_fragment(&app_state.enabled_packs);
+                    let active_id = app_state.workspace.read().await.active_id;
+                    let workspace_block =
+                        crate::workspaces::prompt_context_block(pool, active_id).await;
+                    build_system_prompt(&profile, &pack_fragment, &workspace_block)
                 }),
                 cache_system: true,
                 temperature: Some(0.5),
