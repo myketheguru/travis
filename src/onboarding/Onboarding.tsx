@@ -12,6 +12,7 @@ import {
 import { listPacks, setPackEnabled, type PackInfo } from "../lib/packs";
 import { Question, inputClass } from "./Question";
 import { VoiceDropdown } from "../components/VoiceDropdown";
+import { createWorkspace, type WorkspaceCategory } from "../lib/workspaces";
 
 type Draft = {
   name: string;
@@ -39,8 +40,8 @@ const initialDraft: Draft = {
 
 // Steps:
 // 0 welcome · 1 name · 2 role · 3 org · 4 context (opt) · 5 voice (opt)
-// 6 provider · 7 api key · 8 pack picker · 9 done
-const TOTAL_STEPS = 10;
+// 6 provider · 7 api key · 8 pack picker · 9 workspace (opt) · 10 done
+const TOTAL_STEPS = 11;
 
 const providers: { id: Provider; name: string; blurb: string; needsKey: boolean }[] = [
   { id: "claude", name: "Claude",  blurb: "Anthropic — best reasoning, prompt caching",  needsKey: true },
@@ -63,6 +64,10 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
   const [testResult, setTestResult] = useState<PingResult | null>(null);
   const [packs, setPacks] = useState<PackInfo[] | null>(null);
   const [savingPacks, setSavingPacks] = useState(false);
+  const [extraWorkspaceName, setExtraWorkspaceName] = useState("");
+  const [extraWorkspaceCategory, setExtraWorkspaceCategory] =
+    useState<WorkspaceCategory>("work");
+  const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const setActivity = useAppStore((s) => s.setActivity);
   const pulse = useAppStore((s) => s.pulse);
 
@@ -159,7 +164,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
         ))}
       </div>
 
-      {step > 0 && step < 9 && (
+      {step > 0 && step < 10 && (
         <button
           onClick={back}
           className="absolute top-6 left-6 z-20 text-bone-3 hover:text-bone-2 text-xs flex items-center gap-1.5 transition-colors"
@@ -529,6 +534,86 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
           )}
 
           {step === 9 && (
+            <Question
+              index={9}
+              prompt="Want a separate workspace for work?"
+              hint="Workspaces keep different worlds (work, personal, side projects) from bleeding into each other. Travis can route captures to the right one automatically. You'll start in Personal — add another now or skip and add later in Settings → Workspaces."
+              canAdvance={!creatingWorkspace}
+              onAdvance={async () => {
+                const name = extraWorkspaceName.trim();
+                if (!name) {
+                  setStep(10);
+                  return;
+                }
+                setCreatingWorkspace(true);
+                setError(null);
+                try {
+                  await createWorkspace({
+                    name,
+                    category: extraWorkspaceCategory,
+                  });
+                  setStep(10);
+                } catch (e) {
+                  setError(e instanceof Error ? e.message : String(e));
+                } finally {
+                  setCreatingWorkspace(false);
+                }
+              }}
+              advanceLabel={
+                creatingWorkspace
+                  ? "Adding…"
+                  : extraWorkspaceName.trim()
+                  ? "Add workspace"
+                  : "Continue"
+              }
+              optional
+              onSkip={() => setStep(10)}
+            >
+              <div className="flex flex-col gap-3">
+                <input
+                  autoFocus
+                  value={extraWorkspaceName}
+                  onChange={(e) => setExtraWorkspaceName(e.target.value)}
+                  placeholder="e.g. Lead to Empower"
+                  className={inputClass}
+                />
+                <div className="grid grid-cols-3 gap-2">
+                  {(
+                    [
+                      { id: "work" as const, label: "Work" },
+                      { id: "personal" as const, label: "Personal" },
+                      { id: "other" as const, label: "Other" },
+                    ]
+                  ).map((c) => {
+                    const active = extraWorkspaceCategory === c.id;
+                    return (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => setExtraWorkspaceCategory(c.id)}
+                        className={
+                          "rounded-xl border px-3 py-2 text-sm transition-all " +
+                          (active
+                            ? "border-pulse/60 bg-pulse/[0.07] text-bone"
+                            : "border-ink-3 bg-ink-2/30 text-bone-2 hover:bg-ink-2/50")
+                        }
+                      >
+                        {c.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-bone-3 text-[11px] leading-relaxed">
+                  Sensitive categories (Health, Therapy, Legal, Finance) are
+                  added later from Settings — they default to isolated and
+                  deserve a deliberate add.
+                </p>
+                {error && <p className="text-warn text-xs">{error}</p>}
+              </div>
+            </Question>
+          )}
+
+          {step === 10 && (
             <motion.div
               key="done"
               initial={{ opacity: 0, y: 24 }}
