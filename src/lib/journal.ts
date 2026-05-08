@@ -19,6 +19,14 @@ export type CapabilityGap = {
   context: string | null;
 };
 
+export type RoutingResult = {
+  workspaceSlug: string;
+  workspaceName: string;
+  routed: boolean;
+  confidence: "high" | "medium" | "low" | null;
+  rationale: string | null;
+};
+
 export type JournalIngestResult = {
   journalEntryId: number;
   conversationId: number;
@@ -32,6 +40,7 @@ export type JournalIngestResult = {
   clarifyingQuestions: string[];
   capabilityGaps: CapabilityGap[];
   proposedActions: ProposedAction[];
+  routing: RoutingResult | null;
   extractionOk: boolean;
   error: string | null;
 };

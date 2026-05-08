@@ -186,7 +186,10 @@ export default function Overlay() {
       parts.push(`${r.capabilityGaps.length} ask${r.capabilityGaps.length === 1 ? "" : "s"} for me`);
     }
     if (parts.length === 0) return "captured";
-    return "Captured · " + parts.join(" · ");
+    const head = r.routing?.routed
+      ? `Captured to ${r.routing.workspaceName}`
+      : "Captured";
+    return head + " · " + parts.join(" · ");
   };
 
   const submitText = async (text: string) => {

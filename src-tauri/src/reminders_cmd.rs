@@ -12,7 +12,8 @@ pub async fn list_reminders(
     state: State<'_, AppState>,
     filter: Option<ReminderFilter>,
 ) -> Result<Vec<Reminder>, String> {
-    reminders::list(&state.db.pool, filter.unwrap_or_default())
+    let visible = state.workspace.read().await.visible_ids.clone();
+    reminders::list(&state.db.pool, &visible, filter.unwrap_or_default())
         .await
         .map_err(err)
 }
@@ -22,7 +23,8 @@ pub async fn create_reminder(
     state: State<'_, AppState>,
     input: ReminderInput,
 ) -> Result<Reminder, String> {
-    reminders::upsert(&state.db.pool, input).await.map_err(err)
+    let ws_id = state.workspace.read().await.active_id;
+    reminders::upsert(&state.db.pool, ws_id, input).await.map_err(err)
 }
 
 #[tauri::command]

@@ -7,6 +7,7 @@ use sqlx::SqlitePool;
 #[serde(rename_all = "camelCase")]
 pub struct Reminder {
     pub id: i64,
+    pub workspace_id: i64,
     pub text: String,
     pub kind: String,
     pub remind_at: Option<String>,
@@ -55,31 +56,44 @@ impl ReminderError {
 
 pub async fn list(
     pool: &SqlitePool,
+    workspace_ids: &[i64],
     filter: ReminderFilter,
 ) -> Result<Vec<Reminder>, ReminderError> {
-    let rows = sqlx::query_as::<_, Reminder>(
-        "SELECT id, text, kind, remind_at, fired_at, dismissed_at, source,
+    let ws_start = 4usize;
+    let ws_placeholders = (ws_start..ws_start + workspace_ids.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT id, workspace_id, text, kind, remind_at, fired_at, dismissed_at, source,
                 link_kind, link_id, created_at, updated_at
          FROM reminder
          WHERE (?1 IS NULL OR (fired_at IS NOT NULL) = ?1)
            AND (?2 IS NULL OR (dismissed_at IS NOT NULL) = ?2)
            AND (?3 IS NULL OR kind = ?3)
+           AND workspace_id IN ({ws_placeholders})
          ORDER BY
            CASE WHEN dismissed_at IS NULL AND fired_at IS NULL THEN 0
                 WHEN dismissed_at IS NULL AND fired_at IS NOT NULL THEN 1
                 ELSE 2 END,
            COALESCE(remind_at, created_at) ASC,
-           id DESC",
-    )
-    .bind(filter.fired)
-    .bind(filter.dismissed)
-    .bind(&filter.kind)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows)
+           id DESC"
+    );
+    let mut q = sqlx::query_as::<_, Reminder>(&sql)
+        .bind(filter.fired)
+        .bind(filter.dismissed)
+        .bind(&filter.kind);
+    for ws in workspace_ids {
+        q = q.bind(ws);
+    }
+    Ok(q.fetch_all(pool).await?)
 }
 
-pub async fn upsert(pool: &SqlitePool, input: ReminderInput) -> Result<Reminder, ReminderError> {
+pub async fn upsert(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    input: ReminderInput,
+) -> Result<Reminder, ReminderError> {
     let text = input.text.trim().to_string();
     if text.is_empty() {
         return Err(ReminderError::invalid("text is required"));
@@ -120,9 +134,10 @@ pub async fn upsert(pool: &SqlitePool, input: ReminderInput) -> Result<Reminder,
             id
         }
         None => sqlx::query(
-            "INSERT INTO reminder (text, kind, remind_at, source, link_kind, link_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO reminder (workspace_id, text, kind, remind_at, source, link_kind, link_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )
+        .bind(workspace_id)
         .bind(&text)
         .bind(&kind)
         .bind(&input.remind_at)
@@ -139,7 +154,7 @@ pub async fn upsert(pool: &SqlitePool, input: ReminderInput) -> Result<Reminder,
 
 pub async fn fetch_one(pool: &SqlitePool, id: i64) -> Result<Reminder, ReminderError> {
     let row = sqlx::query_as::<_, Reminder>(
-        "SELECT id, text, kind, remind_at, fired_at, dismissed_at, source,
+        "SELECT id, workspace_id, text, kind, remind_at, fired_at, dismissed_at, source,
                 link_kind, link_id, created_at, updated_at
          FROM reminder WHERE id=?1",
     )

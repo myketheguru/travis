@@ -205,6 +205,22 @@ fn default_intent() -> String {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WorkspaceRouting {
+    /// Slug of the target workspace. None means "stay where the
+    /// active workspace is".
+    #[serde(default)]
+    pub target_slug: Option<String>,
+    /// LLM's confidence in the routing decision.
+    /// "high" / "medium" → silent route. "low" → ask the user.
+    #[serde(default)]
+    pub confidence: Option<String>,
+    /// One-line rationale shown in the UI chip.
+    #[serde(default)]
+    pub rationale: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Extraction {
     #[serde(default = "default_intent")]
     pub intent: String,
@@ -224,6 +240,28 @@ pub struct Extraction {
     pub capability_gaps: Vec<CapabilityGap>,
     #[serde(default)]
     pub proposed_actions: Vec<ProposedActionInput>,
+    #[serde(default)]
+    pub workspace_routing: Option<WorkspaceRouting>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutingResult {
+    /// Slug + name of the workspace where this capture actually
+    /// landed. May differ from the active workspace when the LLM
+    /// detected a clear other-world signal.
+    pub workspace_slug: String,
+    pub workspace_name: String,
+    /// True when routing diverged from the active workspace — the UI
+    /// uses this to render the "Captured to <name>" chip.
+    pub routed: bool,
+    /// LLM's confidence ("high" | "medium" | "low") if a decision was
+    /// reported. Empty when the model didn't return a routing object.
+    #[serde(default)]
+    pub confidence: Option<String>,
+    /// One-line rationale shown in the chip tooltip.
+    #[serde(default)]
+    pub rationale: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -241,6 +279,7 @@ pub struct JournalIngestResult {
     pub clarifying_questions: Vec<String>,
     pub capability_gaps: Vec<CapabilityGap>,
     pub proposed_actions: Vec<ProposedAction>,
+    pub routing: Option<RoutingResult>,
     pub extraction_ok: bool,
     pub error: Option<String>,
 }
@@ -393,6 +432,15 @@ fn build_extraction_tool(action_kinds: &[&str], entity_kinds: &[&str]) -> ToolDe
                             }
                         },
                         "required": ["kind", "rationale", "params"]
+                    }
+                },
+                "workspaceRouting": {
+                    "type": ["object", "null"],
+                    "description": "Which workspace this capture should land in. Pick from the WORKSPACE OPTIONS block in the user message. Set targetSlug to the slug of the best fit (or null to stay in the active workspace), confidence to high/medium when an entity match or pack vocabulary clearly indicates the world, and low when uncertain. Sensitive workspaces (health/therapy/legal/finance) must NEVER be auto-routed into — only set them as a target with confidence=low so Travis can ask the user.",
+                    "properties": {
+                        "targetSlug": { "type": ["string", "null"] },
+                        "confidence": { "type": ["string", "null"], "enum": ["high", "medium", "low", null] },
+                        "rationale": { "type": ["string", "null"] }
                     }
                 }
             },
@@ -607,11 +655,46 @@ pub async fn journal_ingest(
     )
     .await;
 
+    // List the visible workspaces so the LLM can route. Sensitive
+    // workspaces are excluded from this list — they're never
+    // auto-routed into; the user must switch into them explicitly.
+    let visible_workspaces =
+        crate::workspaces::list_all(&state.db.pool).await.unwrap_or_default();
+    let routable_workspaces: Vec<_> = visible_workspaces
+        .iter()
+        .filter(|w| !w.is_archived() && ws_snapshot.visible_ids.contains(&w.id))
+        .filter(|w| !w.is_sensitive())
+        .collect();
+    let active_slug = visible_workspaces
+        .iter()
+        .find(|w| w.id == ws_snapshot.active_id)
+        .map(|w| w.slug.clone())
+        .unwrap_or_else(|| "personal".to_string());
+    let workspace_options_block = if routable_workspaces.len() > 1 {
+        let mut s =
+            String::from("WORKSPACE OPTIONS (set workspaceRouting.targetSlug to one of these — current active is marked):\n");
+        for w in &routable_workspaces {
+            let marker = if w.slug == active_slug { " ← ACTIVE" } else { "" };
+            s.push_str(&format!(
+                "- {} ({}) [{}]{}\n",
+                w.name, w.category, w.slug, marker
+            ));
+        }
+        s
+    } else {
+        String::new()
+    };
+
     let user_msg = format!(
-        "Today is {today}.\n\nOPEN TASKS (id · title):\n{open}\n\nRELEVANT MEMORY:\n{mem}\n\nNew turn:\n{raw}",
+        "Today is {today}.\n\nOPEN TASKS (id · title):\n{open}\n\nRELEVANT MEMORY:\n{mem}\n\n{ws}New turn:\n{raw}",
         today = today_local(),
         open = format_open_tasks(&open_tasks),
         mem = format_memory(&mem_hits),
+        ws = if workspace_options_block.is_empty() {
+            String::new()
+        } else {
+            format!("{workspace_options_block}\n")
+        },
         raw = raw
     );
     messages.push(Message::user(user_msg));
@@ -639,7 +722,7 @@ pub async fn journal_ingest(
     };
     const MAX_ITER: usize = 4;
 
-    let (extraction, ok, err_msg, raw_response) = 'outer: {
+    let (mut extraction, ok, err_msg, raw_response) = 'outer: {
         let mut current_messages = messages;
         let mut last_dump = String::new();
         for iter in 0..MAX_ITER {
@@ -751,6 +834,81 @@ pub async fn journal_ingest(
 
     let is_conversational = extraction.intent.eq_ignore_ascii_case("conversational");
 
+    // Apply workspace routing. The LLM may have nominated a different
+    // workspace via `workspaceRouting`; we honour it for high/medium
+    // confidence picks that target a non-sensitive, non-archived
+    // workspace in the visible set. Anything else (sensitive target,
+    // unknown slug, low confidence, archived) falls back to the
+    // active workspace and the rationale becomes a clarifying ask.
+    let mut dest_ws_id = active_ws_id;
+    let mut routing_result: Option<RoutingResult> = None;
+    if let Some(routing) = &extraction.workspace_routing {
+        let target_slug = routing
+            .target_slug
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let confidence = routing.confidence.as_deref().unwrap_or("low").to_lowercase();
+        if let Some(slug) = target_slug {
+            if let Some(target) = visible_workspaces.iter().find(|w| w.slug == slug) {
+                let is_active_target = target.id == active_ws_id;
+                let acceptable = !target.is_archived()
+                    && !target.is_sensitive()
+                    && (confidence == "high" || confidence == "medium");
+                if acceptable && !is_active_target {
+                    dest_ws_id = target.id;
+                    routing_result = Some(RoutingResult {
+                        workspace_slug: target.slug.clone(),
+                        workspace_name: target.name.clone(),
+                        routed: true,
+                        confidence: Some(confidence.clone()),
+                        rationale: routing.rationale.clone(),
+                    });
+                } else if target.is_sensitive() && !is_active_target {
+                    // Sensitive target + not already active — never route;
+                    // surface a clarifying question instead.
+                    let rationale = routing
+                        .rationale
+                        .clone()
+                        .unwrap_or_else(|| "looks like sensitive content".to_string());
+                    extraction.clarifying_questions.push(format!(
+                        "{rationale} — save to {}, or stay in this workspace?",
+                        target.name
+                    ));
+                }
+            }
+        }
+    }
+
+    // If routing changed the destination, restamp the journal entry
+    // and the conversation it lives in. Skipping conversation move
+    // when the conversation already had prior turns in another
+    // workspace would split-brain a thread, but this is a fresh
+    // capture-driven thread so a single rewrite is fine.
+    if dest_ws_id != active_ws_id {
+        let _ = sqlx::query("UPDATE journal_entry SET workspace_id = ?1 WHERE id = ?2")
+            .bind(dest_ws_id)
+            .bind(entry_id)
+            .execute(&state.db.pool)
+            .await;
+        let _ = sqlx::query("UPDATE conversation SET workspace_id = ?1 WHERE id = ?2")
+            .bind(dest_ws_id)
+            .bind(conv_id)
+            .execute(&state.db.pool)
+            .await;
+    }
+
+    // Build a `WorkspaceState` rooted at dest_ws_id so all downstream
+    // writes (tasks, reminders) land in the routed workspace.
+    let dest_ws_state = if dest_ws_id == active_ws_id {
+        ws_state.clone()
+    } else {
+        crate::workspaces::State {
+            active_id: dest_ws_id,
+            visible_ids: ws_state.visible_ids.clone(),
+        }
+    };
+
     let mut created: Vec<Task> = Vec::new();
     let mut completed: Vec<Task> = Vec::new();
 
@@ -769,7 +927,7 @@ pub async fn journal_ingest(
             };
             let task = task::upsert(
                 &state.db.pool,
-                &ws_state,
+                &dest_ws_state,
                 TaskInput {
                     id: None,
                     title: truncated,
@@ -792,7 +950,7 @@ pub async fn journal_ingest(
                 tracing::warn!("LLM returned completedTaskId {tid} not in open list — ignoring");
                 continue;
             }
-            match task::set_status(&state.db.pool, &ws_state, *tid, "done").await {
+            match task::set_status(&state.db.pool, &dest_ws_state, *tid, "done").await {
                 Ok(t) => completed.push(t),
                 Err(e) => tracing::warn!("failed to mark task {tid} done: {e}"),
             }
@@ -813,6 +971,7 @@ pub async fn journal_ingest(
             }
             if let Err(e) = reminders::upsert(
                 &state.db.pool,
+                dest_ws_state.active_id,
                 ReminderInput {
                     id: None,
                     text: text.to_string(),
@@ -869,7 +1028,7 @@ pub async fn journal_ingest(
     // The embedding row inherits the journal entry's workspace_id so
     // retrieval can scope by workspace at scan time.
     if let Err(e) =
-        memory::index_journal_entry(&state.db.pool, active_ws_id, entry_id, &raw).await
+        memory::index_journal_entry(&state.db.pool, dest_ws_id, entry_id, &raw).await
     {
         tracing::warn!("failed to index journal entry #{entry_id} for semantic memory: {e}");
     }
@@ -1071,6 +1230,7 @@ pub async fn journal_ingest(
         clarifying_questions: extraction.clarifying_questions,
         capability_gaps: extraction.capability_gaps,
         proposed_actions: persisted_actions,
+        routing: routing_result,
         extraction_ok: ok,
         error: err_msg,
     })

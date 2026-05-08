@@ -170,7 +170,11 @@ struct SetReminderParams {
     kind: Option<String>,
 }
 
-async fn apply_set_reminder(pool: &SqlitePool, params_json: &str) -> anyhow::Result<Applied> {
+async fn apply_set_reminder(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    params_json: &str,
+) -> anyhow::Result<Applied> {
     let p: SetReminderParams = serde_json::from_str(params_json)?;
     let text = p.text.trim();
     if text.is_empty() {
@@ -182,6 +186,7 @@ async fn apply_set_reminder(pool: &SqlitePool, params_json: &str) -> anyhow::Res
     }
     let reminder = reminders::upsert(
         pool,
+        workspace_id,
         ReminderInput {
             id: None,
             text: text.to_string(),
@@ -694,8 +699,11 @@ struct SetReminderHandler;
 #[async_trait::async_trait]
 impl ActionHandler for SetReminderHandler {
     fn kind(&self) -> &'static str { "set_reminder" }
-    async fn apply(&self, pool: &SqlitePool, _app: &AppHandle, params_json: &str) -> anyhow::Result<Applied> {
-        apply_set_reminder(pool, params_json).await
+    async fn apply(&self, pool: &SqlitePool, app: &AppHandle, params_json: &str) -> anyhow::Result<Applied> {
+        use tauri::Manager;
+        let state = app.state::<AppState>();
+        let ws_id = state.workspace.read().await.active_id;
+        apply_set_reminder(pool, ws_id, params_json).await
     }
 }
 
