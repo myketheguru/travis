@@ -97,11 +97,18 @@ static ALERTS: &[AlertDef] = &[
 ];
 
 const TUTORING_INIT_SQL: &str = include_str!("migrations/0001_init.sql");
+const TUTORING_WORKSPACE_SQL: &str = include_str!("migrations/0002_workspace_id.sql");
 
-static MIGRATIONS: &[PackMigration] = &[PackMigration {
-    name: "0001_init",
-    sql: TUTORING_INIT_SQL,
-}];
+static MIGRATIONS: &[PackMigration] = &[
+    PackMigration {
+        name: "0001_init",
+        sql: TUTORING_INIT_SQL,
+    },
+    PackMigration {
+        name: "0002_workspace_id",
+        sql: TUTORING_WORKSPACE_SQL,
+    },
+];
 
 const PROMPT_FRAGMENT: &str = "\
 You also help with 1:1 tutoring agency ops:\n\
