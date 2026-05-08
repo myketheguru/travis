@@ -17,6 +17,19 @@ use crate::secrets;
 use crate::telemetry;
 use crate::AppState;
 
+/// Build the journal extraction system prompt.
+///
+/// **Cache invariant:** Anthropic's prompt cache hits on prefix
+/// equality. Anything that changes per-turn must go in the user
+/// message, not here. Allowed inputs to this prompt:
+///   - profile (changes ~never)
+///   - pack_fragment (changes only on pack toggle / app rebuild)
+///   - workspace_block (changes only on workspace switch)
+///
+/// Specifically NOT allowed: today's date, open task list, recent
+/// memory snippets, conversation history. All of those go into the
+/// user message at the call site so the cache prefix stays stable
+/// within the 5-minute Anthropic cache window.
 fn build_system_prompt(
     profile: &UserProfile,
     pack_fragment: &str,
@@ -449,6 +462,269 @@ fn build_extraction_tool(action_kinds: &[&str], entity_kinds: &[&str]) -> ToolDe
     }
 }
 
+// ---------------------------------------------------------------------------
+// Heuristic fast-path — skip the LLM for greetings and direct task ops.
+//
+// Trades a tiny amount of capture-time latency (a regex match) for
+// zero-token, zero-latency handling of low-information turns. Conservative
+// by design: we only match patterns where the intent is unambiguous, so
+// the fall-through to the LLM stays the default path.
+// ---------------------------------------------------------------------------
+
+/// Pure-greeting patterns. Matched as the entire input (after trim and
+/// trailing-punctuation strip), so "good morning, lots to do today"
+/// falls through to the LLM.
+const GREETINGS: &[&str] = &[
+    "hi", "hello", "hey", "yo", "sup", "howdy",
+    "morning", "good morning",
+    "afternoon", "good afternoon",
+    "evening", "good evening",
+    "good night", "night",
+];
+
+/// Pure-acknowledgment patterns — also matched as the entire input.
+const ACKS: &[&str] = &[
+    "ok", "okay", "k", "kk",
+    "thanks", "thank you", "thx", "ty",
+    "got it", "cool", "nice", "great",
+];
+
+/// Strip trailing punctuation/emoji-ish chars to normalise short turns
+/// like "hi." / "thanks!" / "okay 👍".
+fn normalise_short(s: &str) -> String {
+    s.trim()
+        .trim_end_matches(|c: char| {
+            !c.is_alphanumeric() && c != ' '
+        })
+        .trim()
+        .to_lowercase()
+}
+
+/// Friendly response to a greeting. Time-of-day aware so "morning"
+/// gets a morning reply but "hey" stays generic.
+fn greet_response(greeting: &str, first_name: &str) -> String {
+    let name_part = if first_name.is_empty() {
+        String::new()
+    } else {
+        format!(", {first_name}")
+    };
+    if greeting.contains("morning") {
+        format!("Morning{name_part}. Anything to capture?")
+    } else if greeting.contains("afternoon") {
+        format!("Afternoon{name_part}. What's up?")
+    } else if greeting.contains("evening") || greeting.contains("night") {
+        format!("Evening{name_part}. Wrap-up notes, or fresh thinking?")
+    } else {
+        format!("Hey{name_part}. What's on your mind?")
+    }
+}
+
+fn ack_response() -> String {
+    "👌".to_string()
+}
+
+/// Parse "done 12" / "done 12, 13" / "complete 5" / "finished 3 7" /
+/// "12 done" / "mark 4 done" into a list of task ids. Returns None
+/// when the input doesn't look like a completion command.
+fn parse_completion_command(lower: &str) -> Option<Vec<i64>> {
+    // Strip trailing punctuation.
+    let s = lower
+        .trim_end_matches(|c: char| !c.is_alphanumeric() && c != ' ' && c != ',')
+        .trim();
+    if s.is_empty() {
+        return None;
+    }
+    // Tokens: split on whitespace and commas.
+    let tokens: Vec<&str> = s
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|t| !t.is_empty())
+        .collect();
+    if tokens.is_empty() || tokens.len() > 8 {
+        return None;
+    }
+
+    // Recognise a completion verb anywhere in the leading 1-3 tokens
+    // and an optional "done" trailing token. Keep numerics from the
+    // remainder as ids.
+    let verbs: &[&str] = &[
+        "done", "complete", "completed", "finish", "finished", "close", "closed",
+        "did", "mark",
+    ];
+    let leading_verb = verbs.iter().any(|v| tokens[0] == *v);
+    let trailing_done = tokens.last().map(|t| *t == "done").unwrap_or(false);
+    if !leading_verb && !trailing_done {
+        return None;
+    }
+
+    let mut ids = Vec::new();
+    for t in &tokens {
+        // Skip the verb words themselves.
+        if verbs.contains(t) || *t == "task" || *t == "tasks" || *t == "#" {
+            continue;
+        }
+        // Strip a leading "#" so "done #12" works.
+        let trimmed = t.trim_start_matches('#');
+        match trimmed.parse::<i64>() {
+            Ok(n) if n > 0 => ids.push(n),
+            _ => {
+                // A non-numeric, non-verb token means this isn't a
+                // pure completion command — fall through to LLM.
+                return None;
+            }
+        }
+    }
+    if ids.is_empty() {
+        None
+    } else {
+        Some(ids)
+    }
+}
+
+/// Try the fast-path. Returns a synthetic [`Extraction`] when the
+/// input is unambiguously low-information (greeting, ack, direct task
+/// completion). Otherwise returns None and the caller proceeds to the
+/// LLM.
+fn try_fast_path(
+    raw: &str,
+    open_ids: &std::collections::HashSet<i64>,
+    first_name: &str,
+) -> Option<Extraction> {
+    let normalised = normalise_short(raw);
+    if normalised.is_empty() {
+        return None;
+    }
+
+    if GREETINGS.iter().any(|g| *g == normalised) {
+        return Some(Extraction {
+            intent: "conversational".into(),
+            response: Some(greet_response(&normalised, first_name)),
+            ..Default::default()
+        });
+    }
+    if ACKS.iter().any(|a| *a == normalised) {
+        return Some(Extraction {
+            intent: "conversational".into(),
+            response: Some(ack_response()),
+            ..Default::default()
+        });
+    }
+
+    // Completion commands need at least one matching open task — if
+    // the user says "done 99" but 99 isn't open, fall through so the
+    // LLM can catch a possible typo or context.
+    if let Some(ids) = parse_completion_command(&normalised) {
+        let valid: Vec<i64> = ids
+            .iter()
+            .copied()
+            .filter(|id| open_ids.contains(id))
+            .collect();
+        if !valid.is_empty() && valid.len() == ids.len() {
+            return Some(Extraction {
+                intent: "operational".into(),
+                response: None,
+                completed_task_ids: valid,
+                ..Default::default()
+            });
+        }
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod fast_path_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn open_set(ids: &[i64]) -> HashSet<i64> {
+        ids.iter().copied().collect()
+    }
+
+    #[test]
+    fn matches_pure_greetings() {
+        let opens = open_set(&[]);
+        for input in &["hi", "Hi.", "hello!", "Good morning", "morning,", "hey"] {
+            let r = try_fast_path(input, &opens, "Mike");
+            assert!(r.is_some(), "should match greeting: {input:?}");
+            let e = r.unwrap();
+            assert_eq!(e.intent, "conversational");
+            assert!(e.response.as_ref().map(|s| !s.is_empty()).unwrap_or(false));
+        }
+    }
+
+    #[test]
+    fn skips_long_greetings() {
+        let opens = open_set(&[]);
+        for input in &[
+            "good morning, lots to do today",
+            "hey can you remind me about the invoice",
+            "hi maria texted",
+        ] {
+            assert!(
+                try_fast_path(input, &opens, "Mike").is_none(),
+                "should fall through: {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn matches_acknowledgments() {
+        let opens = open_set(&[]);
+        for input in &["thanks", "thx", "ok", "okay!", "got it"] {
+            assert!(
+                try_fast_path(input, &opens, "").is_some(),
+                "should match ack: {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_completion_commands() {
+        let opens = open_set(&[5, 12, 13]);
+        let cases = &[
+            ("done 12", vec![12]),
+            ("done 12, 13", vec![12, 13]),
+            ("complete 5", vec![5]),
+            ("finished 5 12", vec![5, 12]),
+            ("mark 12 done", vec![12]),
+            ("done #5", vec![5]),
+        ];
+        for (input, expected) in cases {
+            let r = try_fast_path(input, &opens, "");
+            assert!(r.is_some(), "should match: {input:?}");
+            let e = r.unwrap();
+            assert_eq!(e.intent, "operational");
+            assert_eq!(&e.completed_task_ids, expected, "for input {input:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_completion_when_id_not_open() {
+        // Fast-path requires every parsed id to be in the open set —
+        // otherwise the LLM is better placed to reason about typos.
+        let opens = open_set(&[5]);
+        assert!(try_fast_path("done 99", &opens, "").is_none());
+        assert!(try_fast_path("done 5 99", &opens, "").is_none());
+    }
+
+    #[test]
+    fn rejects_anything_with_extra_words() {
+        let opens = open_set(&[5]);
+        // Extra context means the LLM should handle this — could be a
+        // task creation, a question, etc.
+        for input in &[
+            "done 5 and need to follow up on Maria",
+            "complete the invoice for PS 142",
+            "marked 5 done because Maria called",
+        ] {
+            assert!(
+                try_fast_path(input, &opens, "").is_none(),
+                "should fall through: {input:?}"
+            );
+        }
+    }
+}
+
 fn extract_entity_hints(raw: &str) -> Vec<String> {
     // Cheap capitalized-word + multi-word noun extraction so memory retrieval
     // gets a small entity-match boost. Skips common sentence-leading words.
@@ -699,6 +975,17 @@ pub async fn journal_ingest(
     );
     messages.push(Message::user(user_msg));
 
+    // Heuristic fast-path: short greetings, acks, and direct task
+    // completions skip the LLM entirely. Returns None on anything
+    // remotely interesting; the LLM stays the default path.
+    let fast_path_first_name = profile
+        .name
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_string();
+    let fast_path_extraction = try_fast_path(&raw, &open_ids, &fast_path_first_name);
+
     // Agent loop: LLM may call read-only tools (web_fetch, etc.) before
     // finalizing via `report_extraction`. We loop, dispatching tool calls and
     // feeding results back, until the model emits report_extraction or we hit
@@ -722,7 +1009,10 @@ pub async fn journal_ingest(
     };
     const MAX_ITER: usize = 4;
 
-    let (mut extraction, ok, err_msg, raw_response) = 'outer: {
+    let (mut extraction, ok, err_msg, raw_response) = if let Some(fp) = fast_path_extraction {
+        tracing::info!("journal_ingest fast-path hit (intent={})", fp.intent);
+        (fp, true, None, "<fast-path>".to_string())
+    } else { 'outer: {
         let mut current_messages = messages;
         let mut last_dump = String::new();
         for iter in 0..MAX_ITER {
@@ -830,7 +1120,7 @@ pub async fn journal_ingest(
             Some("agent loop exceeded max iterations".into()),
             last_dump,
         )
-    };
+    }};
 
     let is_conversational = extraction.intent.eq_ignore_ascii_case("conversational");
 
