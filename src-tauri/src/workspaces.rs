@@ -14,6 +14,61 @@ use sqlx::SqlitePool;
 
 pub const SENSITIVE_CATEGORIES: &[&str] = &["health", "therapy", "legal", "finance"];
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_ws(category: &str, cross_visible: i64, archived: Option<&str>) -> Workspace {
+        Workspace {
+            id: 1,
+            slug: "x".into(),
+            name: "X".into(),
+            category: category.into(),
+            cross_visible,
+            archived_at: archived.map(|s| s.to_string()),
+            created_at: "2026-05-08 00:00:00".into(),
+            updated_at: "2026-05-08 00:00:00".into(),
+        }
+    }
+
+    #[test]
+    fn sensitive_categories_are_isolated_by_default() {
+        for cat in SENSITIVE_CATEGORIES {
+            let ws = make_ws(cat, 1, None);
+            assert!(ws.is_sensitive(), "{cat} must register as sensitive");
+            assert!(
+                !Workspace::default_cross_visible(cat),
+                "{cat}'s default cross_visible must be false"
+            );
+        }
+    }
+
+    #[test]
+    fn non_sensitive_categories_are_cross_visible_by_default() {
+        for cat in ["work", "personal", "other"] {
+            assert!(!make_ws(cat, 1, None).is_sensitive(), "{cat} must not be sensitive");
+            assert!(
+                Workspace::default_cross_visible(cat),
+                "{cat}'s default cross_visible must be true"
+            );
+        }
+    }
+
+    #[test]
+    fn cross_visible_bool_reflects_integer_zero_one() {
+        assert!(make_ws("personal", 1, None).cross_visible_bool());
+        assert!(!make_ws("personal", 0, None).cross_visible_bool());
+    }
+
+    #[test]
+    fn archived_workspace_reports_is_archived() {
+        let live = make_ws("personal", 1, None);
+        let dead = make_ws("personal", 1, Some("2026-05-08 12:00:00"));
+        assert!(!live.is_archived());
+        assert!(dead.is_archived());
+    }
+}
+
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {
