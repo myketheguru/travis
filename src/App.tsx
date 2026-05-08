@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { listen } from "@tauri-apps/api/event";
 import { PresenceOrb } from "./components/PresenceOrb";
 import HealthBanner from "./components/HealthBanner";
+import { WorkspaceSwitcher } from "./components/WorkspaceSwitcher";
 import { useAppStore } from "./stores/app";
 import { getAppStatus, getUserProfile } from "./lib/ipc";
 import { dbStats, type DbStats } from "./lib/domain";
@@ -155,7 +156,8 @@ function Splash({
 
   return (
     <main className="relative h-full w-full flex flex-col items-center overflow-hidden">
-      <div className="absolute top-4 right-4 flex items-center gap-1">
+      <div className="absolute top-4 right-4 flex items-center gap-2">
+        <WorkspaceSwitcher />
         <button
           onClick={onOpenManage}
           title="Manage"

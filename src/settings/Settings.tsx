@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import {
   getProactiveConfig,
@@ -18,6 +18,16 @@ import {
 } from "../lib/ipc";
 import { checkForUpdate, installUpdate, type UpdateInfo } from "../lib/updater";
 import { listPacks, setPackEnabled, type PackInfo } from "../lib/packs";
+import {
+  archiveWorkspace,
+  createWorkspace,
+  isSensitive,
+  listWorkspaces,
+  unarchiveWorkspace,
+  updateWorkspace,
+  type Workspace,
+  type WorkspaceCategory,
+} from "../lib/workspaces";
 import { VoiceDropdown } from "../components/VoiceDropdown";
 import { useAppStore } from "../stores/app";
 
@@ -346,6 +356,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
         </div>
 
         <CalendarSection />
+        <WorkspacesSection />
         <PacksSection />
         <ProactiveSection />
         <UpdatesSection />
@@ -883,6 +894,354 @@ function UpdatesSection() {
       {hint && <p className="text-pulse-2 text-[11px]">{hint}</p>}
       {err && <p className="text-warn text-[11px]">{err}</p>}
     </Section>
+  );
+}
+
+function WorkspacesSection() {
+  const [workspaces, setWorkspaces] = useState<Workspace[] | null>(null);
+  const [editing, setEditing] = useState<Workspace | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const list = await listWorkspaces();
+      setWorkspaces(list);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const onArchive = async (id: number) => {
+    setError(null);
+    try {
+      await archiveWorkspace(id);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const onUnarchive = async (id: number) => {
+    setError(null);
+    try {
+      await unarchiveWorkspace(id);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  if (creating || editing) {
+    return (
+      <Section title="Workspaces">
+        <WorkspaceForm
+          existing={editing ?? undefined}
+          onCancel={() => {
+            setCreating(false);
+            setEditing(null);
+            setError(null);
+          }}
+          onSaved={() => {
+            setCreating(false);
+            setEditing(null);
+            refresh();
+          }}
+        />
+        {error && <p className="text-warn text-[11px]">{error}</p>}
+      </Section>
+    );
+  }
+
+  const active = (workspaces ?? []).filter((w) => !w.archivedAt);
+  const archived = (workspaces ?? []).filter((w) => w.archivedAt);
+
+  return (
+    <Section title="Workspaces">
+      <p className="text-bone-3 text-[11px] leading-relaxed -mt-2">
+        Workspaces are scoped namespaces for your data — Work, Personal, side
+        projects. Sensitive categories (Health, Therapy, Legal, Finance) are
+        isolated by default; data never crosses into other workspaces unless
+        you explicitly toggle it.
+      </p>
+
+      {!workspaces && !error && (
+        <p className="text-bone-3 text-xs">Loading…</p>
+      )}
+
+      {workspaces && (
+        <div className="flex flex-col gap-2">
+          {active.map((w) => (
+            <WorkspaceRow
+              key={w.id}
+              w={w}
+              onEdit={() => setEditing(w)}
+              onArchive={() => onArchive(w.id)}
+              onUnarchive={() => onUnarchive(w.id)}
+            />
+          ))}
+
+          {archived.length > 0 && (
+            <details className="mt-2">
+              <summary className="text-bone-3 text-[11px] cursor-pointer hover:text-bone-2">
+                {archived.length} archived
+              </summary>
+              <div className="mt-2 flex flex-col gap-2">
+                {archived.map((w) => (
+                  <WorkspaceRow
+                    key={w.id}
+                    w={w}
+                    onEdit={() => setEditing(w)}
+                    onArchive={() => onArchive(w.id)}
+                    onUnarchive={() => onUnarchive(w.id)}
+                  />
+                ))}
+              </div>
+            </details>
+          )}
+
+          <button
+            onClick={() => setCreating(true)}
+            className="mt-2 px-3 py-1.5 rounded-full bg-pulse/15 border border-pulse/40 text-bone-2 text-xs hover:bg-pulse/25 transition-colors self-start"
+          >
+            + New workspace
+          </button>
+        </div>
+      )}
+
+      {error && <p className="text-warn text-[11px]">{error}</p>}
+    </Section>
+  );
+}
+
+function WorkspaceRow({
+  w,
+  onEdit,
+  onArchive,
+  onUnarchive,
+}: {
+  w: Workspace;
+  onEdit: () => void;
+  onArchive: () => void;
+  onUnarchive: () => void;
+}) {
+  const sensitive = isSensitive(w.category);
+  const archived = !!w.archivedAt;
+
+  return (
+    <div
+      className={
+        "flex items-center gap-3 rounded-xl border px-4 py-3 " +
+        (archived
+          ? "border-ink-3 bg-ink-2/20 opacity-60"
+          : sensitive
+          ? "border-warn/30 bg-warn/[0.04]"
+          : "border-ink-3 bg-ink-2/30")
+      }
+    >
+      <div className="flex-1 min-w-0">
+        <div className="flex items-baseline gap-2">
+          {sensitive && <span className="text-warn text-[10px]">🔒</span>}
+          <span className="text-bone text-sm font-medium">{w.name}</span>
+          <span className="text-bone-3 text-[10px] uppercase tracking-wider">
+            {w.category}
+          </span>
+          {!sensitive && w.crossVisible !== 0 && (
+            <span className="text-pulse-2 text-[10px] tracking-wider opacity-70">
+              cross-visible
+            </span>
+          )}
+        </div>
+        <p className="text-bone-3 text-[10px] mt-0.5 font-mono opacity-50">
+          {w.slug}
+        </p>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <button
+          onClick={onEdit}
+          disabled={archived}
+          className="px-2.5 py-1 rounded-full border border-ink-3 hover:border-pulse/40 text-bone-3 hover:text-bone-2 text-[11px] transition-colors disabled:opacity-30"
+        >
+          Edit
+        </button>
+        {archived ? (
+          <button
+            onClick={onUnarchive}
+            className="px-2.5 py-1 rounded-full border border-ink-3 hover:border-pulse-2/40 text-bone-3 hover:text-pulse-2 text-[11px] transition-colors"
+          >
+            Restore
+          </button>
+        ) : w.id !== 1 ? (
+          <button
+            onClick={onArchive}
+            className="px-2.5 py-1 rounded-full border border-ink-3 hover:border-warn/40 text-bone-3 hover:text-warn text-[11px] transition-colors"
+          >
+            Archive
+          </button>
+        ) : (
+          <span className="text-bone-3 text-[10px] px-2.5 opacity-50">default</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const CATEGORIES: { id: WorkspaceCategory; label: string; sensitive: boolean }[] = [
+  { id: "work",     label: "Work",     sensitive: false },
+  { id: "personal", label: "Personal", sensitive: false },
+  { id: "other",    label: "Other",    sensitive: false },
+  { id: "health",   label: "Health",   sensitive: true },
+  { id: "therapy",  label: "Therapy",  sensitive: true },
+  { id: "legal",    label: "Legal",    sensitive: true },
+  { id: "finance",  label: "Finance",  sensitive: true },
+];
+
+function WorkspaceForm({
+  existing,
+  onCancel,
+  onSaved,
+}: {
+  existing?: Workspace;
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  const [name, setName] = useState(existing?.name ?? "");
+  const [category, setCategory] = useState<WorkspaceCategory>(
+    existing?.category ?? "personal",
+  );
+  const [crossVisible, setCrossVisible] = useState(
+    existing ? existing.crossVisible !== 0 : !isSensitive("personal"),
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // When the user picks a different category, reset crossVisible to
+  // the new category's default (only on create — don't override an
+  // existing user choice).
+  const setCategoryAndDefault = (next: WorkspaceCategory) => {
+    setCategory(next);
+    if (!existing) setCrossVisible(!isSensitive(next));
+  };
+
+  const save = async () => {
+    setError(null);
+    if (!name.trim()) {
+      setError("Name is required.");
+      return;
+    }
+    setSaving(true);
+    try {
+      if (existing) {
+        await updateWorkspace(existing.id, {
+          name: name.trim(),
+          category,
+          crossVisible,
+        });
+      } else {
+        await createWorkspace({
+          name: name.trim(),
+          category,
+          crossVisible,
+        });
+      }
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const sensitive = isSensitive(category);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-baseline justify-between">
+        <span className="text-bone text-sm font-medium">
+          {existing ? `Edit ${existing.name}` : "New workspace"}
+        </span>
+        <button
+          onClick={onCancel}
+          className="text-bone-3 hover:text-bone-2 text-xs"
+        >
+          Cancel
+        </button>
+      </div>
+
+      <Field label="Name">
+        <Input value={name} onChange={setName} />
+      </Field>
+
+      <Field label="Category">
+        <div className="grid grid-cols-2 gap-2">
+          {CATEGORIES.map((c) => {
+            const selected = c.id === category;
+            return (
+              <button
+                key={c.id}
+                onClick={() => setCategoryAndDefault(c.id)}
+                className={
+                  "rounded-xl border px-3 py-2 text-left text-sm transition-all " +
+                  (selected
+                    ? c.sensitive
+                      ? "border-warn/60 bg-warn/[0.07]"
+                      : "border-pulse/60 bg-pulse/[0.07]"
+                    : "border-ink-3 bg-ink-2/30 hover:border-ink-3/80 hover:bg-ink-2/50")
+                }
+              >
+                <div className="flex items-center gap-2">
+                  {c.sensitive && <span className="text-warn">🔒</span>}
+                  <span className="text-bone-2">{c.label}</span>
+                </div>
+                {c.sensitive && (
+                  <p className="text-bone-3 text-[10px] mt-0.5 leading-snug">
+                    Isolated by default
+                  </p>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </Field>
+
+      <Field label="Cross-workspace visibility">
+        <label className="flex items-center gap-2 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={crossVisible}
+            onChange={(e) => setCrossVisible(e.target.checked)}
+            className="accent-pulse"
+          />
+          <span className="text-bone-2 text-sm">
+            Show this workspace's data in other workspaces' views
+          </span>
+        </label>
+        {sensitive && crossVisible && (
+          <p className="text-warn text-[11px] mt-2 leading-relaxed">
+            Sensitive workspaces are isolated by default. Toggling this on
+            means data from this workspace will appear in cross-workspace
+            queries from your other (non-sensitive) workspaces. Continue
+            only if you're sure.
+          </p>
+        )}
+      </Field>
+
+      {error && <p className="text-warn text-[11px]">{error}</p>}
+
+      <div className="flex items-center gap-3 pt-1">
+        <button
+          onClick={save}
+          disabled={saving}
+          className="px-4 py-2 rounded-full bg-bone/95 text-ink text-sm font-medium hover:bg-bone disabled:opacity-50 transition-colors"
+        >
+          {saving ? "Saving…" : existing ? "Save" : "Create"}
+        </button>
+      </div>
+    </div>
   );
 }
 
