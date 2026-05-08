@@ -1,5 +1,78 @@
 # Travis Changelog
 
+## v0.4.0 — Workspaces (2026-05-08)
+
+Travis now keeps separate worlds separate. A workspace scopes every
+operational record — tasks, reminders, journal entries, conversations,
+embeddings, and every typed pack table — to the world it belongs in.
+Switch workspaces from the header chip; the Manage tabs, splash, and
+proactive nudges all re-scope. Sensitive categories (Health, Therapy,
+Legal, Finance) stay isolated by default per the asymmetric rule —
+they don't bleed into other workspaces' reads, and Travis won't auto-
+route captures into them. Design is in
+[`WORKSPACES.md`](./WORKSPACES.md).
+
+### Highlights
+
+- **Per-row `workspace_id` scoping.** Migration `0020_workspaces.sql`
+  adds the column to every scoped core table (task, reminder,
+  journal_entry, conversation, embedding, entity, relation, event,
+  summary, email_sent) and the L2E pack's typed tables; the tutoring
+  pack adds it via its own per-pack migration. Existing rows backfill
+  into the default `Personal` workspace.
+- **Active + visible workspace state.** `AppState.workspace` holds
+  `{active_id, visible_ids}`, refreshed on switch. Reads expand
+  across `visible_ids` (active + cross-visible non-sensitive peers);
+  writes stamp `active_id`. Asymmetric isolation: sensitive
+  workspaces collapse `visible_ids` to themselves.
+- **Workspace switcher.** Header chip shows the active workspace's
+  name with a warn-yellow tint + lock icon for sensitive ones. Click
+  to switch. The `workspace-changed` event refreshes every subscribed
+  view.
+- **Settings → Workspaces.** Full CRUD: create, rename, recategorise,
+  toggle cross-visibility, archive, unarchive. Sensitive cross-
+  visibility toggle includes a warning copy.
+- **Auto-close idle conversations.** Daily background tick closes any
+  `awaiting_user` conversation whose `updated_at` is 7+ days old, so
+  the resume-where-you-left-off surface stays clean.
+- **Workspace-aware system prompts.** Journal, summary, ask, and
+  proactive nudge prompts include the active workspace's name +
+  category. Sensitive workspaces get an extra do-not-bleed line.
+- **Workspace-scoped semantic memory.** Embeddings denormalise
+  `workspace_id` at insert time; retrieval scans only rows in the
+  visible set. Cross-workspace recall happens silently when active
+  is non-sensitive; sensitive contexts only see themselves.
+- **Intelligent LLM routing.** The journal extraction tool gains a
+  `workspaceRouting` field. High/medium-confidence picks for non-
+  sensitive targets restamp the journal entry, conversation,
+  embeddings, tasks, and reminders into the routed workspace. Low-
+  confidence and sensitive targets demote to a clarifying question.
+  The overlay shows a "Captured to <name>" chip when routing
+  diverges from the active workspace.
+- **Onboarding workspace step.** New step between the pack picker
+  and the done screen lets the user add a Work / Personal / Other
+  workspace inline. Sensitive categories deferred to Settings — they
+  deserve a deliberate add.
+
+### Migrations
+
+- `0020_workspaces.sql` — schema_version 19 → 20. Creates the
+  `workspace` table, the default `Personal` row, the
+  `meta.active_workspace_id` pointer, and `ALTER TABLE ADD COLUMN
+  workspace_id INTEGER NOT NULL DEFAULT 1` on every scoped core
+  table + the L2E pack's typed tables. Indexed for filter speed.
+- Tutoring pack `0002_workspace_id.sql` — adds `workspace_id` to
+  tutor / student / session / progress_report.
+
+### Known v1 cuts
+
+- 3-capture suggestion to switch the active workspace (deferred —
+  routing works per-capture, switching stays manual).
+- Per-entity remembered disambiguation (e.g. "Maria → always
+  Personal") deferred — routing decides fresh each turn.
+- Persistent sensitive-workspace banner across the whole app —
+  switcher chip is the only indicator for now.
+
 ## v0.3.0 — Plugin platform + runtime pack selection (2026-05-08)
 
 Packs become a real plugin format. Every primary table from every
