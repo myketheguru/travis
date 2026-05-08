@@ -10,8 +10,8 @@ import {
   type Invoice,
   type InvoiceStatus,
   type School,
-} from "../../lib/domain";
-import { exportInvoicePdfPreview } from "../../lib/pdf";
+} from "../../../lib/domain";
+import { exportInvoicePdfPreview } from "../../../lib/pdf";
 
 const filters: { id: InvoiceStatus | "all"; label: string }[] = [
   { id: "all", label: "All" },

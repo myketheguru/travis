@@ -7,16 +7,15 @@ import EntitiesTab from "./tabs/EntitiesTab";
 import SummariesTab from "./tabs/SummariesTab";
 import AsksTab from "./tabs/AsksTab";
 import ThreadsTab from "./tabs/ThreadsTab";
-import InvoicesTab from "./tabs/InvoicesTab";
 import { useAppStore } from "../stores/app";
 import { packSchemas, type PackSchema, type TableDef } from "../lib/packs";
 import { TableTab } from "../lib/autoCRUD";
+import { getOverride } from "../lib/packRegistry";
 
 type CoreTabId =
   | "ask"
   | "threads"
   | "tasks"
-  | "invoices"
   | "reminders"
   | "entities"
   | "summaries"
@@ -27,7 +26,6 @@ type CoreTab = {
   id: CoreTabId;
   label: string;
   diagnostic?: boolean;
-  requiresPack?: string;
 };
 
 type PackTab = {
@@ -47,20 +45,11 @@ const coreTabsBefore: CoreTab[] = [
 ];
 
 const coreTabsAfter: CoreTab[] = [
-  { kind: "core", id: "invoices",  label: "Invoices",   requiresPack: "lead-to-empower" },
   { kind: "core", id: "reminders", label: "Reminders" },
   { kind: "core", id: "entities",  label: "Entities",   diagnostic: true },
   { kind: "core", id: "summaries", label: "Summaries",  diagnostic: true },
   { kind: "core", id: "asks",      label: "Asks of me", diagnostic: true },
 ];
-
-// Pack tables that are rendered by hand-written components instead of
-// auto-CRUD. The auto-tab generator skips these to avoid double tabs.
-// Once the custom-UI-override mechanism lands (slice 6), this list goes
-// away — packs declare their overrides in metadata.
-const HAND_WRITTEN_TABLES = new Set<string>([
-  "lead-to-empower:invoice", // L2E InvoicesTab.tsx
-]);
 
 export default function Manage({ onClose }: { onClose: () => void }) {
   const showDiagnostics = useAppStore((s) => s.showDiagnostics);
@@ -73,10 +62,12 @@ export default function Manage({ onClose }: { onClose: () => void }) {
   }, []);
 
   const tabs = useMemo<Tab[]>(() => {
+    // Every primary pack table becomes a tab. The packRegistry decides
+    // whether the tab body is rendered by an auto-CRUD component or a
+    // pack-shipped custom override; both paths look the same here.
     const packTabs: PackTab[] = (schemas ?? []).flatMap((pack) =>
       pack.tables
         .filter((t) => t.primary)
-        .filter((t) => !HAND_WRITTEN_TABLES.has(`${pack.slug}:${t.slug}`))
         .map<PackTab>((t) => ({
           kind: "pack",
           id: `pack:${pack.slug}:${t.slug}`,
@@ -88,13 +79,16 @@ export default function Manage({ onClose }: { onClose: () => void }) {
 
     const all: Tab[] = [...coreTabsBefore, ...packTabs, ...coreTabsAfter];
     return all.filter((t) => {
-      if (t.kind === "core") {
-        if (t.diagnostic && !showDiagnostics) return false;
-        if (t.requiresPack && !enabledPacks.includes(t.requiresPack)) return false;
+      if (t.kind === "core" && t.diagnostic && !showDiagnostics) {
+        return false;
       }
       return true;
     });
-  }, [schemas, showDiagnostics, enabledPacks]);
+  }, [schemas, showDiagnostics]);
+  // Suppress the lint about enabledPacks no longer being a dep — it's
+  // intentionally not used now that pack tabs come from packSchemas
+  // (which is already enabled-only).
+  void enabledPacks;
 
   // If the active tab disappears (diagnostics toggled off, pack disabled),
   // fall back to Ask.
@@ -152,14 +146,21 @@ export default function Manage({ onClose }: { onClose: () => void }) {
         {active?.kind === "core" && active.id === "ask" && <AskTab />}
         {active?.kind === "core" && active.id === "threads" && <ThreadsTab />}
         {active?.kind === "core" && active.id === "tasks" && <TasksTab />}
-        {active?.kind === "core" && active.id === "invoices" && <InvoicesTab />}
         {active?.kind === "core" && active.id === "reminders" && <RemindersTab />}
         {active?.kind === "core" && active.id === "entities" && <EntitiesTab />}
         {active?.kind === "core" && active.id === "summaries" && <SummariesTab />}
         {active?.kind === "core" && active.id === "asks" && <AsksTab />}
-        {active?.kind === "pack" && (
-          <TableTab pack={active.pack} table={active.table} />
-        )}
+        {active?.kind === "pack" && (() => {
+          // Pack-shipped custom UI takes priority over auto-CRUD when
+          // an override is declared. PLUGIN_PLATFORM.md explains the
+          // override mechanism + how it'll evolve when runtime-loaded
+          // packs land.
+          const Override = getOverride(active.pack.slug, active.table.slug, "list");
+          if (Override) {
+            return <Override />;
+          }
+          return <TableTab pack={active.pack} table={active.table} />;
+        })()}
       </div>
     </main>
   );
