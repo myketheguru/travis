@@ -159,7 +159,17 @@ export default function Manage({ onClose }: { onClose: () => void }) {
           if (Override) {
             return <Override />;
           }
-          return <TableTab pack={active.pack} table={active.table} />;
+          // Key forces a fresh TableTab (and its ListView) every time
+          // the user switches tables — otherwise React preserves the
+          // previous tab's sortField state, leaking e.g. "name" from
+          // Coaches into the Hours tab whose fields don't include it.
+          return (
+            <TableTab
+              key={`${active.pack.slug}:${active.table.slug}`}
+              pack={active.pack}
+              table={active.table}
+            />
+          );
         })()}
       </div>
     </main>
