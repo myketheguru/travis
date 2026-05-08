@@ -35,6 +35,8 @@ mod task_cmd;
 mod telemetry;
 mod tools;
 mod updater_cmd;
+mod workspaces;
+mod workspaces_cmd;
 
 // L2E pack command surface, conditionally compiled. References under
 // `crate::packs::lead_to_empower::{domain_cmd, pdf_cmd}` get aliased
@@ -57,6 +59,11 @@ pub struct AppState {
     /// (`meta.pack.<slug>.enabled`). Resolved once at startup; toggling
     /// via [`packs::set_pack_enabled`] takes effect on next launch.
     pub enabled_packs: Vec<&'static dyn packs::PackHandle>,
+    /// Active workspace + visible-workspace ids. Reads on every
+    /// scoped Tauri command path; writes when the user switches
+    /// active workspace or toggles a workspace's `cross_visible`
+    /// flag. See WORKSPACES.md.
+    pub workspace: Arc<tokio::sync::RwLock<workspaces::State>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -190,12 +197,33 @@ pub fn run() {
             }
             let actions_arc = Arc::new(action_registry);
 
+            // Load workspace state — active id from
+            // `meta.active_workspace_id` (default 1 for fresh DBs and
+            // upgrades) and visible-id set per the asymmetric
+            // isolation rule (WORKSPACES.md).
+            let workspace_state = match tauri::async_runtime::block_on(
+                workspaces::State::load(&db_arc.pool),
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    startup_error::die(
+                        Some(&data_dir),
+                        format!(
+                            "Travis couldn't resolve the active workspace.\n\n\
+                             Details: {e}"
+                        ),
+                    );
+                }
+            };
+            let workspace_arc = Arc::new(tokio::sync::RwLock::new(workspace_state));
+
             handle.manage(AppState {
                 db: db_arc.clone(),
                 http: http.clone(),
                 health: health_arc.clone(),
                 actions: actions_arc,
                 enabled_packs,
+                workspace: workspace_arc,
             });
 
             handle.global_shortcut().register(primary_shortcut)?;
@@ -367,6 +395,13 @@ pub fn run() {
             packs_cmd::pack_table_upsert,
             packs_cmd::pack_table_delete,
             packs_cmd::pack_alerts,
+            workspaces_cmd::list_workspaces,
+            workspaces_cmd::get_active_workspace,
+            workspaces_cmd::set_active_workspace,
+            workspaces_cmd::create_workspace,
+            workspaces_cmd::update_workspace,
+            workspaces_cmd::archive_workspace,
+            workspaces_cmd::unarchive_workspace,
             updater_cmd::check_for_update,
             updater_cmd::install_update,
             health::health_status,
