@@ -1,4 +1,12 @@
-# Plugin Platform — Phase 1.5 (spec)
+# Plugin Platform — Phase 1.5 (shipped in v0.3.0)
+
+> **Status (2026-05-08):** slices 1–7 shipped in v0.3.0. Slice 8
+> (onboarding hooks) and the four polish items (ref resolution, list
+> filters, pack-grouped tabs, page_size beyond default) are tracked
+> in [`DEFERRED.md`](./DEFERRED.md). The pack-authoring guide for
+> using everything below is at
+> [`AUTHORING_PACKS.md`](./AUTHORING_PACKS.md).
+
 
 A pack should be a complete plugin contract. Today's pack format
 (v0.2.0 — see [PACKS.md](./PACKS.md)) covers the *backend* extension

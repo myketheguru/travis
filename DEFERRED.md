@@ -95,6 +95,75 @@ big enough for percentages to mean something.
 
 ---
 
+## Plugin platform: pack onboarding hooks
+**What:** Packs declare config they need at install time (e.g., L2E
+needs the default invoice prefix; HVAC would need the default labour
+rate; therapy might need a billing-code list). Onboarding inserts a
+"Configure {pack name}" step after the pack picker, with one input per
+declared `FieldDef`. Values stored in `meta.pack.<slug>.config.<field>`
+so pack code reads them via `crate::packs::config::get(slug, field)`.
+Settings → Packs gains an "Edit configuration" button per pack with
+non-empty `onboarding_fields()`.
+
+**Why deferred:** No pack currently needs this. L2E hardcodes
+`L2E-{year}-NNNN` as the invoice prefix; tutoring has no install-time
+config. Spec'd in `PLUGIN_PLATFORM.md` slice 8 but not implemented —
+adding the mechanism without a real consumer = dead code that ages
+without being exercised.
+
+**Revisit when:** A pack gets its second customer and you discover
+they want a different default for some hardcoded value. That's the
+moment the pack author needs `onboarding_fields()`. Half-day to add
+the trait method + Tauri commands + onboarding step.
+
+---
+
+## Plugin platform: ref resolution
+**What:** Auto-CRUD list/detail views show foreign-key fields as
+`coach#5` instead of `Coach Maria`. The pack's `TableDef` already
+declares `display_field` for each table (almost always `name`); the
+auto-CRUD just doesn't JOIN through to fetch the referenced row's
+display value yet.
+
+**Why deferred:** Cosmetic. The integer ID is unambiguous and clickable
+becomes drill-in once `RefPicker` lands. Skipping the JOIN keeps the
+SQL builder simple in v1.
+
+**Revisit when:** First customer demo where someone asks "why does it
+say `coach#3`?". Half-day to add the JOIN + cache.
+
+---
+
+## Plugin platform: list-view filters & search
+**What:** ListView shows a filter bar above the table. Per-field
+filters by `FieldType` (date range, enum dropdown, ref equality, text
+contains). Generic SQL builder extends `pack_table_list` to accept a
+filter object. Schema metadata already has the type info needed.
+
+**Why deferred:** Lists today fit on one page for most packs; sort
+suffices. Filters become essential once a pack has 100+ rows of
+something.
+
+**Revisit when:** Someone with a year of L2E data hits the page-size
+limit and asks for filtering. ~1 day.
+
+---
+
+## Plugin platform: pack-grouped Manage tabs
+**What:** With L2E + Tutoring both enabled the Manage tab bar gets
+long (Ask · Threads · Tasks · Coaches · Schools · Hours · Signing
+Sheets · Invoices · Tutors · Students · Sessions · Progress Reports ·
+Reminders · …). Group pack tabs under collapsible sub-navs:
+`[Ask] [Threads] [Tasks] [Lead to Empower ▸] [Tutoring ▸] [Reminders]`.
+
+**Why deferred:** Two-pack deployments are tolerable as flat tabs;
+3+ packs make the bar unworkable. Pure UX polish.
+
+**Revisit when:** Three or more packs ship and the tab bar overflows
+on a normal-width window. ~half-day.
+
+---
+
 ## Invoice templates library
 **What:** Multiple named invoice layouts the user can pick between,
 beyond the single NYC DoF design that ships today.

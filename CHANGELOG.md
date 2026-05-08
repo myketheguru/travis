@@ -1,5 +1,80 @@
 # Travis Changelog
 
+## v0.3.0 — Plugin platform + runtime pack selection (2026-05-08)
+
+Packs become a real plugin format. Every primary table from every
+enabled pack now renders as a Manage tab — list, detail, edit, delete
+— with **zero pack-side UI code**. Pack authors ship schema metadata;
+core materialises the UI dynamically. Custom React components are
+optional, ship inside the pack, and override the auto-CRUD when the
+UX warrants it. The pack-authoring guide is at
+[`AUTHORING_PACKS.md`](./AUTHORING_PACKS.md).
+
+### Highlights
+
+- **Schema-driven auto-CRUD.** New `PackHandle::tables()` declares
+  every typed table with rich field metadata (`FieldType` covers
+  Text, LongText, Email, Phone, Integer, Number, Currency, Date,
+  DateTime, Bool, Enum, Ref, Json, Timestamp). Generic Tauri commands
+  (`pack_table_list / _get / _upsert / _delete`) build SQL from the
+  metadata; SQL-injection-safe by construction.
+- **Auto list / detail / form views.** Frontend `src/lib/autoCRUD/`
+  contains type-aware components (`ListView`, `DetailView`,
+  `FormView`, `FieldCell`, `FieldInput`) that render any pack's
+  table. Sortable columns, click-to-detail, edit forms, two-click
+  delete.
+- **Custom UI overrides.** Pack-shipped React components live at
+  `src/packs/<slug>/ui/` and register in `src/lib/packRegistry.ts`.
+  The L2E `InvoicesTab` moves into the L2E pack and demonstrates
+  the override path.
+- **Operational alerts.** New `PackHandle::alerts()` returns
+  `AlertDef` entries with severity (money / action / info) and SQL
+  for the headline metric. The Splash screen renders these
+  prominently above the entity stats. L2E ships *Hours not yet
+  invoiced* + *Signing sheets awaiting signature*; tutoring ships
+  *Progress reports drafted but not sent* + *No-show sessions to
+  follow up*.
+- **Runtime pack selection.** `meta.pack.<slug>.enabled` per DB
+  decides which compiled-in packs participate. Onboarding step 8
+  asks "What should Travis help with?"; Settings → Packs lets users
+  toggle anytime. Cargo features stay as a build-time lever for
+  distros (`--no-default-features --features pack-tutoring`).
+- **Tutoring pack.** The second vertical pack ships in the default
+  build, runtime-disabled by default. Validates that the abstraction
+  isn't accidentally L2E-shaped — writing the second pack felt
+  mechanical: declare schema, ship migrations, register entity
+  kinds. No UI code, no Tauri commands.
+
+### What this enables
+
+A new vertical pack now needs only: `tables.rs` schema declarations,
+a SQL migration, an entity-kinds list, a prompt fragment, an alert
+or two. Roughly half a day from the right MARKET.md vertical to a
+working pack with full UI. Custom UI is opt-in for places the
+auto-CRUD shape doesn't suit.
+
+### Migrations
+
+No new core migrations in v0.3.0; pack metadata lives in compile-
+time `&'static` data. The tutoring pack's `0001_init.sql` runs as
+a per-pack migration, tracked in `meta.pack.tutoring.schema_version`.
+
+### Breaking changes
+
+None for end users on the default build. The L2E pack's invoice tab
+is now sourced from `src/packs/lead_to_empower/ui/InvoicesTab.tsx`
+instead of `src/manage/tabs/InvoicesTab.tsx` (path change only;
+identical behaviour).
+
+### Internal docs
+
+- `PLUGIN_PLATFORM.md` — design spec; slices 1–7 shipped, slice 8
+  (onboarding hooks) deferred per `DEFERRED.md`.
+- `AUTHORING_PACKS.md` — comprehensive guide to building and
+  evolving packs.
+
+---
+
 ## v0.2.0 — Pack architecture (2026-05-07)
 
 Travis is now generic at the data-model level. The vertical-specific
