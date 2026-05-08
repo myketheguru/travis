@@ -117,7 +117,18 @@ pub async fn pack_table_list(
     let requested_sort = params.sort.as_deref().or(table.list_view.default_sort);
     let sort = match requested_sort {
         Some(s) if table.fields.iter().any(|f| f.slug == s) => s,
-        Some(_) => return Err(format!("unknown sort field for table {}", table.slug)),
+        Some(s) => {
+            let available = table
+                .fields
+                .iter()
+                .map(|f| f.slug)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "unknown sort field {s:?} for table {} (available: {available})",
+                table.slug
+            ));
+        }
         None => "id",
     };
     let sort_dir = match params.sort_dir.as_deref() {
