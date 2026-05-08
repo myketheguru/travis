@@ -22,6 +22,7 @@ mod memory;
 mod memory_cmd;
 mod overlay;
 mod packs;
+mod packs_cmd;
 mod proactive;
 mod reminders;
 mod reminders_cmd;
@@ -358,6 +359,8 @@ pub fn run() {
             flags_cmd::get_flags,
             flags_cmd::get_flag,
             flags_cmd::set_flags_url,
+            packs_cmd::list_packs,
+            packs_cmd::set_pack_enabled,
             updater_cmd::check_for_update,
             updater_cmd::install_update,
             health::health_status,

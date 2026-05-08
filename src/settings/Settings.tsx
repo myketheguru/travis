@@ -17,6 +17,7 @@ import {
   type UserProfile,
 } from "../lib/ipc";
 import { checkForUpdate, installUpdate, type UpdateInfo } from "../lib/updater";
+import { listPacks, setPackEnabled, type PackInfo } from "../lib/packs";
 import { VoiceDropdown } from "../components/VoiceDropdown";
 import { useAppStore } from "../stores/app";
 
@@ -345,6 +346,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
         </div>
 
         <CalendarSection />
+        <PacksSection />
         <ProactiveSection />
         <UpdatesSection />
         <DiagnosticsSection />
@@ -880,6 +882,98 @@ function UpdatesSection() {
       )}
       {hint && <p className="text-pulse-2 text-[11px]">{hint}</p>}
       {err && <p className="text-warn text-[11px]">{err}</p>}
+    </Section>
+  );
+}
+
+function PacksSection() {
+  const [packs, setPacks] = useState<PackInfo[] | null>(null);
+  const [pending, setPending] = useState<Set<string>>(new Set());
+  const [restartHint, setRestartHint] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    listPacks().then(setPacks).catch((e) => setError(String(e)));
+  }, []);
+
+  const toggle = async (slug: string, enabled: boolean) => {
+    setPending((s) => new Set(s).add(slug));
+    setError(null);
+    try {
+      await setPackEnabled(slug, enabled);
+      setPacks((prev) =>
+        prev ? prev.map((p) => (p.slug === slug ? { ...p, enabled } : p)) : prev,
+      );
+      setRestartHint(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPending((s) => {
+        const next = new Set(s);
+        next.delete(slug);
+        return next;
+      });
+    }
+  };
+
+  return (
+    <Section title="Packs">
+      <p className="text-bone-3 text-[11px] leading-relaxed -mt-2">
+        Each pack is a vertical Travis can help with. Enable the packs that
+        match your work; disabled packs don't contribute prompts, tools, or
+        UI. Your data stays on disk either way.
+      </p>
+      {!packs && !error && (
+        <p className="text-bone-3 text-xs">Loading…</p>
+      )}
+      {packs && packs.length === 0 && (
+        <p className="text-bone-3 text-xs">No packs are bundled in this build.</p>
+      )}
+      {packs && packs.length > 0 && (
+        <div className="flex flex-col gap-2">
+          {packs.map((p) => {
+            const isPending = pending.has(p.slug);
+            return (
+              <label
+                key={p.slug}
+                className={
+                  "flex items-start gap-3 rounded-xl border px-4 py-3 transition-all cursor-pointer " +
+                  (p.enabled
+                    ? "border-pulse/60 bg-pulse/[0.07]"
+                    : "border-ink-3 bg-ink-2/30 hover:border-ink-3/80 hover:bg-ink-2/50")
+                }
+              >
+                <input
+                  type="checkbox"
+                  checked={p.enabled}
+                  disabled={isPending}
+                  onChange={(e) => toggle(p.slug, e.target.checked)}
+                  className="accent-pulse mt-0.5"
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-bone text-sm">{p.name}</span>
+                    <span className="text-bone-3 text-[10px] font-mono opacity-70">
+                      v{p.version}
+                    </span>
+                  </div>
+                  {p.description && (
+                    <p className="text-bone-3 text-[11px] mt-1 leading-relaxed">
+                      {p.description}
+                    </p>
+                  )}
+                </div>
+              </label>
+            );
+          })}
+        </div>
+      )}
+      {restartHint && (
+        <p className="text-pulse-2 text-[11px]">
+          Pack changes take effect on next launch.
+        </p>
+      )}
+      {error && <p className="text-warn text-[11px]">{error}</p>}
     </Section>
   );
 }

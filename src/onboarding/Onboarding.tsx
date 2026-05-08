@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { PresenceOrb } from "../components/PresenceOrb";
 import { useAppStore } from "../stores/app";
@@ -9,6 +9,7 @@ import {
   type PingResult,
   type Provider,
 } from "../lib/ipc";
+import { listPacks, setPackEnabled, type PackInfo } from "../lib/packs";
 import { Question, inputClass } from "./Question";
 import { VoiceDropdown } from "../components/VoiceDropdown";
 
@@ -38,8 +39,8 @@ const initialDraft: Draft = {
 
 // Steps:
 // 0 welcome · 1 name · 2 role · 3 org · 4 context (opt) · 5 voice (opt)
-// 6 provider · 7 api key · 8 done
-const TOTAL_STEPS = 9;
+// 6 provider · 7 api key · 8 pack picker · 9 done
+const TOTAL_STEPS = 10;
 
 const providers: { id: Provider; name: string; blurb: string; needsKey: boolean }[] = [
   { id: "claude", name: "Claude",  blurb: "Anthropic — best reasoning, prompt caching",  needsKey: true },
@@ -60,8 +61,19 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<PingResult | null>(null);
+  const [packs, setPacks] = useState<PackInfo[] | null>(null);
+  const [savingPacks, setSavingPacks] = useState(false);
   const setActivity = useAppStore((s) => s.setActivity);
   const pulse = useAppStore((s) => s.pulse);
+
+  // Load the pack list once we cross into the pack-picker step.
+  useEffect(() => {
+    if (step === 8 && packs === null) {
+      listPacks()
+        .then(setPacks)
+        .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    }
+  }, [step, packs]);
 
   const update = (patch: Partial<Draft>) => {
     setTestResult(null);
@@ -147,7 +159,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
         ))}
       </div>
 
-      {step > 0 && step < 8 && (
+      {step > 0 && step < 9 && (
         <button
           onClick={back}
           className="absolute top-6 left-6 z-20 text-bone-3 hover:text-bone-2 text-xs flex items-center gap-1.5 transition-colors"
@@ -441,6 +453,82 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
           )}
 
           {step === 8 && (
+            <Question
+              index={8}
+              prompt="What should Travis help with?"
+              hint="Pick the verticals that match your work. You can change these later in Settings → Packs. Pack changes take effect on next launch — you'll need to relaunch Travis once after onboarding for any toggles to apply."
+              canAdvance={packs !== null && !savingPacks}
+              onAdvance={async () => {
+                if (!packs) return;
+                setSavingPacks(true);
+                setError(null);
+                try {
+                  // Lock in the user's choice for every pack — even
+                  // unchanged defaults — so resolve_enabled_packs has
+                  // a definitive answer next launch.
+                  for (const p of packs) {
+                    await setPackEnabled(p.slug, p.enabled);
+                  }
+                  setStep(9);
+                } catch (e) {
+                  setError(e instanceof Error ? e.message : String(e));
+                } finally {
+                  setSavingPacks(false);
+                }
+              }}
+              advanceLabel={savingPacks ? "Saving…" : "Continue"}
+            >
+              <div className="flex flex-col gap-2">
+                {packs === null && !error && (
+                  <p className="text-bone-3 text-xs">Loading packs…</p>
+                )}
+                {packs && packs.length === 0 && (
+                  <p className="text-bone-3 text-xs">
+                    No packs are bundled in this build. Travis will run with
+                    just the core capabilities (notes, tasks, reminders).
+                  </p>
+                )}
+                {packs?.map((p) => (
+                  <label
+                    key={p.slug}
+                    className={
+                      "flex items-start gap-3 rounded-xl border px-4 py-3 transition-all cursor-pointer " +
+                      (p.enabled
+                        ? "border-pulse/60 bg-pulse/[0.07]"
+                        : "border-ink-3 bg-ink-2/30 hover:border-ink-3/80 hover:bg-ink-2/50")
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      checked={p.enabled}
+                      onChange={(e) => {
+                        const enabled = e.target.checked;
+                        setPacks((prev) =>
+                          prev
+                            ? prev.map((x) =>
+                                x.slug === p.slug ? { ...x, enabled } : x,
+                              )
+                            : prev,
+                        );
+                      }}
+                      className="accent-pulse mt-0.5"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <span className="text-bone font-medium">{p.name}</span>
+                      {p.description && (
+                        <p className="text-bone-3 text-[11px] mt-1 leading-relaxed">
+                          {p.description}
+                        </p>
+                      )}
+                    </div>
+                  </label>
+                ))}
+                {error && <p className="text-warn text-xs">{error}</p>}
+              </div>
+            </Question>
+          )}
+
+          {step === 9 && (
             <motion.div
               key="done"
               initial={{ opacity: 0, y: 24 }}
