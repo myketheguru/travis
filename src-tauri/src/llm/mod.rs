@@ -202,6 +202,20 @@ pub fn default_model(provider: &str) -> &'static str {
     }
 }
 
+/// Cheap-tier model for the provider, used by the journal ingest
+/// path when the intent classifier flags a capture-style turn (no
+/// retrieval, no question answering — just structure extraction).
+/// None means "no cheap tier available; stick with default".
+pub fn cheap_model(provider: &str) -> Option<&'static str> {
+    match provider {
+        "claude" => Some("claude-haiku-4-5-20251001"),
+        // OpenAI has gpt-4o-mini but pricing/quality tradeoff is
+        // less obvious — skip until we have telemetry to compare.
+        // Ollama is single-model per install; nothing to tier.
+        _ => None,
+    }
+}
+
 pub fn build(
     provider: &str,
     api_key: Option<&str>,

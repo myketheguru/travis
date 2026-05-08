@@ -1006,11 +1006,32 @@ pub async fn journal_ingest(
         api_key.is_some()
     );
 
+    // Tier the model by intent. Capture-style turns (no question, no
+    // memory lookup) get the cheaper Claude Haiku — extraction is
+    // structural and Haiku handles it well at ~3-4× lower cost. The
+    // user's explicit `profile.model` overrides this; we only swap
+    // the implicit default. Non-Claude providers ignore the tier
+    // since they don't have a comparable cheap tier wired up.
+    let intent = classify_intent(&raw);
+    let chosen_model: Option<String> = if profile.model.is_some() {
+        profile.model.clone()
+    } else if intent == Intent::Capture {
+        llm::cheap_model(&profile.llm_provider).map(|m| m.to_string())
+    } else {
+        None
+    };
+    if chosen_model.is_some() {
+        tracing::debug!(
+            "journal_ingest model tier: intent={:?} model={:?}",
+            intent,
+            chosen_model
+        );
+    }
     let provider = llm::build(
         &profile.llm_provider,
         api_key.as_deref(),
         profile.ollama_url.as_deref(),
-        profile.model.as_deref(),
+        chosen_model.as_deref(),
         state.http.clone(),
     )
     .map_err(|e| e.to_string())?;
@@ -1056,8 +1077,8 @@ pub async fn journal_ingest(
     // the embedding scan entirely — saves the fastembed call + a
     // table scan on every "captured X today" note. Questions and
     // ambiguous inputs still get the full retrieval so the LLM has
-    // grounding context.
-    let intent = classify_intent(&raw);
+    // grounding context. (`intent` was classified earlier for model
+    // tiering; we reuse it here.)
     let entities_hint = extract_entity_hints(&raw);
     let ws_snapshot = state.workspace.read().await.clone();
     let mem_hits = if intent.needs_memory_retrieval() {
