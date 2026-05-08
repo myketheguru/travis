@@ -98,6 +98,13 @@ jobs:
 
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
+        # Cache save is non-essential — if it flakes (Windows cleanup
+        # races with file locks, network blip during upload, …), the
+        # actual build artifacts have already been signed and uploaded
+        # by this point. Don't let cache-save failures cascade into
+        # `publish: skipped`. Worst case: next build re-downloads
+        # dependencies.
+        continue-on-error: true
         with:
           workspaces: ./src-tauri -> target
 
