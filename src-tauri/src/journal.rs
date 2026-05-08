@@ -631,6 +631,146 @@ fn try_fast_path(
     None
 }
 
+// ---------------------------------------------------------------------------
+// Intent router — classifies a turn cheaply so we can trim retrieval
+// for clearly-not-a-question captures. The memory::retrieve call
+// embeds the query and scans every stored embedding; skipping it on
+// pure narration saves both wall-clock latency and the fastembed
+// CPU spike. Conservative classification: anything ambiguous stays
+// in the "needs retrieval" bucket.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Intent {
+    /// Looks like a question or a memory lookup. Needs full retrieval.
+    Query,
+    /// Looks like a pure note / capture. Memory retrieval skippable.
+    Capture,
+    /// Anything we can't confidently classify. Treat as Query for
+    /// safety — better to do the embed call than starve the LLM of
+    /// context on a real question.
+    Ambiguous,
+}
+
+impl Intent {
+    pub(crate) fn needs_memory_retrieval(self) -> bool {
+        matches!(self, Intent::Query | Intent::Ambiguous)
+    }
+}
+
+const QUESTION_STARTERS: &[&str] = &[
+    "what", "when", "where", "who", "why", "how",
+    "did", "do", "does", "is", "are", "was", "were",
+    "can", "could", "should", "would", "will",
+    "have", "has", "had",
+    "tell", "show", "list", "find", "search",
+    "remind",
+];
+
+/// Heuristic intent classifier. Fast (string ops only) so it runs on
+/// every turn without measurable cost. The embedding-based variant
+/// (per ROADMAP Phase 3) is a future upgrade once telemetry shows
+/// where the heuristic mis-classifies.
+pub(crate) fn classify_intent(raw: &str) -> Intent {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Intent::Ambiguous;
+    }
+
+    // A question mark anywhere is a strong query signal.
+    if trimmed.contains('?') {
+        return Intent::Query;
+    }
+
+    // First word check — questions usually open with a question word.
+    let first_word = trimmed
+        .split(|c: char| c.is_whitespace() || c == ',' || c == '.')
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
+    if QUESTION_STARTERS.contains(&first_word.as_str()) {
+        return Intent::Query;
+    }
+
+    // Long captures (3+ sentences or 30+ words) are clearly notes.
+    let word_count = trimmed.split_whitespace().count();
+    let sentence_endings = trimmed
+        .chars()
+        .filter(|c| matches!(c, '.' | '!'))
+        .count();
+    if word_count >= 30 || sentence_endings >= 3 {
+        return Intent::Capture;
+    }
+
+    // Short narrative cues: past-tense / capture verbs in the first
+    // few tokens. Conservative — only the most common ones.
+    const CAPTURE_VERBS: &[&str] = &[
+        "met", "called", "spoke", "talked", "saw", "visited",
+        "finished", "completed", "wrapped", "sent", "drafted",
+        "logged", "noted", "captured",
+    ];
+    let leading_tokens: Vec<String> = trimmed
+        .split_whitespace()
+        .take(3)
+        .map(|t| t.to_lowercase())
+        .collect();
+    if leading_tokens
+        .iter()
+        .any(|t| CAPTURE_VERBS.iter().any(|v| t.starts_with(*v)))
+    {
+        return Intent::Capture;
+    }
+
+    Intent::Ambiguous
+}
+
+#[cfg(test)]
+mod intent_tests {
+    use super::*;
+
+    #[test]
+    fn questions_classify_as_query() {
+        for input in &[
+            "What did I capture about Maria last week?",
+            "When did I last meet Carlos",
+            "How many hours have I logged this month?",
+            "Show me all open invoices",
+            "Find anything related to PS 142",
+            "Remind me about the meeting",
+        ] {
+            assert_eq!(classify_intent(input), Intent::Query, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn captures_classify_as_capture() {
+        for input in &[
+            "Met with Maria today. Discussed her March hours at PS 142.",
+            "Called Carlos. He wants to push the session to Friday.",
+            "Finished the invoice draft for January.",
+            "Logged 3 hours at Bronx Science yesterday.",
+        ] {
+            assert_eq!(classify_intent(input), Intent::Capture, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn ambiguous_short_inputs_stay_ambiguous() {
+        for input in &["Maria", "follow up", "PS 142 invoice"] {
+            assert_eq!(classify_intent(input), Intent::Ambiguous, "{input:?}");
+        }
+    }
+
+    #[test]
+    fn long_inputs_classify_as_capture_even_without_verb() {
+        let input = "Some very long capture with lots of detail about \
+                     several things that happened and a few people and \
+                     places and notes that span several sentences. \
+                     Another sentence here. And one more.";
+        assert_eq!(classify_intent(input), Intent::Capture);
+    }
+}
+
 #[cfg(test)]
 mod fast_path_tests {
     use super::*;
@@ -912,18 +1052,28 @@ pub async fn journal_ingest(
         });
     }
 
-    // Pull semantic memory hits so Travis can answer questions grounded in past notes.
+    // Intent-aware memory retrieval. Pure capture-style inputs skip
+    // the embedding scan entirely — saves the fastembed call + a
+    // table scan on every "captured X today" note. Questions and
+    // ambiguous inputs still get the full retrieval so the LLM has
+    // grounding context.
+    let intent = classify_intent(&raw);
     let entities_hint = extract_entity_hints(&raw);
     let ws_snapshot = state.workspace.read().await.clone();
-    let mem_hits = memory::retrieve(
-        &state.db.pool,
-        &ws_snapshot.visible_ids,
-        &raw,
-        &entities_hint,
-        5,
-    )
-    .await
-    .unwrap_or_default();
+    let mem_hits = if intent.needs_memory_retrieval() {
+        memory::retrieve(
+            &state.db.pool,
+            &ws_snapshot.visible_ids,
+            &raw,
+            &entities_hint,
+            5,
+        )
+        .await
+        .unwrap_or_default()
+    } else {
+        tracing::debug!("intent=Capture, skipping memory retrieval");
+        Vec::new()
+    };
 
     let workspace_block = crate::workspaces::prompt_context_block(
         &state.db.pool,
