@@ -425,6 +425,104 @@ For any entity:
   resolves a mention to a known entity: *"→ Maria (coach)"*. One
   click opens the detail.
 
+### Mindmap / network view *(spec only — implement later)*
+
+**Goal:** a single visual surface where the user can see the whole
+graph at once — every entity as a node, every relation as an edge,
+laid out so clusters and hubs are obvious. The Manage tabs and
+entity detail page answer *"what does Travis know about Maria?"*;
+the mindmap answers *"what does Travis know about my world?"*.
+
+This is **not** in the Phase 4 implementation slice list. Specced
+here so the data model + APIs land Phase-4-ready and the build can
+slot in without schema thrash later.
+
+#### Visual model
+
+- **Nodes** = entities. Visual attributes:
+  - Colour ↔ top-level kind family (person / place / org / pack-
+    kinded). The pack-kinded family further sub-tints by
+    `pack_slug` so L2E vs Tutoring data is distinguishable at a
+    glance.
+  - Size ↔ `mentions_count` (log-scaled — popular entities don't
+    swallow the canvas).
+  - Border / opacity ↔ `confidence` (faint dashed border for
+    `*:unknown` ambient entities; solid for ≥0.7; bold for typed
+    1.0).
+  - Lock icon overlay for sensitive-workspace nodes when the user
+    has multi-workspace view enabled (only the active workspace's
+    nodes show lock-styling; sensitive isolation rule still
+    governs cross-workspace visibility).
+- **Edges** = relations. Visual attributes:
+  - Stroke weight ↔ `co_mention_count` (from `mentioned_with`
+    edges' `attributes_json`).
+  - Colour ↔ relation `kind` (a labelled edge like `works_at` is
+    a different colour from a noisy `mentioned_with` cloud).
+  - Direction arrow only for typed asymmetric edges (`works_at`,
+    `parent_of`); `mentioned_with` renders undirected.
+- **Layout:** force-directed by default (d3-force / d3-quadtree).
+  Gives natural clustering without a manual positioning layer.
+  Persist last positions per workspace to localStorage so the
+  layout doesn't reshuffle on every load.
+
+#### Interactions
+
+- **Click node** → entity detail (the same page slice 13 builds).
+- **Hover node** → tooltip with name, kind, last-seen, mentions.
+- **Click edge** → side panel listing the journal entries that
+  produced the edge (via the edge's `attributes_json.first_seen` /
+  `last_seen_journal_entry_id` and the linked `mentioned` events).
+- **Filter chips** along the top: by kind family (`Person`,
+  `Place`, `Org`, `Coach`, `School`, …), by time window (last week
+  / month / all-time), by workspace (visible-set respected). Chips
+  toggle nodes/edges in-place rather than re-querying.
+- **Search** focuses the camera on a matching node and dims the
+  rest.
+- **Density control:** an `mentions ≥ N` slider. Drops noisy
+  one-off mentions out of the canvas; keeps hubs.
+
+#### Data needs *(already satisfied by Phase 4 schema)*
+
+The view is purely a read against tables this phase already builds:
+
+```sql
+-- Nodes:
+SELECT id, kind, display_name, mentions_count, confidence,
+       pack_slug, archived_at, last_seen
+FROM entity
+WHERE workspace_id IN (visible_set)
+  AND archived_at IS NULL;
+
+-- Edges:
+SELECT id, from_entity, to_entity, kind, attributes_json
+FROM relation
+WHERE workspace_id IN (visible_set);
+```
+
+No new columns or tables. The existing indexes cover both.
+
+#### Library shortlist
+
+- **react-flow** — best balance of React-idiom + dark theme + edge
+  rendering. Handles ~10⁴ nodes comfortably; slows past that
+  without virtualisation.
+- **cytoscape.js** — graph-DB-style API; very mature; less
+  React-native (wrapper required); better at large graphs.
+- **d3-force + custom canvas** — most control, most code.
+
+Lean: react-flow for v1 if implemented, fall back to cytoscape if
+the user's graph routinely exceeds a few thousand nodes.
+
+#### Why specced now, built later
+
+The Phase 4 implementation slices already produce every node +
+edge the mindmap needs. Building the view alongside the auto-CRUD
+list views (slice 12) would be premature — the lists tell us what
+data quality looks like once ambient capture has run for weeks; the
+mindmap is best built against real-shape data, not synthetic test
+graphs. Punt to Phase 4.5 or as a Phase 4 follow-up once the user
+has lived with the list view long enough to want the spatial one.
+
 ---
 
 ## Migrations
