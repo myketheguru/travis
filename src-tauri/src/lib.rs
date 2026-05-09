@@ -13,6 +13,7 @@ mod email_cmd;
 mod feedback;
 mod flags;
 mod flags_cmd;
+mod graph_indexer;
 mod health;
 mod identity;
 mod identity_cmd;
@@ -296,6 +297,7 @@ pub fn run() {
             reminders::scheduler::spawn(handle.clone(), db_arc.clone());
             telemetry::sender::spawn(handle.clone(), db_arc.clone(), http.clone());
             proactive::spawn(handle.clone(), db_arc.clone(), http.clone(), health_arc.clone());
+            graph_indexer::spawn(db_arc.clone());
 
             // Auto-close idle conversations: fire once at startup, then
             // daily. Cheap UPDATE; no side effects beyond status change.
