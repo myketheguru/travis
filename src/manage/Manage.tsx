@@ -7,6 +7,7 @@ import EntitiesTab from "./tabs/EntitiesTab";
 import SummariesTab from "./tabs/SummariesTab";
 import AsksTab from "./tabs/AsksTab";
 import ThreadsTab from "./tabs/ThreadsTab";
+import KnowledgeTab from "./tabs/KnowledgeTab";
 import { useAppStore } from "../stores/app";
 import { packSchemas, type PackSchema, type TableDef } from "../lib/packs";
 import { TableTab } from "../lib/autoCRUD";
@@ -17,6 +18,9 @@ type CoreTabId =
   | "threads"
   | "tasks"
   | "reminders"
+  | "people"
+  | "places"
+  | "orgs"
   | "entities"
   | "summaries"
   | "asks";
@@ -46,6 +50,12 @@ const coreTabsBefore: CoreTab[] = [
 
 const coreTabsAfter: CoreTab[] = [
   { kind: "core", id: "reminders", label: "Reminders" },
+  // Knowledge tabs — cross-pack entity views from the Phase 4 graph.
+  // Stay alongside the other core tabs because they're not pack-owned;
+  // they read from the spine `entity` table directly.
+  { kind: "core", id: "people",    label: "People" },
+  { kind: "core", id: "places",    label: "Places" },
+  { kind: "core", id: "orgs",      label: "Organisations" },
   { kind: "core", id: "entities",  label: "Entities",   diagnostic: true },
   { kind: "core", id: "summaries", label: "Summaries",  diagnostic: true },
   { kind: "core", id: "asks",      label: "Asks of me", diagnostic: true },
@@ -147,6 +157,15 @@ export default function Manage({ onClose }: { onClose: () => void }) {
         {active?.kind === "core" && active.id === "threads" && <ThreadsTab />}
         {active?.kind === "core" && active.id === "tasks" && <TasksTab />}
         {active?.kind === "core" && active.id === "reminders" && <RemindersTab />}
+        {active?.kind === "core" && active.id === "people" && (
+          <KnowledgeTab key="people" family="person" />
+        )}
+        {active?.kind === "core" && active.id === "places" && (
+          <KnowledgeTab key="places" family="place" />
+        )}
+        {active?.kind === "core" && active.id === "orgs" && (
+          <KnowledgeTab key="orgs" family="org" />
+        )}
         {active?.kind === "core" && active.id === "entities" && <EntitiesTab />}
         {active?.kind === "core" && active.id === "summaries" && <SummariesTab />}
         {active?.kind === "core" && active.id === "asks" && <AsksTab />}
