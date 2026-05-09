@@ -1,4 +1,5 @@
 pub mod embedder;
+pub mod graph;
 
 use serde::Serialize;
 use sqlx::SqlitePool;

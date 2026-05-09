@@ -1192,6 +1192,25 @@ pub async fn journal_ingest(
         Vec::new()
     };
 
+    // Graph-aware retrieval — names that resolve to known entities
+    // get a tight summary of their recent events, mention snippets,
+    // and co-mentioned entities. Cheap (indexed lookups), runs
+    // alongside text retrieval, complements rather than replaces it.
+    // Fires for any turn where the user wrote a proper noun, not
+    // just queries — captures with named entities benefit from the
+    // model knowing the prior context too.
+    let graph_hits = if entities_hint.is_empty() {
+        Vec::new()
+    } else {
+        memory::graph::retrieve(
+            &state.db.pool,
+            &ws_snapshot.visible_ids,
+            &entities_hint,
+        )
+        .await
+    };
+    let graph_block = memory::graph::format_for_prompt(&graph_hits);
+
     let workspace_block = crate::workspaces::prompt_context_block(
         &state.db.pool,
         ws_snapshot.active_id,
@@ -1229,10 +1248,15 @@ pub async fn journal_ingest(
     };
 
     let user_msg = format!(
-        "Today is {today}.\n\nOPEN TASKS (id · title):\n{open}\n\nRELEVANT MEMORY:\n{mem}\n\n{ws}New turn:\n{raw}",
+        "Today is {today}.\n\nOPEN TASKS (id · title):\n{open}\n\nRELEVANT MEMORY:\n{mem}\n\n{graph}{ws}New turn:\n{raw}",
         today = today_local(),
         open = format_open_tasks(&open_tasks),
         mem = format_memory(&mem_hits),
+        graph = if graph_block.is_empty() {
+            String::new()
+        } else {
+            format!("{graph_block}\n")
+        },
         ws = if workspace_options_block.is_empty() {
             String::new()
         } else {
