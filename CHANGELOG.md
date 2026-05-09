@@ -1,5 +1,133 @@
 # Travis Changelog
 
+## v0.5.0 — Knowledge graph foundation + Phase 3 token economy (2026-05-09)
+
+Travis stops being a notes app with extras and starts forming
+persistent memory. Every named person / place / organisation
+mentioned in a journal entry now becomes a typed entity with a
+mention timeline, confidence, and embedding. Co-occurrences become
+graph edges. The LLM gets entity context injected silently on every
+turn — Travis recognises Maria from prior captures without being
+asked. Phase 3's token-economy work also rolls in: heuristic
+fast-path, intent router, Haiku tier for capture-style turns. Design
+in [`KNOWLEDGE_GRAPH.md`](./KNOWLEDGE_GRAPH.md).
+
+### Highlights — Knowledge graph
+
+- **Ambient entity capture.** Migration `0021_graph_extensions.sql`
+  extends the existing spine `entity` table with embedding,
+  confidence, tags, archive, and pack-table back-reference columns;
+  `0022_entity_inference_state.sql` adds the cooldown timestamp for
+  refinement prompts. Every journal turn passes through three
+  layers: pack-declared kind extraction (coach, school, dept,
+  tutor, student) at 0.7 confidence, generic
+  `person/place/org:unknown` extraction at 0.5, and pack-typed CRUD
+  at 1.0. Names recurring across kinds dedup against the highest-
+  confidence existing entity in the workspace.
+- **Mention timeline.** Every journal turn appends a `mentioned`
+  spine event linking each touched entity to the source
+  `journal_entry_id` with a 120-char snippet — a per-entity
+  timeline ready to query without joining through journal text.
+- **Co-mention edges.** Every unordered pair of entities mentioned
+  in the same turn upserts a `mentioned_with` relation with a
+  count tracked in `attributes_json`. Slice 5's canonical ordering
+  prevents duplicate edges per pair.
+- **Entity embedding pipeline.** Background sweeper
+  (`graph_indexer::spawn`) keeps `entity.embedding_vector` current —
+  every 5 minutes it picks up to 50 stale-or-never-indexed entities
+  ordered by mentions desc, embeds via fastembed (already loaded
+  for journal indexing), writes back. 7-day staleness threshold.
+- **Graph-aware retrieval.** `memory::graph::retrieve` resolves the
+  current turn's entity hints to known entities and surfaces a
+  GRAPH MEMORY block alongside the existing text-similarity
+  RELEVANT MEMORY: 5 most recent events, 3 most recent mention
+  snippets, top-2 co-mentioned entities. Cheap by construction —
+  indexed lookups with strict per-hit caps.
+- **Inference helpers.**
+  `recurring_mention_candidates`/`edge_proposals`/`name_conflicts`
+  query for ambient `*:unknown` entities ripe for refinement, pairs
+  co-mentioned often enough to deserve a labelled edge, and
+  same-name conflicts across kinds. `apply_refinement` /
+  `accept_edge_proposal` / `merge_entities` commit the user's
+  answers — designed to be driven by conversation rather than a
+  graph dashboard (per the minimal-surfaces directive).
+- **Capture chip.** When extraction matches a pre-existing entity
+  (mentions_count > 1), the overlay shows a faint *"→ Maria
+  (coach)"* chip below the chat reply. Passive recognition; no
+  interaction needed.
+
+### Highlights — Phase 3 token economy
+
+- **Cache hygiene.** Audit confirmed all four system-prompt
+  builders (journal, summary, proactive, ask) keep dynamic content
+  out of the cached prefix. Anthropic's `cache_control: ephemeral`
+  on `system` covers tools transitively (canonical order is
+  tools → system → messages). Docstring guard added to
+  `build_system_prompt` so future contributors don't sneak in
+  per-turn data.
+- **Heuristic fast-path.** Pure greetings ("hi", "good morning"),
+  acknowledgments ("thanks", "ok"), and direct task completions
+  ("done 12", "mark 5 done") now skip the LLM entirely — synthetic
+  Extraction flows through the existing persistence pipeline.
+- **Intent router.** `classify_intent` runs cheap heuristics
+  (question marks, leading question words, capture verbs, length)
+  to bucket each turn into Query / Capture / Ambiguous. Captures
+  skip the memory::retrieve fastembed call + full table scan;
+  questions and ambiguous turns keep the full retrieval.
+- **Haiku tier.** Capture-classified turns route to
+  `claude-haiku-4-5` instead of `claude-sonnet-4-6` — extraction is
+  structural and Haiku handles it well at ~3-4× lower cost. Honours
+  the user's explicit `profile.model`; only swaps the implicit
+  default. Non-Claude providers fall back to default since they
+  don't have a comparable cheap tier wired up.
+
+### Manage redesign
+
+The horizontal tab strip is replaced by a sidebar with grouped
+navigation: **Capture** (Ask, Tasks, Threads, Reminders) at the
+top, then one group per enabled pack with the pack's display name
+as the group header (Lead to Empower → Coaches/Schools/Hours/
+Sheets/Invoices; Tutoring → Tutors/Students/Sessions/Reports), with
+**Diagnostics** as a trailing collapsible group only visible when
+the dev toggle is on. People/Places/Orgs tabs explicitly **not**
+shipped per the minimal-surfaces directive — the graph is internal
+magic, not a CRUD surface.
+
+### Bug fixes
+
+- **Reminders scheduler** was logging *"no column found for name:
+  workspace_id"* every 30 seconds because Phase 2's reminder
+  scoping pass missed `due_now()`'s SELECT. Now selects the column
+  the `Reminder` struct expects.
+- **Knowledge graph tabs reverted** in the same release — they were
+  briefly added during slice 12 before the user's *"keep Manage
+  minimal"* directive landed. Frontend KnowledgeTab.tsx,
+  lib/knowledge.ts, and the `list_entities_by_family` Tauri command
+  removed; backend graph helpers stay since they drive the chip
+  and prompt-injection surfaces.
+
+### Migrations
+
+- `0021_graph_extensions.sql` — schema_version 20 → 21. Adds
+  `embedding_vector`, `embedding_indexed_at`, `confidence`, `tags`,
+  `archived_at`, `pack_table_id` columns to `entity`; new indexes on
+  archived filter / pack-projection lookup / kind-by-workspace
+  listing / mention-timeline ordering / relation traversal.
+- `0022_entity_inference_state.sql` — schema_version 21 → 22. Adds
+  `last_clarification_at` to `entity` plus an index for the
+  refinement-candidate query.
+
+### What this enables
+
+Travis recognises names across captures without being told. Cmd-J
+"hours with Maria today" auto-resolves to the existing coach Maria
+and pulls her recent mentions, related entities, and last-seen into
+the LLM context. Inference helpers are ready to drive
+through-conversation refinement — Travis can ask "is Maria the L2E
+coach or the personal contact?" and apply the answer when the user
+replies in chat. The capture chip is the only visible UI surface;
+the rest is silent.
+
 ## v0.4.0 — Workspaces (2026-05-08)
 
 Travis now keeps separate worlds separate. A workspace scopes every
