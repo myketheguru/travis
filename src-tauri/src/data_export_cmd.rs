@@ -1,8 +1,9 @@
 //! Tauri command surface for full-instance data export.
 //!
-//! Writes a JSON file to `<app_data>/exports/` and returns the
-//! absolute path. The frontend renders the path with a "reveal in
-//! folder" button (using tauri_plugin_opener) so the user can
+//! Writes a JSON file to the user's Downloads folder (falling back
+//! to the app data dir if Downloads can't be resolved) and returns
+//! the absolute path. The frontend renders the path with a "reveal
+//! in folder" button (using tauri_plugin_opener) so the user can
 //! pluck the file up and email it.
 
 use serde::Serialize;
@@ -57,14 +58,19 @@ pub async fn export_data(
     };
     let redactions = export.redactions.clone();
 
-    // Resolve the export path. App data dir is the same root the DB
-    // lives under — making `exports/` a sibling of `travis.db` keeps
-    // the relevant files in one place.
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("resolve app data dir: {e}"))?;
-    let exports_dir = app_data.join("exports");
+    // Resolve the export path. The user's Downloads folder is where
+    // they expect files to land; falling back to the app data dir
+    // only if Downloads can't be resolved (rare on every supported
+    // OS — Windows / macOS / Linux all expose XDG-equivalent
+    // Downloads).
+    let exports_dir = match app.path().download_dir() {
+        Ok(dir) => dir,
+        Err(_) => app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("resolve fallback export dir: {e}"))?
+            .join("exports"),
+    };
     std::fs::create_dir_all(&exports_dir)
         .map_err(|e| format!("create exports dir {}: {e}", exports_dir.display()))?;
 

@@ -1,5 +1,36 @@
 # Travis Changelog
 
+## v0.5.1 — Export your data (2026-05-09)
+
+Adds a transparency hatch: a Settings → **Export** section that
+dumps every user-table row in the current instance to a JSON file
+in the user's Downloads folder. Built for the consented
+pre-commercialization observation arrangement — Travis is still a
+black box; the export is how an operator inspects what's been
+captured.
+
+### Highlights
+
+- **Settings → Export.** Single button writes
+  `travis-export-<timestamp>.json` to Downloads (or
+  `<timestamp>-full.json` when sensitive workspaces are included).
+  Reveal-in-folder affordance for one-click attach-to-email.
+- **Privacy posture.** Sensitive workspaces (health/therapy/legal/
+  finance) are excluded by default; explicit checkbox to opt in.
+  OAuth tokens (`access_token`, `refresh_token`,
+  `credentials_json`) always redacted regardless. Embedding blobs
+  replaced with byte-length sentinels — file stays inspectable
+  without leaking 3 KB vectors per row.
+- **Transparency surface.** The result panel shows the file path,
+  size, total row count, per-table breakdown (collapsible), and
+  any redactions applied — the user sees exactly what's in the
+  file before sharing.
+- **Backend dynamic.** Walks every user table via `PRAGMA
+  table_info`, encodes columns by declared type (int/real/text/
+  blob/bool). Filters by workspace when the table has a
+  `workspace_id` column. Adds new tables automatically as packs
+  ship migrations; no per-table maintenance.
+
 ## v0.5.0 — Knowledge graph foundation + Phase 3 token economy (2026-05-09)
 
 Travis stops being a notes app with extras and starts forming
