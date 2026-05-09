@@ -27,6 +27,13 @@ export type RoutingResult = {
   rationale: string | null;
 };
 
+export type MentionChip = {
+  entityId: number;
+  displayName: string;
+  kind: string;
+  mentionsCount: number;
+};
+
 export type JournalIngestResult = {
   journalEntryId: number;
   conversationId: number;
@@ -41,6 +48,7 @@ export type JournalIngestResult = {
   capabilityGaps: CapabilityGap[];
   proposedActions: ProposedAction[];
   routing: RoutingResult | null;
+  mentionChips: MentionChip[];
   extractionOk: boolean;
   error: string | null;
 };

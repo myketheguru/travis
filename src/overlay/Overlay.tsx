@@ -10,7 +10,11 @@ import {
   type Task,
   type TaskStatus,
 } from "../lib/domain";
-import { journalIngest, type JournalIngestResult } from "../lib/journal";
+import {
+  journalIngest,
+  type JournalIngestResult,
+  type MentionChip,
+} from "../lib/journal";
 import {
   activeConversation,
   resolveConversation,
@@ -43,6 +47,10 @@ export default function Overlay() {
   const [history, setHistory] = useState<ConversationMessage[]>([]);
   const [qReply, setQReply] = useState("");
   const [actions, setActions] = useState<ProposedAction[]>([]);
+  /// Pre-existing entities the latest extraction recognised — surfaced
+  /// as faint chips beneath the chat reply. Cleared at the start of
+  /// each capture and replaced when the response arrives.
+  const [mentionChips, setMentionChips] = useState<MentionChip[]>([]);
   const qReplyRef = useRef<HTMLInputElement>(null);
 
   const refreshActions = useCallback(async (cid: number | null) => {
@@ -226,6 +234,7 @@ export default function Overlay() {
         setQuestions([]);
       }
       setActions(r.proposedActions);
+      setMentionChips(r.mentionChips ?? []);
       if (r.thread.conversation.status === "resolved") {
         setConversationId(null);
       }
@@ -490,6 +499,38 @@ export default function Overlay() {
                   </span>
                 </div>
               </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Capture chips — pre-existing entities the latest extraction
+            recognised. Faint, passive, non-interactive. Rendered just
+            above the toast band so they pair with the "Captured" line. */}
+        <AnimatePresence>
+          {mentionChips.length > 0 && (
+            <motion.div
+              key="chips"
+              initial={{ opacity: 0, y: -2 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -2 }}
+              transition={{ duration: 0.25 }}
+              className="px-7 pb-2 flex flex-wrap gap-1.5"
+            >
+              {mentionChips.slice(0, 6).map((c) => (
+                <span
+                  key={c.entityId}
+                  className="inline-flex items-center gap-1 rounded-full border border-pulse/20 bg-pulse/[0.04] px-2 py-0.5 text-[10px] text-bone-3"
+                  title={`Travis recognised ${c.displayName} from ${c.mentionsCount} prior ${
+                    c.mentionsCount === 1 ? "mention" : "mentions"
+                  }`}
+                >
+                  <span className="text-pulse-2/80" aria-hidden>→</span>
+                  <span className="text-bone-2">{c.displayName}</span>
+                  <span className="text-bone-3/70">
+                    ({c.kind.split(":")[0]})
+                  </span>
+                </span>
+              ))}
             </motion.div>
           )}
         </AnimatePresence>

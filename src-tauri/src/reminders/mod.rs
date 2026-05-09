@@ -186,9 +186,14 @@ pub async fn delete(pool: &SqlitePool, id: i64) -> Result<(), ReminderError> {
 
 /// Returns time-based reminders that are due (remind_at <= now) and not yet
 /// fired or dismissed.
+///
+/// NB: the column list must include `workspace_id` because the
+/// `Reminder` struct carries it (Phase 2). Missed in the original
+/// scoping pass — the scheduler logged "no column found for name:
+/// workspace_id" every 30 seconds until this was fixed.
 pub async fn due_now(pool: &SqlitePool, now: &str) -> Result<Vec<Reminder>, ReminderError> {
     let rows = sqlx::query_as::<_, Reminder>(
-        "SELECT id, text, kind, remind_at, fired_at, dismissed_at, source,
+        "SELECT id, workspace_id, text, kind, remind_at, fired_at, dismissed_at, source,
                 link_kind, link_id, created_at, updated_at
          FROM reminder
          WHERE kind = 'time'

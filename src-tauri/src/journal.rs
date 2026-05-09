@@ -281,6 +281,21 @@ pub struct Extraction {
     pub generic_entities: Vec<GenericEntity>,
 }
 
+/// One chip surfaced in the capture overlay when the LLM extraction
+/// matched a name to an entity Travis already knew about. Renders as
+/// "→ Maria (coach)" — passive recognition, no interaction needed.
+/// Only entities with `mentions_count > 1` (i.e. pre-existing) make
+/// it onto the chip list — fresh-this-turn names don't generate
+/// noise.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MentionChip {
+    pub entity_id: i64,
+    pub display_name: String,
+    pub kind: String,
+    pub mentions_count: i64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoutingResult {
@@ -317,6 +332,10 @@ pub struct JournalIngestResult {
     pub capability_gaps: Vec<CapabilityGap>,
     pub proposed_actions: Vec<ProposedAction>,
     pub routing: Option<RoutingResult>,
+    /// Pre-existing entities that this turn's extraction matched.
+    /// The overlay renders these as faint chips beneath the chat
+    /// reply — "Travis recognised these names from before."
+    pub mention_chips: Vec<MentionChip>,
     pub extraction_ok: bool,
     pub error: Option<String>,
 }
@@ -1492,6 +1511,7 @@ pub async fn journal_ingest(
 
     let mut created: Vec<Task> = Vec::new();
     let mut completed: Vec<Task> = Vec::new();
+    let mut mention_chips: Vec<MentionChip> = Vec::new();
 
     // Operational pass — skipped entirely for conversational input so we never
     // manufacture todos from chit-chat.
@@ -1751,6 +1771,45 @@ pub async fn journal_ingest(
                     }
                 }
             }
+
+            // Capture chips. Pull display_name / kind / mentions_count
+            // for every entity touched this turn; emit a chip only
+            // when mentions_count > 1 (i.e. Travis recognised the
+            // name from before, not a fresh-this-turn record).
+            if !mentioned_entities.is_empty() {
+                let placeholders = (1..=mentioned_entities.len())
+                    .map(|i| format!("?{i}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let sql = format!(
+                    "SELECT id, display_name, kind, mentions_count
+                     FROM entity
+                     WHERE id IN ({placeholders})
+                       AND archived_at IS NULL
+                       AND mentions_count > 1
+                     ORDER BY mentions_count DESC, last_seen DESC"
+                );
+                let mut q = sqlx::query_as::<_, (i64, String, String, i64)>(&sql);
+                for eid in &mentioned_entities {
+                    q = q.bind(eid);
+                }
+                match q.fetch_all(&state.db.pool).await {
+                    Ok(rows) => {
+                        mention_chips = rows
+                            .into_iter()
+                            .map(|(id, display_name, kind, mentions_count)| MentionChip {
+                                entity_id: id,
+                                display_name,
+                                kind,
+                                mentions_count,
+                            })
+                            .collect();
+                    }
+                    Err(e) => {
+                        tracing::warn!("capture chip query: {e}");
+                    }
+                }
+            }
         }
     }
 
@@ -1961,6 +2020,7 @@ pub async fn journal_ingest(
         capability_gaps: extraction.capability_gaps,
         proposed_actions: persisted_actions,
         routing: routing_result,
+        mention_chips,
         extraction_ok: ok,
         error: err_msg,
     })
