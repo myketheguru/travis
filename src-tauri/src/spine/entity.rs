@@ -22,7 +22,44 @@ pub struct Entity {
     pub first_seen: String,
     pub last_seen: String,
     pub attributes_json: Option<String>,
+
+    // --- Phase 4 graph extensions (KNOWLEDGE_GRAPH.md slice 1). ---
+
+    /// How sure Travis is about `kind`. Pack-projected entities get
+    /// 1.0; ambient-discovered entities start at 0.5 and rise with
+    /// mentions / user confirmation.
+    pub confidence: f64,
+
+    /// Comma-separated user-assigned tags. Free-form, searchable.
+    pub tags: Option<String>,
+
+    /// Soft-archive timestamp; archived entities are hidden from
+    /// retrieval but past mentions stay linked.
+    pub archived_at: Option<String>,
+
+    /// Back-reference to the pack-typed row this entity projects from
+    /// (for example a `coach.id` for a kind="coach" entity). NULL for
+    /// ambient-only entities.
+    pub pack_table_id: Option<i64>,
+
+    /// When the entity's embedding was last refreshed. NULL means
+    /// never indexed; the embedding pipeline (slice 7) treats that
+    /// and "stale" the same way.
+    pub embedding_indexed_at: Option<String>,
+
+    /// Workspace this entity belongs to. Reads stay scoped to the
+    /// visible-set per the Phase 2 isolation rule.
+    pub workspace_id: i64,
 }
+
+/// Column list reused by every Entity SELECT. Note: `embedding_vector`
+/// is intentionally excluded — it's a fastembed BLOB (~3KB), only
+/// fetched on the indexer / retrieval paths to keep listing queries
+/// cheap.
+const ENTITY_COLUMNS: &str = "id, kind, normalized_name, display_name, \
+                              pack_slug, mentions_count, first_seen, last_seen, \
+                              attributes_json, confidence, tags, archived_at, \
+                              pack_table_id, embedding_indexed_at, workspace_id";
 
 /// Parameters for [`upsert`]. `display_name` is normalized to derive the
 /// uniqueness key; pass the original casing so it shows up nicely in the UI.
@@ -90,26 +127,21 @@ pub async fn find_by_name(
     if normalized.is_empty() {
         return Ok(None);
     }
-    let row = sqlx::query_as::<_, Entity>(
-        "SELECT id, kind, normalized_name, display_name, pack_slug,
-                mentions_count, first_seen, last_seen, attributes_json
-         FROM entity
-         WHERE kind = ?1 AND normalized_name = ?2",
-    )
-    .bind(kind)
-    .bind(&normalized)
-    .fetch_optional(pool)
-    .await?;
+    let sql = format!(
+        "SELECT {ENTITY_COLUMNS} FROM entity WHERE kind = ?1 AND normalized_name = ?2"
+    );
+    let row = sqlx::query_as::<_, Entity>(&sql)
+        .bind(kind)
+        .bind(&normalized)
+        .fetch_optional(pool)
+        .await?;
     Ok(row)
 }
 
 /// Fetch by id. Errors if not found.
 pub async fn fetch_one(pool: &SqlitePool, id: i64) -> anyhow::Result<Entity> {
-    let row = sqlx::query_as::<_, Entity>(
-        "SELECT id, kind, normalized_name, display_name, pack_slug,
-                mentions_count, first_seen, last_seen, attributes_json
-         FROM entity WHERE id = ?1",
-    )
+    let sql = format!("SELECT {ENTITY_COLUMNS} FROM entity WHERE id = ?1");
+    let row = sqlx::query_as::<_, Entity>(&sql)
     .bind(id)
     .fetch_one(pool)
     .await?;
