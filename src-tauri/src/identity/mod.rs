@@ -36,6 +36,22 @@ pub fn normalize(name: &str) -> String {
     out.trim().to_string()
 }
 
+/// Confidence levels used by ambient (LLM-driven) entity extraction.
+/// Pack code that knows it's writing a hard record bypasses this and
+/// calls `spine::entity::upsert` directly.
+pub mod confidence {
+    /// LLM extracted a name into a pack-declared kind bucket
+    /// (coach, school, dept, tutor, student). The LLM is confident
+    /// about the role from journal context, but no pack-table row
+    /// exists yet — that's the difference from a typed CRUD upsert.
+    pub const PACK_KINDED_AMBIENT: f64 = 0.7;
+
+    /// LLM extracted a name without a pack-declared kind, into one
+    /// of the generic person:unknown / place:unknown / org:unknown
+    /// buckets. We saw a name; we don't know what role it plays.
+    pub const GENERIC: f64 = 0.5;
+}
+
 /// Best-effort upsert of a mention. Errors are logged but not
 /// propagated. Returns the entity row id on success so callers can
 /// link a `mentioned` event back to it (Phase 4 slice 3).
@@ -44,11 +60,17 @@ pub fn normalize(name: &str) -> String {
 /// about. Anything goes through; junk kinds will just sit in the
 /// spine until someone queries for them. The validation cost of an
 /// allowlist isn't worth the loss of pack flexibility.
+///
+/// `initial_confidence` is used only on INSERT. ON CONFLICT we leave
+/// confidence alone so an existing 1.0 (from a pack-projected row)
+/// isn't downgraded by a later ambient mention. Slice 9 will manage
+/// upgrades when the user answers categorisation prompts.
 pub async fn record_mention(
     pool: &SqlitePool,
     workspace_id: i64,
     kind: &str,
     display_name: &str,
+    initial_confidence: f64,
 ) -> Option<i64> {
     let trimmed = display_name.trim();
     if trimmed.is_empty() {
@@ -64,13 +86,13 @@ pub async fn record_mention(
     }
 
     // RETURNING gives us the id whether the upsert path was INSERT
-    // or ON CONFLICT update. The DEFAULT 1.0 on `confidence` and the
-    // workspace_id binding match the columns added by 0021.
+    // or ON CONFLICT update. workspace_id and confidence are written
+    // on insert; on conflict we only bump the count + last_seen.
     let res: Result<(i64,), _> = sqlx::query_as(
         "INSERT INTO entity
              (kind, normalized_name, display_name, workspace_id,
-              mentions_count, first_seen, last_seen)
-         VALUES (?1, ?2, ?3, ?4, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+              confidence, mentions_count, first_seen, last_seen)
+         VALUES (?1, ?2, ?3, ?4, ?5, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
          ON CONFLICT(kind, normalized_name) DO UPDATE SET
             mentions_count = mentions_count + 1,
             last_seen = CURRENT_TIMESTAMP
@@ -80,6 +102,7 @@ pub async fn record_mention(
     .bind(&normalized)
     .bind(trimmed)
     .bind(workspace_id)
+    .bind(initial_confidence.clamp(0.0, 1.0))
     .fetch_one(pool)
     .await;
 

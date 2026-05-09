@@ -216,6 +216,25 @@ fn default_intent() -> String {
     "operational".into()
 }
 
+/// One ambient-discovered entity outside the pack-declared kind
+/// buckets — names Travis sees in journals before any pack has
+/// claimed them as a typed record. The LLM picks a top-level
+/// `kind` (person / place / org); the persistence layer maps to
+/// `<kind>:unknown` and stores at GENERIC confidence (0.5).
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenericEntity {
+    pub name: String,
+    /// One of "person", "place", "org". Anything else is dropped.
+    #[serde(default)]
+    pub kind: String,
+    /// Optional short snippet showing where in the note the name
+    /// appeared. Stored on the `mentioned` event for UI context;
+    /// the entity row itself doesn't carry it.
+    #[serde(default)]
+    pub context_snippet: Option<String>,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceRouting {
@@ -255,6 +274,11 @@ pub struct Extraction {
     pub proposed_actions: Vec<ProposedActionInput>,
     #[serde(default)]
     pub workspace_routing: Option<WorkspaceRouting>,
+    /// Names mentioned in the note that don't fit any pack-declared
+    /// entity kind — populated by the LLM and dedup'd against existing
+    /// entity rows on persist.
+    #[serde(default)]
+    pub generic_entities: Vec<GenericEntity>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -454,6 +478,19 @@ fn build_extraction_tool(action_kinds: &[&str], entity_kinds: &[&str]) -> ToolDe
                         "targetSlug": { "type": ["string", "null"] },
                         "confidence": { "type": ["string", "null"], "enum": ["high", "medium", "low", null] },
                         "rationale": { "type": ["string", "null"] }
+                    }
+                },
+                "genericEntities": {
+                    "type": "array",
+                    "description": "Names mentioned in the note that don't fit any of the pack-declared entity kinds above (coaches/schools/depts/tutors/students). Use this for any other proper noun — a person's first name, a place name, an organisation, a company. Travis records every mention silently; this is what we'll later let the user categorise. Use 'person' for individuals, 'place' for locations or sites, 'org' for companies / agencies / departments. Skip names already captured under a pack-declared bucket above.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string", "description": "The proper noun as the user wrote it (preserve casing)." },
+                            "kind": { "type": "string", "enum": ["person", "place", "org"] },
+                            "contextSnippet": { "type": ["string", "null"], "description": "Optional short snippet showing where in the note the name appeared." }
+                        },
+                        "required": ["name", "kind"]
                     }
                 }
             },
@@ -1497,6 +1534,7 @@ pub async fn journal_ingest(
                                 dest_ws_id,
                                 kind,
                                 name,
+                                identity::confidence::PACK_KINDED_AMBIENT,
                             )
                             .await;
                             if let Some(eid) = entity_id {
@@ -1524,6 +1562,58 @@ pub async fn journal_ingest(
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            // Ambient generic entities — names the LLM saw in the
+            // note that didn't fit any pack-declared bucket. Stored
+            // under <kind>:unknown at GENERIC confidence so slice 9
+            // can later prompt the user to refine the role.
+            for ge in &extraction.generic_entities {
+                let base_kind = ge.kind.trim().to_lowercase();
+                let scoped_kind = match base_kind.as_str() {
+                    "person" => "person:unknown",
+                    "place" => "place:unknown",
+                    "org" => "org:unknown",
+                    _ => continue, // schema enforces these three; skip junk silently
+                };
+                let entity_id = identity::record_mention(
+                    &state.db.pool,
+                    dest_ws_id,
+                    scoped_kind,
+                    &ge.name,
+                    identity::confidence::GENERIC,
+                )
+                .await;
+                if let Some(eid) = entity_id {
+                    let mention_snippet = ge
+                        .context_snippet
+                        .as_deref()
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or(&snippet);
+                    let attrs = serde_json::json!({
+                        "journal_entry_id": entry_id,
+                        "snippet": mention_snippet,
+                    })
+                    .to_string();
+                    if let Err(e) = crate::spine::event::record(
+                        &state.db.pool,
+                        crate::spine::event::RecordParams {
+                            entity_id: Some(eid),
+                            kind: "mentioned",
+                            pack_slug: None, // generic — no owning pack
+                            occurred_at: None,
+                            attributes_json: Some(&attrs),
+                            workspace_id: dest_ws_id,
+                        },
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            "spine event sync (generic mention) for entity {eid}: {e}"
+                        );
                     }
                 }
             }
