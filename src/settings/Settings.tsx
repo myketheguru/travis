@@ -18,6 +18,7 @@ import {
 } from "../lib/ipc";
 import { checkForUpdate, installUpdate, type UpdateInfo } from "../lib/updater";
 import { listPacks, setPackEnabled, type PackInfo } from "../lib/packs";
+import { exportData, revealExport, type ExportResult } from "../lib/dataExport";
 import {
   archiveWorkspace,
   createWorkspace,
@@ -359,6 +360,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
         <WorkspacesSection />
         <PacksSection />
         <ProactiveSection />
+        <ExportSection />
         <UpdatesSection />
         <DiagnosticsSection />
         <ShellToolSection />
@@ -1356,6 +1358,136 @@ function DiagnosticsSection() {
         />
         <span className="text-bone-2 text-sm">Show diagnostics tabs in Manage</span>
       </label>
+    </Section>
+  );
+}
+
+function ExportSection() {
+  const [busy, setBusy] = useState(false);
+  const [includeSensitive, setIncludeSensitive] = useState(false);
+  const [result, setResult] = useState<ExportResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const onExport = async () => {
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    try {
+      const r = await exportData(includeSensitive);
+      setResult(r);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onReveal = async () => {
+    if (!result) return;
+    try {
+      await revealExport(result.path);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const formatSize = (bytes: number): string => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const totalRows = result
+    ? Object.values(result.tableRowCounts).reduce((acc, n) => acc + n, 0)
+    : 0;
+  const sortedTables = result
+    ? Object.entries(result.tableRowCounts)
+        .filter(([, n]) => n > 0)
+        .sort((a, b) => b[1] - a[1])
+    : [];
+
+  return (
+    <Section title="Export">
+      <div className="flex flex-col gap-3 max-w-xl">
+        <p className="text-bone-3 text-[11px] leading-relaxed">
+          Travis is local-first; your data lives only on this device. This
+          export bundles every row Travis tracks into a single JSON file —
+          journal entries, tasks, reminders, conversations, the entity
+          graph, pack-typed records — so you can inspect what's been
+          captured or share a snapshot with someone you trust. API keys
+          and OAuth tokens are stripped automatically.
+        </p>
+
+        <label className="flex items-start gap-2 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={includeSensitive}
+            onChange={(e) => setIncludeSensitive(e.target.checked)}
+            className="accent-pulse mt-0.5"
+          />
+          <span className="text-bone-2 text-[12px] leading-snug">
+            Include sensitive workspaces (Health, Therapy, Legal, Finance).
+            <span className="text-bone-3 text-[10px] block mt-0.5">
+              Off by default — sensitive workspaces are isolated unless you
+              explicitly opt in. Turn on if you want a complete picture.
+            </span>
+          </span>
+        </label>
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={onExport}
+            disabled={busy}
+            className="px-4 py-1.5 rounded-full bg-bone/95 text-ink text-xs font-medium hover:bg-bone disabled:opacity-50 transition-colors"
+          >
+            {busy ? "Building export…" : "Export everything"}
+          </button>
+          {result && (
+            <button
+              onClick={onReveal}
+              className="text-pulse-2 hover:text-bone text-[11px] underline-offset-4 hover:underline transition-colors"
+            >
+              Reveal in folder
+            </button>
+          )}
+        </div>
+
+        {error && <p className="text-warn text-[11px]">{error}</p>}
+
+        {result && (
+          <div className="rounded-lg border border-ink-3 bg-ink-2/30 p-3 text-[11px] flex flex-col gap-2">
+            <div className="flex items-baseline justify-between gap-3">
+              <code className="text-bone-2 truncate font-mono text-[10px]">
+                {result.path}
+              </code>
+              <span className="text-bone-3 shrink-0">
+                {formatSize(result.sizeBytes)} · {totalRows.toLocaleString()} rows
+              </span>
+            </div>
+            {sortedTables.length > 0 && (
+              <details className="text-bone-3">
+                <summary className="cursor-pointer hover:text-bone-2">
+                  What's inside
+                </summary>
+                <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-0.5">
+                  {sortedTables.map(([table, count]) => (
+                    <div key={table} className="flex justify-between">
+                      <span>{table}</span>
+                      <span className="font-mono">{count}</span>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+            {result.redactions.length > 0 && (
+              <div className="text-bone-3 leading-relaxed">
+                <span className="text-bone-2">Notes:</span>{" "}
+                {result.redactions.join(" · ")}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </Section>
   );
 }

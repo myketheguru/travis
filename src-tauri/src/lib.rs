@@ -6,6 +6,8 @@ mod calendar_cmd;
 mod commands;
 mod conversation;
 mod conversation_cmd;
+mod data_export;
+mod data_export_cmd;
 mod db;
 mod domain;
 mod email;
@@ -401,6 +403,8 @@ pub fn run() {
             summary_cmd::list_summaries,
             summary_cmd::generate_daily_summary,
             summary_cmd::generate_weekly_summary,
+            data_export_cmd::export_data,
+            data_export_cmd::reveal_export,
             identity_cmd::list_entities,
             identity_cmd::get_profile_blurb,
             #[cfg(feature = "pack-lead-to-empower")] pdf_cmd::export_invoice_pdf,
