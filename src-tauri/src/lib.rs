@@ -14,6 +14,7 @@ mod feedback;
 mod flags;
 mod flags_cmd;
 mod graph_indexer;
+mod graph_inference;
 mod health;
 mod identity;
 mod identity_cmd;
