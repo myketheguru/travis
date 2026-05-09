@@ -84,6 +84,74 @@ inference loops, and the UI to see + edit any of it.
 
 ---
 
+## Architecture choice — SQLite tables, not a graph DB
+
+This question comes up: *"is this a graph database?"* Short answer:
+no. The `entity` / `relation` / `event` tables are a relational
+**modelling** of a graph. Travis stays on SQLite for the same
+reasons every other piece of state does — single binary, single
+file, no extra process, no extra ops surface.
+
+### Why this works at Travis's scale
+
+- **All v1 queries are 1–2 hops.** "Events for entity X", "outgoing
+  relations from X with kind = `mentioned_with`", "co-mentions of X
+  and Y". These are indexed joins in SQL; the indexes added by
+  `0021_graph_extensions.sql` make them O(log n) at the user's
+  scale (10⁴–10⁵ entities is generous for a single user, single
+  workspace).
+- **Embeddings already live in SQLite.** The `embedding` table from
+  Phase 1's memory layer is the same shape we'll add to entities —
+  cosine sim happens in Rust against blobs read from SQLite. No
+  separate vector DB.
+- **One backup story.** A user's whole graph + mentions timeline +
+  embeddings is one `.sqlite` file. Cloud sync (Phase 6) replicates
+  one file; export is `cp`.
+- **Local-first / single-binary stays intact.** A second process
+  (Neo4j, FalkorDB) or an experimental SQLite extension
+  (`sqlite-graph`, `sqlite-vec`-style) would break the install
+  story Travis depends on.
+
+### What a real graph DB would give us
+
+- Native multi-hop traversal language (Cypher / Gremlin) — pretty
+  but unused: no v1 query is multi-hop.
+- Path queries / shortest-path / community detection — useful at
+  year-3 community scale, deeply overkill at v1.
+- Graph-shaped query optimiser — irrelevant when the join cardinality
+  is bounded by `mentions_count` (low hundreds, typically).
+
+### When we'd reconsider
+
+Three signals would prompt a revisit:
+
+1. **Routine 3+ hop queries.** e.g. *"every person reachable from
+   Maria via 4+ relations"*. SQL CTEs handle this awkwardly; if it
+   becomes the dominant pattern, we'd evaluate
+   `sqlite-graph` (extension), Apache AGE (Postgres), or FalkorDB
+   (Redis-backed).
+2. **CRDT graph sync (Phase 6).** If a roll-your-own per-table CRDT
+   for `entity` / `relation` / `event` becomes intractable, a graph
+   DB with native edge-CRDT support could pay for itself.
+3. **Pattern detection at scale.** Community detection, centrality,
+   triangle-counting — none of these matter for one user; they
+   matter at the marketplace / shared-workspaces phase (year 2+).
+
+Realistic horizon: 18+ months. By then we'll have real graph data
+to drive the decision instead of speculating.
+
+### Implementation note
+
+Because the schema is just SQL, "swapping in" a graph DB later is
+mostly a sync layer rewrite, not a model rewrite. The
+`entity`/`relation`/`event` shape maps onto every graph DB on the
+market. Treat the SQLite implementation as the canonical store
+forever; the graph DB question is really "do we need a different
+read path?" — and a separate read path is something we can add
+without touching writes.
+
+---
+
 ## Data model — what changes
 
 ### entity table extensions
