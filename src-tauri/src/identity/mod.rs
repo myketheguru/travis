@@ -36,41 +36,59 @@ pub fn normalize(name: &str) -> String {
     out.trim().to_string()
 }
 
-/// Best-effort upsert of a mention. Errors are logged but not propagated.
+/// Best-effort upsert of a mention. Errors are logged but not
+/// propagated. Returns the entity row id on success so callers can
+/// link a `mentioned` event back to it (Phase 4 slice 3).
 ///
-/// `kind` is a soft string — packs declare what kinds they care about.
-/// Anything goes through; junk kinds will just sit in the spine until
-/// someone queries for them. The validation cost of an allowlist isn't
-/// worth the loss of pack flexibility.
-pub async fn record_mention(pool: &SqlitePool, kind: &str, display_name: &str) {
+/// `kind` is a soft string — packs declare what kinds they care
+/// about. Anything goes through; junk kinds will just sit in the
+/// spine until someone queries for them. The validation cost of an
+/// allowlist isn't worth the loss of pack flexibility.
+pub async fn record_mention(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    kind: &str,
+    display_name: &str,
+) -> Option<i64> {
     let trimmed = display_name.trim();
     if trimmed.is_empty() {
-        return;
+        return None;
     }
     let normalized = normalize(trimmed);
     if normalized.is_empty() {
-        return;
+        return None;
     }
     if kind.trim().is_empty() {
         tracing::warn!("identity::record_mention: empty kind");
-        return;
+        return None;
     }
 
-    let res = sqlx::query(
-        "INSERT INTO entity (kind, normalized_name, display_name, mentions_count, first_seen, last_seen)
-         VALUES (?1, ?2, ?3, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    // RETURNING gives us the id whether the upsert path was INSERT
+    // or ON CONFLICT update. The DEFAULT 1.0 on `confidence` and the
+    // workspace_id binding match the columns added by 0021.
+    let res: Result<(i64,), _> = sqlx::query_as(
+        "INSERT INTO entity
+             (kind, normalized_name, display_name, workspace_id,
+              mentions_count, first_seen, last_seen)
+         VALUES (?1, ?2, ?3, ?4, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
          ON CONFLICT(kind, normalized_name) DO UPDATE SET
             mentions_count = mentions_count + 1,
-            last_seen = CURRENT_TIMESTAMP",
+            last_seen = CURRENT_TIMESTAMP
+         RETURNING id",
     )
     .bind(kind)
     .bind(&normalized)
     .bind(trimmed)
-    .execute(pool)
+    .bind(workspace_id)
+    .fetch_one(pool)
     .await;
 
-    if let Err(e) = res {
-        tracing::warn!("identity::record_mention failed for {kind}/{trimmed}: {e}");
+    match res {
+        Ok((id,)) => Some(id),
+        Err(e) => {
+            tracing::warn!("identity::record_mention failed for {kind}/{trimmed}: {e}");
+            None
+        }
     }
 }
 

@@ -1471,13 +1471,58 @@ pub async fn journal_ingest(
 
         if ok {
             // Record mentions for every entity kind declared by an enabled
-            // pack. Bucket name in the JSON is pluralised entity kind.
+            // pack. Bucket name in the JSON is pluralised entity kind. For
+            // each successfully upserted entity we also append a
+            // `mentioned` event to the spine so the entity-detail timeline
+            // (slice 13) can render the mention history without a join
+            // through journal_entry text.
+            let snippet: String = {
+                let mut s = String::new();
+                for ch in raw.chars().take(120) {
+                    s.push(ch);
+                }
+                if raw.chars().count() > 120 {
+                    s.push_str("…");
+                }
+                s
+            };
             for pack in &state.enabled_packs {
+                let pack_slug = pack.slug();
                 for kind in pack.entity_kinds() {
                     let bucket = format!("{kind}s");
                     if let Some(names) = extraction.entities.0.get(&bucket) {
                         for name in names {
-                            identity::record_mention(&state.db.pool, kind, name).await;
+                            let entity_id = identity::record_mention(
+                                &state.db.pool,
+                                dest_ws_id,
+                                kind,
+                                name,
+                            )
+                            .await;
+                            if let Some(eid) = entity_id {
+                                let attrs = serde_json::json!({
+                                    "journal_entry_id": entry_id,
+                                    "snippet": snippet,
+                                })
+                                .to_string();
+                                if let Err(e) = crate::spine::event::record(
+                                    &state.db.pool,
+                                    crate::spine::event::RecordParams {
+                                        entity_id: Some(eid),
+                                        kind: "mentioned",
+                                        pack_slug: Some(pack_slug),
+                                        occurred_at: None,
+                                        attributes_json: Some(&attrs),
+                                        workspace_id: dest_ws_id,
+                                    },
+                                )
+                                .await
+                                {
+                                    tracing::warn!(
+                                        "spine event sync (mention) for entity {eid}: {e}"
+                                    );
+                                }
+                            }
                         }
                     }
                 }
