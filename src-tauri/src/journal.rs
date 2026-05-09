@@ -668,6 +668,65 @@ fn try_fast_path(
     None
 }
 
+/// Upsert a `mentioned_with` edge between two entities. Bumps the
+/// co_mention_count in attributes_json on existing edges; otherwise
+/// creates a fresh one with count=1. Caller passes ids in canonical
+/// order (a < b) so we don't end up with two edges per pair.
+async fn upsert_co_mention(
+    pool: &sqlx::SqlitePool,
+    workspace_id: i64,
+    a: i64,
+    b: i64,
+    journal_entry_id: i64,
+) -> anyhow::Result<()> {
+    use crate::spine::relation;
+
+    if let Some(existing) =
+        relation::find_edge(pool, workspace_id, a, b, "mentioned_with").await?
+    {
+        // Parse the existing count, increment it.
+        let parsed: serde_json::Value = existing
+            .attributes_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let prev_count = parsed
+            .get("co_mention_count")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(1);
+        let updated = serde_json::json!({
+            "co_mention_count": prev_count + 1,
+            "first_seen_journal_entry_id": parsed
+                .get("first_seen_journal_entry_id")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!(journal_entry_id)),
+            "last_seen_journal_entry_id": journal_entry_id,
+        })
+        .to_string();
+        relation::update_attributes(pool, existing.id, &updated).await?;
+    } else {
+        let attrs = serde_json::json!({
+            "co_mention_count": 1,
+            "first_seen_journal_entry_id": journal_entry_id,
+            "last_seen_journal_entry_id": journal_entry_id,
+        })
+        .to_string();
+        relation::link(
+            pool,
+            relation::LinkParams {
+                from_entity: a,
+                to_entity: b,
+                kind: "mentioned_with",
+                pack_slug: None,
+                attributes_json: Some(&attrs),
+                workspace_id,
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Intent router — classifies a turn cheaply so we can trim retrieval
 // for clearly-not-a-question captures. The memory::retrieve call
@@ -1512,7 +1571,10 @@ pub async fn journal_ingest(
             // each successfully upserted entity we also append a
             // `mentioned` event to the spine so the entity-detail timeline
             // (slice 13) can render the mention history without a join
-            // through journal_entry text.
+            // through journal_entry text. Every successfully recorded
+            // entity id is also collected in `mentioned_entities` so the
+            // tail of this block can write co-mention edges.
+            let mut mentioned_entities: Vec<i64> = Vec::new();
             let snippet: String = {
                 let mut s = String::new();
                 for ch in raw.chars().take(120) {
@@ -1538,6 +1600,7 @@ pub async fn journal_ingest(
                             )
                             .await;
                             if let Some(eid) = entity_id {
+                                mentioned_entities.push(eid);
                                 let attrs = serde_json::json!({
                                     "journal_entry_id": entry_id,
                                     "snippet": snippet,
@@ -1587,6 +1650,7 @@ pub async fn journal_ingest(
                 )
                 .await;
                 if let Some(eid) = entity_id {
+                    mentioned_entities.push(eid);
                     let mention_snippet = ge
                         .context_snippet
                         .as_deref()
@@ -1614,6 +1678,25 @@ pub async fn journal_ingest(
                         tracing::warn!(
                             "spine event sync (generic mention) for entity {eid}: {e}"
                         );
+                    }
+                }
+            }
+
+            // Co-mention edges. Every unordered pair of mentioned
+            // entities gets a `mentioned_with` relation; existing
+            // edges have their co_mention_count bumped via the
+            // attributes_json payload. Workspace-scoped — sensitive
+            // workspaces don't share edges with non-sensitive ones.
+            mentioned_entities.sort_unstable();
+            mentioned_entities.dedup();
+            for i in 0..mentioned_entities.len() {
+                for j in (i + 1)..mentioned_entities.len() {
+                    let a = mentioned_entities[i];
+                    let b = mentioned_entities[j]; // canonical: a < b
+                    if let Err(e) = upsert_co_mention(&state.db.pool, dest_ws_id, a, b, entry_id)
+                        .await
+                    {
+                        tracing::warn!("co-mention edge ({a},{b}): {e}");
                     }
                 }
             }
