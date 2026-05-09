@@ -103,6 +103,7 @@ pub async fn upsert(
             pack_slug: Some("lead-to-empower"),
             attributes_json: None,
             workspace_id: row.workspace_id,
+            pack_table_id: Some(row.id),
         },
     )
     .await

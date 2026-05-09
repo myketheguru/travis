@@ -366,6 +366,7 @@ pub async fn pack_table_upsert(
                     pack_slug: Some(params.pack_slug.as_str()),
                     attributes_json: None,
                     workspace_id: ws.active_id,
+                    pack_table_id: Some(id),
                 },
             )
             .await

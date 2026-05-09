@@ -108,6 +108,7 @@ pub async fn upsert(
             pack_slug: Some("tutoring"),
             attributes_json: None,
             workspace_id: row.workspace_id,
+            pack_table_id: Some(row.id),
         },
     )
     .await

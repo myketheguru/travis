@@ -1630,9 +1630,11 @@ pub async fn journal_ingest(
             }
 
             // Ambient generic entities — names the LLM saw in the
-            // note that didn't fit any pack-declared bucket. Stored
-            // under <kind>:unknown at GENERIC confidence so slice 9
-            // can later prompt the user to refine the role.
+            // note that didn't fit any pack-declared bucket. Before
+            // creating a `<kind>:unknown` row, check whether an
+            // existing entity in this workspace already matches the
+            // normalised name (e.g. coach Maria); if so, dedup onto
+            // that entity instead of duplicating it as person:unknown.
             for ge in &extraction.generic_entities {
                 let base_kind = ge.kind.trim().to_lowercase();
                 let scoped_kind = match base_kind.as_str() {
@@ -1641,14 +1643,35 @@ pub async fn journal_ingest(
                     "org" => "org:unknown",
                     _ => continue, // schema enforces these three; skip junk silently
                 };
-                let entity_id = identity::record_mention(
+
+                let (entity_id, pack_slug_for_event) = match identity::find_by_normalized_name(
                     &state.db.pool,
                     dest_ws_id,
-                    scoped_kind,
                     &ge.name,
-                    identity::confidence::GENERIC,
                 )
-                .await;
+                .await
+                {
+                    Some((eid, _existing_kind, existing_pack_slug)) => {
+                        // Dedup onto the existing entity. We don't
+                        // change kind here — the existing kind wins.
+                        identity::bump_mention(&state.db.pool, eid).await;
+                        (Some(eid), existing_pack_slug)
+                    }
+                    None => {
+                        // No match — record as a fresh
+                        // <kind>:unknown ambient entity.
+                        let id = identity::record_mention(
+                            &state.db.pool,
+                            dest_ws_id,
+                            scoped_kind,
+                            &ge.name,
+                            identity::confidence::GENERIC,
+                        )
+                        .await;
+                        (id, None)
+                    }
+                };
+
                 if let Some(eid) = entity_id {
                     mentioned_entities.push(eid);
                     let mention_snippet = ge
@@ -1667,7 +1690,11 @@ pub async fn journal_ingest(
                         crate::spine::event::RecordParams {
                             entity_id: Some(eid),
                             kind: "mentioned",
-                            pack_slug: None, // generic — no owning pack
+                            // When dedup'd onto a pack entity, attribute
+                            // the event to the owning pack so the timeline
+                            // colours correctly; truly generic entities
+                            // get None.
+                            pack_slug: pack_slug_for_event.as_deref(),
                             occurred_at: None,
                             attributes_json: Some(&attrs),
                             workspace_id: dest_ws_id,

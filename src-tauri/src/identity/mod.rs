@@ -115,6 +115,67 @@ pub async fn record_mention(
     }
 }
 
+/// Look up the most-confident non-archived entity in `workspace_id`
+/// whose normalized name matches `display_name`. Used by the journal
+/// generic-entity loop to dedup against pack-projected entities —
+/// if the user wrote "Maria" and a coach Maria already lives in the
+/// workspace, the mention attaches to the existing coach instead of
+/// creating a duplicate `person:unknown`.
+///
+/// Returns `(entity_id, kind, pack_slug)` so the caller can record a
+/// mention event with the correct pack_slug attribution.
+pub async fn find_by_normalized_name(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    display_name: &str,
+) -> Option<(i64, String, Option<String>)> {
+    let normalized = normalize(display_name);
+    if normalized.is_empty() {
+        return None;
+    }
+    let row: Result<Option<(i64, String, Option<String>)>, _> = sqlx::query_as(
+        "SELECT id, kind, pack_slug
+         FROM entity
+         WHERE workspace_id = ?1
+           AND normalized_name = ?2
+           AND archived_at IS NULL
+         ORDER BY confidence DESC, mentions_count DESC, id ASC
+         LIMIT 1",
+    )
+    .bind(workspace_id)
+    .bind(&normalized)
+    .fetch_optional(pool)
+    .await;
+
+    match row {
+        Ok(opt) => opt,
+        Err(e) => {
+            tracing::warn!(
+                "identity::find_by_normalized_name failed for {display_name}: {e}"
+            );
+            None
+        }
+    }
+}
+
+/// Bump mentions_count + last_seen on an existing entity by id. Used
+/// when ambient extraction dedups onto an already-known entity (no
+/// kind change happens — the existing kind is authoritative).
+pub async fn bump_mention(pool: &SqlitePool, entity_id: i64) {
+    let res = sqlx::query(
+        "UPDATE entity
+         SET mentions_count = mentions_count + 1,
+             last_seen = CURRENT_TIMESTAMP
+         WHERE id = ?1",
+    )
+    .bind(entity_id)
+    .execute(pool)
+    .await;
+    if let Err(e) = res {
+        tracing::warn!("identity::bump_mention failed for entity {entity_id}: {e}");
+    }
+}
+
 pub async fn list_top(
     pool: &SqlitePool,
     kind: Option<&str>,

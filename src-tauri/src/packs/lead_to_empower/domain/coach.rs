@@ -98,10 +98,8 @@ pub async fn upsert(
             display_name: &row.name,
             pack_slug: Some("lead-to-empower"),
             attributes_json: None,
-            // Typed-pack code path; matches the row's workspace_id
-            // which falls through to the migration DEFAULT 1. The
-            // auto-CRUD path stamps the actual active workspace.
             workspace_id: row.workspace_id,
+            pack_table_id: Some(row.id),
         },
     )
     .await

@@ -72,6 +72,12 @@ pub struct UpsertParams<'a> {
     /// Workspace this entity belongs to. Pack code should pass the
     /// active workspace id (typically `state.workspace.read().await.active_id`).
     pub workspace_id: i64,
+    /// Back-reference to the pack-typed table row this entity projects
+    /// from (for example a `coach.id`). When set, the entity is a hard
+    /// projection of a typed row — slice 6's ambient-dedup logic uses
+    /// this to avoid creating duplicate `*:unknown` entities for names
+    /// that already exist as typed records.
+    pub pack_table_id: Option<i64>,
 }
 
 /// Upsert an entity row. Returns the row id. Idempotent on
@@ -92,16 +98,23 @@ pub async fn upsert(pool: &SqlitePool, p: UpsertParams<'_>) -> anyhow::Result<i6
         anyhow::bail!("kind is required");
     }
 
+    // Pack-projected upserts write confidence=1.0 — the entity exists
+    // because a typed row exists. ON CONFLICT we lift confidence to
+    // 1.0 too (an ambient-discovered entity at 0.5 just got its
+    // typed projection, so it's now certain).
     let id: (i64,) = sqlx::query_as(
         "INSERT INTO entity
              (kind, normalized_name, display_name,
               pack_slug, attributes_json, workspace_id,
+              pack_table_id, confidence,
               mentions_count, first_seen, last_seen)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1.0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
          ON CONFLICT(kind, normalized_name) DO UPDATE SET
             display_name    = excluded.display_name,
             pack_slug       = COALESCE(excluded.pack_slug, entity.pack_slug),
             attributes_json = COALESCE(excluded.attributes_json, entity.attributes_json),
+            pack_table_id   = COALESCE(excluded.pack_table_id, entity.pack_table_id),
+            confidence      = MAX(entity.confidence, 1.0),
             last_seen       = CURRENT_TIMESTAMP
          RETURNING id",
     )
@@ -111,6 +124,7 @@ pub async fn upsert(pool: &SqlitePool, p: UpsertParams<'_>) -> anyhow::Result<i6
     .bind(p.pack_slug)
     .bind(p.attributes_json)
     .bind(p.workspace_id)
+    .bind(p.pack_table_id)
     .fetch_one(pool)
     .await?;
 
