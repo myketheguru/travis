@@ -7,20 +7,18 @@ import EntitiesTab from "./tabs/EntitiesTab";
 import SummariesTab from "./tabs/SummariesTab";
 import AsksTab from "./tabs/AsksTab";
 import ThreadsTab from "./tabs/ThreadsTab";
-import KnowledgeTab from "./tabs/KnowledgeTab";
 import { useAppStore } from "../stores/app";
 import { packSchemas, type PackSchema, type TableDef } from "../lib/packs";
 import { TableTab } from "../lib/autoCRUD";
 import { getOverride } from "../lib/packRegistry";
 
+/// Top-level tab identifier. Core tabs use a string id; pack tabs
+/// use the namespaced form `pack:<slug>:<table>`.
 type CoreTabId =
   | "ask"
   | "threads"
   | "tasks"
   | "reminders"
-  | "people"
-  | "places"
-  | "orgs"
   | "entities"
   | "summaries"
   | "asks";
@@ -42,20 +40,24 @@ type PackTab = {
 
 type Tab = CoreTab | PackTab;
 
-const coreTabsBefore: CoreTab[] = [
+/// One sidebar group. The label is shown as a small uppercase
+/// header above the items; items render in declaration order.
+type Group = {
+  label: string;
+  /// When true, the whole group is hidden unless `showDiagnostics`
+  /// is on. Used to keep the dev/inspection tabs out of the way.
+  diagnostic?: boolean;
+  items: Tab[];
+};
+
+const captureTabs: CoreTab[] = [
   { kind: "core", id: "ask",       label: "Ask" },
-  { kind: "core", id: "threads",   label: "Threads" },
   { kind: "core", id: "tasks",     label: "Tasks" },
+  { kind: "core", id: "threads",   label: "Threads" },
+  { kind: "core", id: "reminders", label: "Reminders" },
 ];
 
-const coreTabsAfter: CoreTab[] = [
-  { kind: "core", id: "reminders", label: "Reminders" },
-  // Knowledge tabs — cross-pack entity views from the Phase 4 graph.
-  // Stay alongside the other core tabs because they're not pack-owned;
-  // they read from the spine `entity` table directly.
-  { kind: "core", id: "people",    label: "People" },
-  { kind: "core", id: "places",    label: "Places" },
-  { kind: "core", id: "orgs",      label: "Organisations" },
+const diagnosticTabs: CoreTab[] = [
   { kind: "core", id: "entities",  label: "Entities",   diagnostic: true },
   { kind: "core", id: "summaries", label: "Summaries",  diagnostic: true },
   { kind: "core", id: "asks",      label: "Asks of me", diagnostic: true },
@@ -71,12 +73,16 @@ export default function Manage({ onClose }: { onClose: () => void }) {
     packSchemas().then(setSchemas).catch(() => setSchemas([]));
   }, []);
 
-  const tabs = useMemo<Tab[]>(() => {
-    // Every primary pack table becomes a tab. The packRegistry decides
-    // whether the tab body is rendered by an auto-CRUD component or a
-    // pack-shipped custom override; both paths look the same here.
-    const packTabs: PackTab[] = (schemas ?? []).flatMap((pack) =>
-      pack.tables
+  // Group tabs by section. Pack tabs become one group per pack —
+  // `pack.name` is the user-facing display name, e.g. "Lead to
+  // Empower". Diagnostics is the trailing collapsible group, only
+  // visible when the user has the toggle on.
+  const groups = useMemo<Group[]>(() => {
+    const out: Group[] = [
+      { label: "Capture", items: captureTabs },
+    ];
+    for (const pack of schemas ?? []) {
+      const items: PackTab[] = pack.tables
         .filter((t) => t.primary)
         .map<PackTab>((t) => ({
           kind: "pack",
@@ -84,88 +90,93 @@ export default function Manage({ onClose }: { onClose: () => void }) {
           label: t.displayName,
           pack,
           table: t,
-        })),
-    );
-
-    const all: Tab[] = [...coreTabsBefore, ...packTabs, ...coreTabsAfter];
-    return all.filter((t) => {
-      if (t.kind === "core" && t.diagnostic && !showDiagnostics) {
-        return false;
+        }));
+      if (items.length > 0) {
+        out.push({ label: pack.name, items });
       }
-      return true;
-    });
-  }, [schemas, showDiagnostics]);
-  // Suppress the lint about enabledPacks no longer being a dep — it's
-  // intentionally not used now that pack tabs come from packSchemas
-  // (which is already enabled-only).
-  void enabledPacks;
+    }
+    out.push({ label: "Diagnostics", diagnostic: true, items: diagnosticTabs });
+    return out;
+  }, [schemas]);
+  void enabledPacks; // see prior comment
 
-  // If the active tab disappears (diagnostics toggled off, pack disabled),
-  // fall back to Ask.
+  // Flat list of currently-visible tabs, used for the active-fallback
+  // logic and the active lookup.
+  const visibleTabs = useMemo<Tab[]>(() => {
+    return groups
+      .filter((g) => !g.diagnostic || showDiagnostics)
+      .flatMap((g) => g.items);
+  }, [groups, showDiagnostics]);
+
   useEffect(() => {
-    if (!tabs.find((t) => t.id === tab)) {
+    if (!visibleTabs.find((t) => t.id === tab)) {
       setTab("ask");
     }
-  }, [tabs, tab]);
+  }, [visibleTabs, tab]);
 
-  const active = tabs.find((t) => t.id === tab);
+  const active = visibleTabs.find((t) => t.id === tab);
 
   return (
-    <main className="relative h-full w-full overflow-hidden flex flex-col">
-      <button
-        onClick={onClose}
-        className="absolute top-6 left-6 text-bone-3 hover:text-bone-2 text-xs flex items-center gap-1.5 transition-colors z-10"
-      >
-        <span aria-hidden>←</span>
-        <span>Back</span>
-      </button>
-
-      <motion.div
-        className="pt-16 pb-3 px-10"
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
-      >
-        <h1 className="text-2xl font-light tracking-tight text-bone">Manage</h1>
-        <p className="text-bone-3 text-xs mt-1">Browse, query, and act on what Travis knows.</p>
-      </motion.div>
-
-      <div className="px-10 border-b border-white/[0.05] flex items-center gap-1 overflow-x-auto">
-        {tabs.map((t) => (
+    <main className="relative h-full w-full overflow-hidden flex">
+      {/* Sidebar */}
+      <aside className="w-56 shrink-0 border-r border-white/[0.05] bg-ink-2/20 flex flex-col">
+        <div className="px-5 pt-6 pb-3">
           <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={
-              "relative px-3 py-2.5 text-xs tracking-wider transition-colors whitespace-nowrap " +
-              (tab === t.id ? "text-bone" : "text-bone-3 hover:text-bone-2")
-            }
+            onClick={onClose}
+            className="text-bone-3 hover:text-bone-2 text-xs flex items-center gap-1.5 transition-colors mb-4"
           >
-            {t.label}
-            {tab === t.id && (
-              <motion.span
-                layoutId="manage-tab-underline"
-                className="absolute left-3 right-3 -bottom-px h-[2px] rounded-full bg-pulse"
-                transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-              />
-            )}
+            <span aria-hidden>←</span>
+            <span>Back</span>
           </button>
-        ))}
-      </div>
+          <h1 className="text-bone text-base font-light tracking-tight">Manage</h1>
+        </div>
 
-      <div className="flex-1 overflow-y-auto">
+        <nav className="flex-1 overflow-y-auto pb-6">
+          {groups.map((g) => {
+            if (g.diagnostic && !showDiagnostics) return null;
+            return (
+              <div key={g.label} className="mt-4 first:mt-2 px-3">
+                <div className="px-2 pb-1.5 text-[10px] tracking-[0.2em] uppercase text-bone-3/60">
+                  {g.label}
+                </div>
+                <div className="flex flex-col">
+                  {g.items.map((t) => {
+                    const isActive = tab === t.id;
+                    return (
+                      <button
+                        key={t.id}
+                        onClick={() => setTab(t.id)}
+                        className={
+                          "relative text-left px-3 py-1.5 rounded-md text-[13px] transition-colors " +
+                          (isActive
+                            ? "text-bone bg-pulse/[0.08]"
+                            : "text-bone-2 hover:text-bone hover:bg-white/[0.025]")
+                        }
+                      >
+                        {isActive && (
+                          <motion.span
+                            layoutId="manage-active-accent"
+                            className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r-full bg-pulse"
+                            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                          />
+                        )}
+                        <span className="block truncate pl-1.5">{t.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </nav>
+      </aside>
+
+      {/* Content */}
+      <section className="flex-1 overflow-y-auto">
         {active?.kind === "core" && active.id === "ask" && <AskTab />}
         {active?.kind === "core" && active.id === "threads" && <ThreadsTab />}
         {active?.kind === "core" && active.id === "tasks" && <TasksTab />}
         {active?.kind === "core" && active.id === "reminders" && <RemindersTab />}
-        {active?.kind === "core" && active.id === "people" && (
-          <KnowledgeTab key="people" family="person" />
-        )}
-        {active?.kind === "core" && active.id === "places" && (
-          <KnowledgeTab key="places" family="place" />
-        )}
-        {active?.kind === "core" && active.id === "orgs" && (
-          <KnowledgeTab key="orgs" family="org" />
-        )}
         {active?.kind === "core" && active.id === "entities" && <EntitiesTab />}
         {active?.kind === "core" && active.id === "summaries" && <SummariesTab />}
         {active?.kind === "core" && active.id === "asks" && <AsksTab />}
@@ -190,7 +201,7 @@ export default function Manage({ onClose }: { onClose: () => void }) {
             />
           );
         })()}
-      </div>
+      </section>
     </main>
   );
 }

@@ -402,7 +402,6 @@ pub fn run() {
             summary_cmd::generate_daily_summary,
             summary_cmd::generate_weekly_summary,
             identity_cmd::list_entities,
-            identity_cmd::list_entities_by_family,
             identity_cmd::get_profile_blurb,
             #[cfg(feature = "pack-lead-to-empower")] pdf_cmd::export_invoice_pdf,
             #[cfg(feature = "pack-lead-to-empower")] pdf_cmd::export_invoice_pdf_preview,

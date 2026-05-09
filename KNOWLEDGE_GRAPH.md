@@ -389,49 +389,60 @@ match exists.
 
 ---
 
-## UI surfaces
+## UI surfaces — *the graph is invisible*
 
-### People / Places tabs
+**Posture:** Travis tracks every entity, mention, and edge silently.
+The graph is **not** a thing the user manages. There are no
+People / Places / Orgs tabs, no entity detail page, no graph
+dashboard. The graph forms context invisibly and surfaces it only
+where it's actionable. (See the user's directive saved to
+`feedback_minimal_surfaces.md`.)
 
-A new top-level Manage area aggregates entities across packs by
-high-level kind:
+### How users interact with the graph
 
-- **People** — every `person:*` entity. List view sortable by
-  mention count, last-seen, name. Click → entity detail.
-- **Places** — every `place:*` entity. Same shape.
-- **Organisations** — every `org:*`.
+- **Through conversation.** When Travis needs the user to refine an
+  entity ("you've been talking about Maria — is she the L2E coach
+  or someone else?"), the question lands in the existing nudge
+  thread or as a clarifying question on the next journal turn. The
+  user replies in chat; the journal extraction picks up their
+  answer and the inference helpers (`apply_refinement`,
+  `accept_edge_proposal`, `merge_entities`) commit the change. No
+  CRUD UI required.
+- **Through their existing pack tabs.** Coach Maria still appears
+  in the L2E "Coaches" tab — the typed CRUD path is unchanged.
+  Pack-projected entity rows are managed where the user already
+  manages them.
 
-These coexist with the existing per-pack tabs (Coaches, Schools,
-…) — those stay typed and pack-specific. The Knowledge tabs are
-the cross-pack ambient view.
+### Where the graph *does* surface (sparingly)
 
-### Entity detail
+- **Capture chip.** The journal overlay shows a faint *"→ Maria
+  (coach)"* chip when extraction resolved a mention to a known
+  entity. Tap is *not* required — it's a passive confirmation
+  that Travis recognised the name.
+- **Splash insight.** The splash screen's existing operational
+  alerts gain an occasional graph-driven line — *"Maria worked 24h
+  at PS 142 this month — invoice not yet drafted"* — built from
+  joining the entity timeline against pack-table state. Single
+  actionable line, not a list.
+- **System-prompt graph memory.** The LLM gets entity context
+  (recent events, mention snippets, related entities) injected
+  silently per turn — already shipping via slice 8's
+  `memory::graph::retrieve`.
 
-For any entity:
-- Header: display name, kind, confidence, tags.
-- Mention timeline: `event` rows with `kind="mentioned"` rendered
-  as a calendar/list with one-click jump to the source journal
-  entry.
-- Pack-projected fields: when pack_table_id is set, the typed
-  fields show up (rate_cents for a coach, etc.), editable inline.
-- Related entities: outgoing/incoming `relation` rows.
-- Merge / split / archive controls.
+### Diagnostic-only access
 
-### Subtle indicators
+The existing `Entities` diagnostic tab (gated behind
+`showDiagnostics`) stays available for development inspection.
+It's intentionally not part of the default Manage navigation.
 
-- The Splash screen's "metric to capitalise on" gains an entity
-  surface: *"Maria — 6 mentions this week, hours not yet logged"*.
-- The journal capture overlay shows a small chip when extraction
-  resolves a mention to a known entity: *"→ Maria (coach)"*. One
-  click opens the detail.
+### Mindmap / network view *(spec only — implement later, opt-in)*
 
-### Mindmap / network view *(spec only — implement later)*
-
-**Goal:** a single visual surface where the user can see the whole
-graph at once — every entity as a node, every relation as an edge,
-laid out so clusters and hubs are obvious. The Manage tabs and
-entity detail page answer *"what does Travis know about Maria?"*;
-the mindmap answers *"what does Travis know about my world?"*.
+**Goal:** an *optional* visual surface where the user can see the
+whole graph at once — every entity as a node, every relation as an
+edge, laid out so clusters and hubs are obvious. The minimal Manage
+nav doesn't expose this by default; it's a deeper "show me how you
+think" surface, opened explicitly (cmd-shortcut, hidden menu, or
+diagnostics-gated for now).
 
 This is **not** in the Phase 4 implementation slice list. Specced
 here so the data model + APIs land Phase-4-ready and the build can
@@ -575,9 +586,9 @@ exists from `0020_workspaces.sql`.
 | 9 | Inference Loop 1: recurring-mention categorisation nudge | 1 day |
 | 10 | Inference Loop 2: co-mention edge proposal | 0.5 day |
 | 11 | Inference Loop 4: conflict detection + merge prompt | 1 day |
-| 12 | UI: People / Places / Orgs Manage tabs (auto-CRUD reuse) | 1.5 days |
-| 13 | UI: Entity detail page with timeline + relations + merge | 2 days |
-| 14 | Splash entity surface + capture chip | 1 day |
+| 12 | ~~UI: People / Places / Orgs Manage tabs~~ — **dropped** per `feedback_minimal_surfaces.md`; graph is internal | — |
+| 13 | ~~UI: Entity detail page~~ — **dropped**; refinement happens through conversation, not a dashboard | — |
+| 14 | Capture chip + splash entity insight (sparing surfacing only) | 1 day |
 | 15 | Verification + bug fixes | 1–2 days |
 
 Total: ~16–17 focused days. Roadmap says "2–3 months" for Phase 4 —
