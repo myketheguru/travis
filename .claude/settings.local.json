@@ -9,7 +9,9 @@
       "Bash(rustc *)",
       "Bash(npx tsc *)",
       "Bash(gh run *)",
-      "Bash(gh release *)"
+      "Bash(gh release *)",
+      "Bash(sed -n '1,90p' tools/mod.rs)",
+      "Bash(sed -n '1,80p' tools/web_fetch.rs)"
     ]
   }
 }

@@ -1,5 +1,53 @@
 # Travis Changelog
 
+## v0.6.0 — LTE program delivery: the 3 A's, catalog & quotes (2026-05-19)
+
+The Lead to Empower pack modeled only the billing spine (coaches,
+hours, signing sheets, invoices) — *money out the door*, with no
+representation of what LTE sells or how it delivers it. Digesting the
+full NYC DOE MTAC #R1179 application supplied the missing half. This
+release encodes it.
+
+### Highlights
+
+- **The "3 A's" state machine.** New `engagement` table — one run per
+  school — moving Assessment → Action Planning → Accountable →
+  closed, with the signed metrics agreement as the gate into
+  delivery. Stage advances from conversation (track-everything;
+  Travis proposes the transition, doesn't make you fill a form).
+- **The 21-line catalog.** New `catalog_module` table seeded verbatim
+  from Appendix F — both pillars (Leadership Development; Data-Driven
+  Decision-Making & Teacher Effectiveness), every line with its
+  price, session shape, and participant envelope. Plus `assessment`
+  (the diagnostic), `engagement_module` (scope of work), and
+  `accountability_review` (the ~3/year metrics checkpoints).
+- **Quote / margin tool.** `lte_quote_margin` — a read-only LLM tool
+  that computes the Appendix G cost model (labor = sessions × hours ×
+  instructors × $100/hr, + G&A + materials + rental; margin = list −
+  cost) for any module with staffing/price overrides. Answers
+  "what's our margin if we run Developing Data-Driven Practices for
+  40 kids with one facilitator?" in conversation. Pinned to the
+  source numbers by unit tests (Authentic Leadership → $231 / 9.0%).
+  New `quote` table persists pre-sale scenarios for bid comparison.
+- **Operational alerts for the program side.** Three additions to
+  Splash: engagements delivering without a signed metrics agreement,
+  active engagements with no accountability review on record (money —
+  unreviewed metrics loses renewals), and engagements stuck in
+  Assessment with no diagnostic recorded.
+- **Billing bridge.** `coach_hours.engagement_id` ties delivered
+  hours back to the engagement they served (forward column; typed UI
+  wiring in a later slice).
+
+### Notes
+
+- First pack-owned migrations for `lead_to_empower` (the billing
+  spine stays in core's `0003_domain.sql` for history continuity).
+  Pack version → 0.3.0.
+- Specs: `LTE_PACK_SPEC.md`, `LTE_QUOTE_SPEC.md`. Persisted-quote
+  stored-computed columns are deferred to a custom quote UI slice
+  (documented in the quote spec); the tool is the compute engine
+  meanwhile.
+
 ## v0.5.1 — Export your data (2026-05-09)
 
 Adds a transparency hatch: a Settings → **Export** section that

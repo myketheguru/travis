@@ -16,9 +16,11 @@ pub mod domain;
 pub mod domain_cmd;
 pub mod pdf;
 pub mod pdf_cmd;
+pub mod pricing;
 mod tables;
+mod tools;
 
-use crate::packs::{AlertDef, AlertSeverity, PackHandle, TableDef};
+use crate::packs::{AlertDef, AlertSeverity, PackHandle, PackMigration, TableDef};
 
 const SLUG: &str = "lead-to-empower";
 
@@ -34,7 +36,9 @@ impl PackHandle for LeadToEmpowerPack {
     }
 
     fn version(&self) -> &'static str {
-        "0.1.0"
+        // 0.3.0 — adds quote/margin scenarios (Appendix G model) on
+        // top of 0.2.0's program-delivery surface (3 A's + catalog).
+        "0.3.0"
     }
 
     fn description(&self) -> &'static str {
@@ -48,12 +52,16 @@ impl PackHandle for LeadToEmpowerPack {
         true
     }
 
+    fn migrations(&self) -> &'static [PackMigration] {
+        MIGRATIONS
+    }
+
     fn prompt_fragment(&self) -> Option<&'static str> {
         Some(PROMPT_FRAGMENT)
     }
 
     fn entity_kinds(&self) -> &'static [&'static str] {
-        &["coach", "school", "dept"]
+        &["coach", "school", "dept", "module", "engagement"]
     }
 
     fn action_kinds(&self) -> &'static [&'static str] {
@@ -62,6 +70,10 @@ impl PackHandle for LeadToEmpowerPack {
 
     fn register_actions(&self, registry: &mut crate::actions::ActionRegistry) {
         registry.register(Box::new(actions::ProposeInvoiceDraftHandler));
+    }
+
+    fn register_tools(&self, registry: &mut crate::tools::ToolRegistry) {
+        registry.register(Box::new(tools::quote_margin::QuoteMarginTool));
     }
 
     fn tables(&self) -> &'static [TableDef] {
@@ -105,6 +117,93 @@ static ALERTS: &[AlertDef] = &[
               FROM signing_sheet \
               WHERE signed_at IS NULL",
     },
+    // --- Program delivery: the 3 A's "what's stuck" set --------------
+    AlertDef {
+        slug: "unsigned_metrics_agreement",
+        label: "Engagements delivering without a signed metrics agreement",
+        severity: AlertSeverity::Action,
+        // Scope built / delivery underway but the metrics agreement —
+        // the gate between Action Planning and Accountable — isn't
+        // signed. Accountability debt and a contract-risk gap.
+        sql: "SELECT COUNT(*) AS count, \
+                     (SELECT name FROM engagement \
+                       WHERE stage IN ('action_planning','accountable') \
+                         AND metrics_agreement_signed = 0 \
+                       ORDER BY updated_at DESC LIMIT 1) AS sample_label, \
+                     (SELECT id FROM engagement \
+                       WHERE stage IN ('action_planning','accountable') \
+                         AND metrics_agreement_signed = 0 \
+                       ORDER BY updated_at DESC LIMIT 1) AS sample_id \
+              FROM engagement \
+              WHERE stage IN ('action_planning','accountable') \
+                AND metrics_agreement_signed = 0",
+    },
+    AlertDef {
+        slug: "overdue_accountability_review",
+        label: "Active engagements with no accountability review on record",
+        severity: AlertSeverity::Money,
+        // An engagement in delivery with zero metrics reviews recorded.
+        // Unreviewed metrics is what loses the renewal — the money
+        // alert for the program side.
+        sql: "SELECT COUNT(*) AS count, \
+                     (SELECT name FROM engagement e \
+                       WHERE e.stage = 'accountable' \
+                         AND NOT EXISTS (SELECT 1 FROM accountability_review r \
+                                          WHERE r.engagement_id = e.id) \
+                       ORDER BY e.updated_at DESC LIMIT 1) AS sample_label, \
+                     (SELECT id FROM engagement e \
+                       WHERE e.stage = 'accountable' \
+                         AND NOT EXISTS (SELECT 1 FROM accountability_review r \
+                                          WHERE r.engagement_id = e.id) \
+                       ORDER BY e.updated_at DESC LIMIT 1) AS sample_id \
+              FROM engagement e \
+              WHERE e.stage = 'accountable' \
+                AND NOT EXISTS (SELECT 1 FROM accountability_review r \
+                                 WHERE r.engagement_id = e.id)",
+    },
+    AlertDef {
+        slug: "stalled_assessment",
+        label: "Engagements stuck in Assessment with no diagnostic recorded",
+        severity: AlertSeverity::Action,
+        // Opened > 21 days ago, still in Assessment, no assessment row.
+        // The diagnostic stalled — the 3 A's can't advance.
+        sql: "SELECT COUNT(*) AS count, \
+                     (SELECT name FROM engagement e \
+                       WHERE e.stage = 'assessment' \
+                         AND e.created_at <= datetime('now','-21 day') \
+                         AND NOT EXISTS (SELECT 1 FROM assessment a \
+                                          WHERE a.engagement_id = e.id) \
+                       ORDER BY e.created_at ASC LIMIT 1) AS sample_label, \
+                     (SELECT id FROM engagement e \
+                       WHERE e.stage = 'assessment' \
+                         AND e.created_at <= datetime('now','-21 day') \
+                         AND NOT EXISTS (SELECT 1 FROM assessment a \
+                                          WHERE a.engagement_id = e.id) \
+                       ORDER BY e.created_at ASC LIMIT 1) AS sample_id \
+              FROM engagement e \
+              WHERE e.stage = 'assessment' \
+                AND e.created_at <= datetime('now','-21 day') \
+                AND NOT EXISTS (SELECT 1 FROM assessment a \
+                                 WHERE a.engagement_id = e.id)",
+    },
+];
+
+// Pack-owned migrations. Numbering is independent of core's
+// `_sqlx_migrations`; tracked in `meta.pack.lead-to-empower.
+// schema_version`. The billing-spine tables predate pack migrations
+// and stay in core's 0003_domain.sql — see domain/mod.rs.
+const PROGRAM_DELIVERY_SQL: &str = include_str!("migrations/0001_program_delivery.sql");
+const QUOTE_SQL: &str = include_str!("migrations/0002_quote.sql");
+
+static MIGRATIONS: &[PackMigration] = &[
+    PackMigration {
+        name: "0001_program_delivery",
+        sql: PROGRAM_DELIVERY_SQL,
+    },
+    PackMigration {
+        name: "0002_quote",
+        sql: QUOTE_SQL,
+    },
 ];
 
 /// System-prompt fragment contributed by the L2E pack. Currently unused
@@ -120,5 +219,23 @@ You also help with after-school enrichment program ops:\n\
 - Draft NYC DoF-shaped invoices when hours have been signed off.\n\
 \n\
 When the user mentions a coach by name, prefer recording the mention\n\
-even if no specific action is requested.\
+even if no specific action is requested.\n\
+\n\
+LTE delivery runs the \"3 A's\": every school engagement moves\n\
+Assessment -> Action Planning -> Accountable -> closed.\n\
+- Assessment: surveys, walkthroughs, observations, data analysis\n\
+  against the leadership rubric. Record each as an assessment on the\n\
+  engagement.\n\
+- Action Planning: the scope of work — which catalog modules, for\n\
+  whom, when. The signed metrics agreement gates the move into\n\
+  delivery.\n\
+- Accountable: delivering modules + ~3 metrics reviews/year (Sept\n\
+  baseline, Jan mid, May/June reflection).\n\
+The catalog is 21 priced modules across two pillars (Leadership\n\
+Development; Data-Driven Decision-Making & Teacher Effectiveness).\n\
+When the user mentions a school, walkthrough, module, or metrics\n\
+review, record it against the right engagement even if no action is\n\
+asked. If a mention implies the engagement changed stage, note it\n\
+and confirm the transition in conversation rather than asking\n\
+permission to track.\
 ";
