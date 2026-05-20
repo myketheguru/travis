@@ -1,8 +1,18 @@
 //! PDF invoice export.
 //!
-//! Renders an invoice (header, bill-to / from blocks, line-item table, total,
-//! footer) to a single A4 page using printpdf 0.7's built-in Helvetica font
-//! (no external font file required).
+//! Two shapes:
+//!
+//! - **Legacy single-line** (after-school enrichment): one rate, one coach,
+//!   line items materialised from `coach_hours`. Uses `UserProfile` for the
+//!   FROM block. Kept intact for backwards compatibility.
+//! - **Multi-line program-delivery** (LTE_INVOICING_SPEC §8.3): multiple
+//!   catalog modules per invoice, each priced per `engagement_module`,
+//!   line items materialised from `invoice_line`. Uses `company_profile`
+//!   for the LTE-letterhead FROM block — parameterised branding so a
+//!   sibling consultancy can swap the row and reuse the template.
+//!
+//! `export_invoice` picks the path automatically based on whether the
+//! invoice has any `invoice_line` rows.
 
 use std::fs::{self, File};
 use std::io::BufWriter;
@@ -14,6 +24,7 @@ use sqlx::SqlitePool;
 
 use crate::db::UserProfile;
 use crate::domain::{coach_hours, invoice};
+use invoice::Invoice;
 
 // --- Page geometry (A4 portrait) ---
 const PAGE_W_MM: f32 = 210.0;
@@ -72,6 +83,86 @@ async fn school_name(pool: &SqlitePool, school_id: Option<i64>) -> Result<Option
     Ok(row.map(|r| r.0))
 }
 
+// --- Multi-line invoice (LTE letterhead) data loaders ----------------------
+
+#[derive(sqlx::FromRow, Default)]
+struct CompanyProfile {
+    name: Option<String>,
+    legal_name: Option<String>,
+    address_line_1: Option<String>,
+    address_line_2: Option<String>,
+    city: Option<String>,
+    state: Option<String>,
+    zip: Option<String>,
+    phone: Option<String>,
+    email: Option<String>,
+    website: Option<String>,
+    ein: Option<String>,
+    nyc_doe_vendor_number: Option<String>,
+    default_contract_ref: Option<String>,
+    tagline: Option<String>,
+    default_invoice_signature_authority: Option<String>,
+}
+
+async fn load_company_profile(pool: &SqlitePool, workspace_id: i64) -> Result<CompanyProfile> {
+    let row: Option<CompanyProfile> = sqlx::query_as(
+        "SELECT name, legal_name, address_line_1, address_line_2, city, state, zip,
+                phone, email, website, ein, nyc_doe_vendor_number, default_contract_ref,
+                tagline, default_invoice_signature_authority
+         FROM company_profile WHERE workspace_id = ?1 LIMIT 1",
+    )
+    .bind(workspace_id)
+    .fetch_optional(pool)
+    .await
+    .context("load company_profile")?;
+    Ok(row.unwrap_or_default())
+}
+
+#[derive(sqlx::FromRow)]
+struct InvoiceLineRow {
+    description: String,
+    qty: f64,
+    unit_price_cents: i64,
+    subtotal_cents: i64,
+    date_list: Option<String>,
+}
+
+async fn load_invoice_lines(pool: &SqlitePool, invoice_id: i64) -> Result<Vec<InvoiceLineRow>> {
+    let rows: Vec<InvoiceLineRow> = sqlx::query_as(
+        "SELECT description, qty, unit_price_cents, subtotal_cents, date_list
+         FROM invoice_line
+         WHERE invoice_id = ?1
+         ORDER BY sort_order ASC, id ASC",
+    )
+    .bind(invoice_id)
+    .fetch_all(pool)
+    .await
+    .context("load invoice_line rows")?;
+    Ok(rows)
+}
+
+async fn load_po_number(pool: &SqlitePool, po_id: Option<i64>) -> Result<Option<String>> {
+    let Some(id) = po_id else { return Ok(None) };
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT po_number FROM purchase_order WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+            .context("load po_number")?;
+    Ok(row.map(|r| r.0))
+}
+
+async fn invoice_line_count(pool: &SqlitePool, invoice_id: i64) -> Result<i64> {
+    let n: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM invoice_line WHERE invoice_id = ?1",
+    )
+    .bind(invoice_id)
+    .fetch_one(pool)
+    .await
+    .context("count invoice_line rows")?;
+    Ok(n)
+}
+
 // --- Drawing primitives -----------------------------------------------------
 
 /// Cursor that tracks "current Y from top of page in mm" so callers can write
@@ -119,6 +210,14 @@ pub async fn export_invoice(
     let inv = invoice::fetch_one(pool, invoice_id)
         .await
         .map_err(|e| anyhow!("fetch invoice {invoice_id}: {e}"))?;
+
+    // Program-delivery invoices (invoice_line rows present) get the new
+    // multi-line LTE-letterhead renderer; legacy single-line/single-coach
+    // invoices (after-school enrichment) keep the original layout below.
+    let n_lines = invoice_line_count(pool, invoice_id).await?;
+    if n_lines > 0 {
+        return render_multi_line_invoice(pool, &inv, dest_path).await;
+    }
 
     // Fetch line items (coach_hours within period).
     let filter = coach_hours::CoachHoursFilter {
@@ -365,6 +464,322 @@ fn truncate(s: &str, n: usize) -> String {
         let mut out: String = s.chars().take(n.saturating_sub(3)).collect();
         out.push_str("...");
         out
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Multi-line program-delivery invoice renderer (LTE_INVOICING_SPEC §8.3).
+//
+// Layout follows the LTE2064981 sample Taylor sent: teal title row,
+// FROM/TO blocks, line-item table with embedded date-list per row,
+// total row, PO# stamp, principal signature block. Branding comes from
+// `company_profile` so a sibling consultancy swaps the row and reuses
+// the template — no hardcoded "LEAD TO EMPOWER" strings.
+// ---------------------------------------------------------------------------
+
+async fn render_multi_line_invoice(
+    pool: &SqlitePool,
+    inv: &Invoice,
+    dest_path: &Path,
+) -> Result<PathBuf> {
+    // ----- await-phase data loads -----
+    let cp = load_company_profile(pool, inv.workspace_id).await?;
+    let lines = load_invoice_lines(pool, inv.id).await?;
+    let school = school_name(pool, inv.school_id).await?;
+    let po_number = load_po_number(pool, inv.purchase_order_id).await?;
+    let footer_ts: String = sqlx::query_scalar("SELECT strftime('%Y-%m-%d %H:%M UTC', 'now')")
+        .fetch_one(pool)
+        .await
+        .unwrap_or_else(|_| "now".to_string());
+
+    // No awaits past this point — printpdf's doc handle is !Send.
+    let (doc, page1, layer1) =
+        PdfDocument::new("Invoice", Mm(PAGE_W_MM), Mm(PAGE_H_MM), "Layer 1");
+    let layer = doc.get_page(page1).get_layer(layer1);
+    let regular: IndirectFontRef = doc
+        .add_builtin_font(BuiltinFont::Helvetica)
+        .map_err(|e| anyhow!("add Helvetica: {e}"))?;
+    let bold: IndirectFontRef = doc
+        .add_builtin_font(BuiltinFont::HelveticaBold)
+        .map_err(|e| anyhow!("add Helvetica-Bold: {e}"))?;
+
+    let mut layout = Layout {
+        layer,
+        bold,
+        regular,
+        y_from_top_mm: MARGIN_MM,
+    };
+
+    // ----- Header: company wordmark + tagline (LTE branding) -----
+    let company_label = cp.name.as_deref().unwrap_or("Lead to Empower").to_uppercase();
+    layout.text_bold(&company_label, 22.0, MARGIN_MM);
+    layout.advance(8.0);
+    if let Some(tag) = cp.tagline.as_deref() {
+        layout.text_regular(tag, 9.0, MARGIN_MM);
+        layout.advance(5.0);
+    }
+    // Company address strip
+    let addr_strip = compose_address_strip(&cp);
+    if !addr_strip.is_empty() {
+        layout.text_regular(&addr_strip, 8.5, MARGIN_MM);
+        layout.advance(4.5);
+    }
+    if let Some(web) = cp.website.as_deref() {
+        layout.text_regular(web, 8.5, MARGIN_MM);
+        layout.advance(8.0);
+    } else {
+        layout.advance(4.0);
+    }
+
+    // "INVOICE" title on the right + invoice #
+    let right_x = PAGE_W_MM - MARGIN_MM - 55.0;
+    let mut meta_y = MARGIN_MM + 4.0;
+    layout
+        .layer
+        .use_text("INVOICE", 24.0, Mm(right_x), Mm(PAGE_H_MM - meta_y), &layout.bold);
+    meta_y += 9.0;
+    layout
+        .layer
+        .use_text("Invoice #:", 9.5, Mm(right_x), Mm(PAGE_H_MM - meta_y), &layout.bold);
+    layout.layer.use_text(
+        inv.number.as_str(),
+        9.5,
+        Mm(right_x + 22.0),
+        Mm(PAGE_H_MM - meta_y),
+        &layout.regular,
+    );
+
+    // ----- FROM block (company) -----
+    let from_top = layout.y_from_top_mm.max(meta_y + 8.0);
+    layout.y_from_top_mm = from_top;
+    layout.text_bold("From:", 10.0, MARGIN_MM);
+    layout.advance(5.0);
+    layout.text_bold(cp.name.as_deref().unwrap_or(""), 11.0, MARGIN_MM);
+    layout.advance(4.5);
+    if let Some(t) = cp.tagline.as_deref() {
+        layout.text_regular(t, 8.5, MARGIN_MM);
+        layout.advance(4.5);
+    }
+    for line in compose_company_block(&cp) {
+        layout.text_regular(&line, 9.0, MARGIN_MM);
+        layout.advance(4.2);
+    }
+    let from_bottom = layout.y_from_top_mm;
+
+    // ----- TO block (school recipient) — placed below FROM -----
+    layout.advance(6.0);
+    layout.text_bold("To:", 10.0, MARGIN_MM);
+    layout.advance(5.0);
+    let recipient_label = school.as_deref().unwrap_or(inv.recipient.as_str());
+    layout.text_regular(recipient_label, 10.5, MARGIN_MM);
+    layout.advance(8.0);
+    let _ = from_bottom; // reserved for a future side-by-side layout
+
+    // ----- Line items table -----
+    let col_unit = MARGIN_MM;
+    let col_qty = MARGIN_MM + 18.0;
+    let col_desc = MARGIN_MM + 32.0;
+    let col_price = MARGIN_MM + 130.0;
+    let col_total = MARGIN_MM + 162.0;
+
+    layout.text_bold("UNIT", 9.0, col_unit);
+    layout.text_bold("QTY", 9.0, col_qty);
+    layout.text_bold("DESCRIPTION", 9.0, col_desc);
+    layout.text_bold("UNIT PRICE", 9.0, col_price);
+    layout.text_bold("TOTAL", 9.0, col_total);
+    layout.advance(5.5);
+    layout.text_regular(
+        "________________________________________________________________________________________",
+        7.0,
+        col_unit,
+    );
+    layout.advance(3.5);
+
+    let mut running_total: i64 = 0;
+    for line in &lines {
+        layout.text_regular("1", 9.5, col_unit);
+        layout.text_regular(&format_qty(line.qty), 9.5, col_qty);
+        layout.text_regular(&truncate(&line.description, 50), 9.5, col_desc);
+        layout.text_regular(&fmt_money(line.unit_price_cents), 9.5, col_price);
+        layout.text_regular(&fmt_money(line.subtotal_cents), 9.5, col_total);
+        layout.advance(4.8);
+
+        // Date list (e.g. "Jan: 29 Feb: 24 Mar: 6, 18 Apr: 17, 24")
+        // wraps under the description column in smaller text.
+        if let Some(dl) = line.date_list.as_deref() {
+            if !dl.trim().is_empty() {
+                for wrapped in wrap(dl, 60) {
+                    layout.text_regular(&wrapped, 8.0, col_desc);
+                    layout.advance(3.8);
+                }
+            }
+        }
+        layout.advance(2.0);
+        running_total += line.subtotal_cents;
+
+        if layout.y_from_top_mm > PAGE_H_MM - 60.0 {
+            layout.text_regular("(additional rows truncated)", 8.0, col_desc);
+            layout.advance(5.0);
+            break;
+        }
+    }
+
+    // ----- Total row -----
+    layout.advance(2.0);
+    layout.text_regular(
+        "________________________________________________________________________________________",
+        7.0,
+        col_unit,
+    );
+    layout.advance(5.0);
+    layout.text_bold("TOTAL", 11.0, col_price);
+    let total_display = if running_total > 0 { running_total } else { inv.amount_cents };
+    layout.text_bold(&fmt_money(total_display), 11.0, col_total);
+    layout.advance(10.0);
+
+    // ----- Footer instructions (verbatim from LTE template) -----
+    layout.text_regular("1. Please send two copies of your invoice.", 8.5, MARGIN_MM);
+    layout.advance(4.0);
+    layout.text_regular(
+        "2. Enter this order in accordance with the prices, terms, and specifications listed above.",
+        8.5,
+        MARGIN_MM,
+    );
+    layout.advance(10.0);
+
+    // ----- PO stamp (bottom-left) + signature block (bottom-right) -----
+    let sig_y = (PAGE_H_MM - MARGIN_MM - 25.0).max(layout.y_from_top_mm + 8.0);
+    let sig_row_y = Mm(PAGE_H_MM - sig_y);
+    if let Some(po) = po_number.as_deref() {
+        layout
+            .layer
+            .use_text(po, 10.0, Mm(MARGIN_MM), sig_row_y, &layout.bold);
+    }
+    // Authorized by ___ Date ___ on the right
+    let auth_x = PAGE_W_MM - MARGIN_MM - 75.0;
+    layout.layer.use_text(
+        "Authorized by",
+        9.5,
+        Mm(auth_x),
+        sig_row_y,
+        &layout.regular,
+    );
+    layout.layer.use_text(
+        "Date",
+        9.5,
+        Mm(auth_x + 50.0),
+        sig_row_y,
+        &layout.regular,
+    );
+    // Pre-fill the signature authority + signed date if we have them.
+    let sig_name_y = Mm(PAGE_H_MM - sig_y + 5.0);
+    if let Some(name) = inv
+        .school_signed_by_name
+        .as_deref()
+        .or(cp.default_invoice_signature_authority.as_deref())
+    {
+        layout
+            .layer
+            .use_text(name, 9.0, Mm(auth_x), sig_name_y, &layout.bold);
+    }
+    if let Some(d) = inv.school_signed_at.as_deref() {
+        layout
+            .layer
+            .use_text(d, 9.0, Mm(auth_x + 50.0), sig_name_y, &layout.bold);
+    }
+
+    // ----- Generated-by footer -----
+    let footer = format!("Generated by Travis on {}", footer_ts);
+    layout.layer.use_text(
+        footer,
+        7.5,
+        Mm(MARGIN_MM),
+        Mm(MARGIN_MM * 0.55),
+        &layout.regular,
+    );
+
+    // Persist
+    if let Some(parent) = dest_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create parent dir {}", parent.display()))?;
+        }
+    }
+    write_doc(doc, dest_path)?;
+    Ok(dest_path.to_path_buf())
+}
+
+fn compose_address_strip(cp: &CompanyProfile) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(a) = cp.address_line_1.as_deref() {
+        parts.push(a.to_string());
+    }
+    if let Some(city) = cp.city.as_deref() {
+        let mut tail = city.to_string();
+        if let Some(s) = cp.state.as_deref() {
+            tail.push_str(", ");
+            tail.push_str(s);
+        }
+        if let Some(z) = cp.zip.as_deref() {
+            tail.push(' ');
+            tail.push_str(z);
+        }
+        parts.push(tail);
+    }
+    parts.join("  ")
+}
+
+fn compose_company_block(cp: &CompanyProfile) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(a) = cp.address_line_1.as_deref() {
+        out.push(a.to_string());
+    }
+    if let Some(a2) = cp.address_line_2.as_deref() {
+        if !a2.is_empty() {
+            out.push(a2.to_string());
+        }
+    }
+    let mut citystate = String::new();
+    if let Some(c) = cp.city.as_deref() {
+        citystate.push_str(c);
+    }
+    if let Some(s) = cp.state.as_deref() {
+        if !citystate.is_empty() {
+            citystate.push_str(", ");
+        }
+        citystate.push_str(s);
+    }
+    if let Some(z) = cp.zip.as_deref() {
+        if !citystate.is_empty() {
+            citystate.push(' ');
+        }
+        citystate.push_str(z);
+    }
+    if !citystate.is_empty() {
+        out.push(citystate);
+    }
+    if let Some(p) = cp.phone.as_deref() {
+        out.push(format!("Phone: {p}"));
+    }
+    if let Some(v) = cp.nyc_doe_vendor_number.as_deref() {
+        out.push(format!("VENDOR # {v}"));
+    }
+    if let Some(c) = cp.default_contract_ref.as_deref() {
+        out.push(format!("Contract #: {c}"));
+    }
+    if let Some(e) = cp.ein.as_deref() {
+        out.push(format!("EIN {e}"));
+    }
+    let _ = cp.email.as_deref();
+    let _ = cp.legal_name.as_deref();
+    out
+}
+
+fn format_qty(qty: f64) -> String {
+    if (qty - qty.round()).abs() < 0.001 {
+        format!("{}", qty as i64)
+    } else {
+        format!("{qty}")
     }
 }
 
