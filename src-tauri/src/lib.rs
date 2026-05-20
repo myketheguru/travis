@@ -409,6 +409,8 @@ pub fn run() {
             identity_cmd::get_profile_blurb,
             #[cfg(feature = "pack-lead-to-empower")] pdf_cmd::export_invoice_pdf,
             #[cfg(feature = "pack-lead-to-empower")] pdf_cmd::export_invoice_pdf_preview,
+            #[cfg(feature = "pack-lead-to-empower")] pdf_cmd::export_work_order_pdf,
+            #[cfg(feature = "pack-lead-to-empower")] pdf_cmd::export_sign_in_sheet_pdf,
             email_cmd::get_smtp_config,
             email_cmd::set_smtp_config,
             email_cmd::list_emails_sent,

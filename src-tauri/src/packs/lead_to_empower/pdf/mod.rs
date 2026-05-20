@@ -783,6 +783,559 @@ fn format_qty(qty: f64) -> String {
     }
 }
 
+// ===========================================================================
+// Work Order PDF (LTE_INVOICING_SPEC §8.1).
+//
+// Matches the NYC DOE "Systemwide Professional Services Requirements
+// Contract Work Order" form Taylor sent. Single-page when the scope fits;
+// scope items render in a table at the bottom. Vendor block from
+// company_profile; school block from engagement.school; scope from
+// engagement_module joined on catalog_module.
+// ===========================================================================
+
+#[derive(sqlx::FromRow)]
+struct WorkOrderRow {
+    id: i64,
+    workspace_id: i64,
+    engagement_id: i64,
+    contract_ref: Option<String>,
+    date_issued: Option<String>,
+    vendor_signed_at: Option<String>,
+    vendor_signed_by_name: Option<String>,
+    school_signed_at: Option<String>,
+    school_signed_by_name: Option<String>,
+    total_cents: i64,
+}
+
+#[derive(sqlx::FromRow)]
+struct EngagementMeta {
+    name: String,
+    school_id: Option<i64>,
+}
+
+#[derive(sqlx::FromRow)]
+struct SchoolMeta {
+    name: String,
+    district: Option<String>,
+    address: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct ScopeRow {
+    module_name: String,
+    description: Option<String>,
+    qty: f64,
+    agreed_price_cents: i64,
+}
+
+pub async fn render_work_order(
+    pool: &SqlitePool,
+    work_order_id: i64,
+    dest_path: &Path,
+) -> Result<PathBuf> {
+    let wo: WorkOrderRow = sqlx::query_as(
+        "SELECT id, workspace_id, engagement_id, contract_ref, date_issued,
+                vendor_signed_at, vendor_signed_by_name,
+                school_signed_at, school_signed_by_name, total_cents
+         FROM work_order WHERE id = ?1",
+    )
+    .bind(work_order_id)
+    .fetch_optional(pool)
+    .await
+    .context("load work_order")?
+    .ok_or_else(|| anyhow!("work order {work_order_id} not found"))?;
+
+    let cp = load_company_profile(pool, wo.workspace_id).await?;
+    let eng: EngagementMeta = sqlx::query_as(
+        "SELECT name, school_id FROM engagement WHERE id = ?1",
+    )
+    .bind(wo.engagement_id)
+    .fetch_one(pool)
+    .await
+    .context("load engagement for WO")?;
+
+    let school: Option<SchoolMeta> = if let Some(sid) = eng.school_id {
+        sqlx::query_as("SELECT name, district, address FROM school WHERE id = ?1")
+            .bind(sid)
+            .fetch_optional(pool)
+            .await
+            .context("load school for WO")?
+    } else {
+        None
+    };
+
+    let scope: Vec<ScopeRow> = sqlx::query_as(
+        "SELECT cm.name AS module_name,
+                em.notes AS description,
+                em.qty AS qty,
+                CASE WHEN em.agreed_price_cents > 0
+                     THEN em.agreed_price_cents
+                     ELSE cm.list_price_cents
+                END AS agreed_price_cents
+         FROM engagement_module em
+         JOIN catalog_module cm ON cm.id = em.module_id
+         WHERE em.engagement_id = ?1
+         ORDER BY em.id ASC",
+    )
+    .bind(wo.engagement_id)
+    .fetch_all(pool)
+    .await
+    .context("load scope for WO")?;
+
+    let footer_ts: String = sqlx::query_scalar("SELECT strftime('%Y-%m-%d %H:%M UTC', 'now')")
+        .fetch_one(pool)
+        .await
+        .unwrap_or_else(|_| "now".to_string());
+
+    // ----- no awaits past this point -----
+    let (doc, page1, layer1) =
+        PdfDocument::new("Work Order", Mm(PAGE_W_MM), Mm(PAGE_H_MM), "Layer 1");
+    let layer = doc.get_page(page1).get_layer(layer1);
+    let regular: IndirectFontRef = doc
+        .add_builtin_font(BuiltinFont::Helvetica)
+        .map_err(|e| anyhow!("Helvetica: {e}"))?;
+    let bold: IndirectFontRef = doc
+        .add_builtin_font(BuiltinFont::HelveticaBold)
+        .map_err(|e| anyhow!("Helvetica-Bold: {e}"))?;
+
+    let mut layout = Layout {
+        layer,
+        bold,
+        regular,
+        y_from_top_mm: MARGIN_MM,
+    };
+
+    // ----- DOE header strip -----
+    layout.text_bold("THE NEW YORK CITY DEPARTMENT OF EDUCATION", 12.0, MARGIN_MM);
+    layout.advance(5.5);
+    layout.text_regular("OFFICE OF THE CHANCELLOR", 9.0, MARGIN_MM);
+    layout.advance(4.2);
+    layout.text_regular("52 Chambers Street - New York, NY 10007", 8.5, MARGIN_MM);
+    layout.advance(10.0);
+
+    // Title
+    layout.text_bold("SYSTEMWIDE PROFESSIONAL SERVICES REQUIREMENTS", 13.0, MARGIN_MM);
+    layout.advance(6.0);
+    layout.text_bold("CONTRACT WORK ORDER", 13.0, MARGIN_MM);
+    layout.advance(10.0);
+
+    // Boilerplate
+    for line in [
+        "This work order is required prior to issuing a purchase order to ensure that the",
+        "region/operation center/school/office and the vendor are in agreement as to the terms",
+        "of the purchase. No purchase order will be issued without a complete and signed work",
+        "order. This work order does not replace the contract terms.",
+        "",
+        "Pricing and services must be wholly consistent with the terms and conditions of the contract.",
+    ] {
+        layout.text_regular(line, 8.5, MARGIN_MM);
+        layout.advance(3.8);
+    }
+    layout.advance(4.0);
+
+    // ----- Vendor / School metadata grid -----
+    let left_x = MARGIN_MM;
+    let right_x = MARGIN_MM + 95.0;
+    let row_top = layout.y_from_top_mm;
+
+    layout.text_bold("Vendor Name:", 9.0, left_x);
+    layout.text_bold("Date Issued:", 9.0, right_x);
+    layout.advance(4.5);
+    layout.text_regular(cp.name.as_deref().unwrap_or(""), 10.0, left_x);
+    layout.text_regular(wo.date_issued.as_deref().unwrap_or(""), 10.0, right_x);
+    layout.advance(7.0);
+
+    layout.text_bold("Address:", 9.0, left_x);
+    layout.text_bold("School:", 9.0, right_x);
+    layout.advance(4.5);
+    let vendor_addr = compose_company_block(&cp).join(", ");
+    layout.text_regular(&truncate(&vendor_addr, 50), 9.0, left_x);
+    let school_block = school
+        .as_ref()
+        .map(|s| {
+            let mut parts = vec![s.name.clone()];
+            if let Some(a) = s.address.as_deref() {
+                parts.push(a.to_string());
+            }
+            if let Some(d) = s.district.as_deref() {
+                parts.push(format!("District {d}"));
+            }
+            parts.join(", ")
+        })
+        .unwrap_or_default();
+    layout.text_regular(&truncate(&school_block, 50), 9.0, right_x);
+    layout.advance(7.0);
+
+    layout.text_bold("Contract #:", 9.0, left_x);
+    layout.text_bold("Vendor #:", 9.0, right_x);
+    layout.advance(4.5);
+    let contract = wo
+        .contract_ref
+        .clone()
+        .or_else(|| cp.default_contract_ref.clone())
+        .unwrap_or_default();
+    layout.text_regular(&contract, 9.5, left_x);
+    layout.text_regular(cp.nyc_doe_vendor_number.as_deref().unwrap_or(""), 9.5, right_x);
+    layout.advance(7.0);
+
+    layout.text_bold("Phone:", 9.0, left_x);
+    layout.text_bold("Email:", 9.0, right_x);
+    layout.advance(4.5);
+    layout.text_regular(cp.phone.as_deref().unwrap_or(""), 9.0, left_x);
+    layout.text_regular(cp.email.as_deref().unwrap_or(""), 9.0, right_x);
+    layout.advance(10.0);
+    let _ = row_top;
+
+    // ----- Certification line -----
+    for line in [
+        "I hereby certify that the attached scope of work accurately and completely",
+        "describes the work to be performed and is consistent with the terms of the",
+        "above-referenced contract.",
+    ] {
+        layout.text_regular(line, 8.5, MARGIN_MM);
+        layout.advance(3.8);
+    }
+    layout.advance(8.0);
+
+    // ----- Signature blocks -----
+    let sig_y_top = layout.y_from_top_mm;
+    layout.text_regular("____________________________________________", 9.0, MARGIN_MM);
+    layout.text_regular("____________________", 9.0, MARGIN_MM + 95.0);
+    layout.advance(4.5);
+    layout.text_regular("Authorized Vendor Signature", 8.5, MARGIN_MM);
+    layout.text_regular("Date", 8.5, MARGIN_MM + 95.0);
+
+    if let Some(name) = wo.vendor_signed_by_name.as_deref() {
+        let ny = Mm(PAGE_H_MM - sig_y_top + 1.5);
+        layout
+            .layer
+            .use_text(name, 9.0, Mm(MARGIN_MM + 2.0), ny, &layout.bold);
+    }
+    if let Some(d) = wo.vendor_signed_at.as_deref() {
+        let ny = Mm(PAGE_H_MM - sig_y_top + 1.5);
+        layout
+            .layer
+            .use_text(d, 9.0, Mm(MARGIN_MM + 95.0 + 2.0), ny, &layout.bold);
+    }
+    layout.advance(10.0);
+
+    let sig_y_top2 = layout.y_from_top_mm;
+    layout.text_regular("____________________________________________", 9.0, MARGIN_MM);
+    layout.text_regular("____________________", 9.0, MARGIN_MM + 95.0);
+    layout.advance(4.5);
+    layout.text_regular("Signature of Principal/Superintendent or designee", 8.5, MARGIN_MM);
+    layout.text_regular("Date", 8.5, MARGIN_MM + 95.0);
+    if let Some(name) = wo.school_signed_by_name.as_deref() {
+        let ny = Mm(PAGE_H_MM - sig_y_top2 + 1.5);
+        layout
+            .layer
+            .use_text(name, 9.0, Mm(MARGIN_MM + 2.0), ny, &layout.bold);
+    }
+    if let Some(d) = wo.school_signed_at.as_deref() {
+        let ny = Mm(PAGE_H_MM - sig_y_top2 + 1.5);
+        layout
+            .layer
+            .use_text(d, 9.0, Mm(MARGIN_MM + 95.0 + 2.0), ny, &layout.bold);
+    }
+    layout.advance(12.0);
+
+    // ----- Scope of Work table -----
+    layout.text_bold("Scope of Work", 11.0, MARGIN_MM);
+    layout.advance(5.5);
+    let c_desc = MARGIN_MM;
+    let c_unit = MARGIN_MM + 88.0;
+    let c_cost = MARGIN_MM + 106.0;
+    let c_qty = MARGIN_MM + 138.0;
+    let c_total = MARGIN_MM + 162.0;
+
+    layout.text_bold("Description", 8.5, c_desc);
+    layout.text_bold("Unit", 8.5, c_unit);
+    layout.text_bold("Unit Cost", 8.5, c_cost);
+    layout.text_bold("# Units", 8.5, c_qty);
+    layout.text_bold("Total Cost", 8.5, c_total);
+    layout.advance(4.5);
+    layout.text_regular(
+        "________________________________________________________________________________________",
+        7.0,
+        c_desc,
+    );
+    layout.advance(3.5);
+
+    let mut total: i64 = 0;
+    for s in &scope {
+        let line_total = ((s.qty * s.agreed_price_cents as f64).round()) as i64;
+        let label = if let Some(d) = s.description.as_deref() {
+            if !d.trim().is_empty() {
+                d.to_string()
+            } else {
+                s.module_name.clone()
+            }
+        } else {
+            s.module_name.clone()
+        };
+        layout.text_regular(&truncate(&label, 50), 9.0, c_desc);
+        layout.text_regular("1", 9.0, c_unit);
+        layout.text_regular(&fmt_money(s.agreed_price_cents), 9.0, c_cost);
+        layout.text_regular(&format_qty(s.qty), 9.0, c_qty);
+        layout.text_regular(&fmt_money(line_total), 9.0, c_total);
+        layout.advance(5.5);
+        total += line_total;
+        if layout.y_from_top_mm > PAGE_H_MM - 25.0 {
+            layout.text_regular("(scope continued on additional page — not rendered)", 8.0, c_desc);
+            layout.advance(4.5);
+            break;
+        }
+    }
+    layout.advance(2.0);
+    layout.text_regular(
+        "________________________________________________________________________________________",
+        7.0,
+        c_desc,
+    );
+    layout.advance(4.5);
+    layout.text_bold("TOTAL COST", 10.0, c_qty);
+    let total_display = if total > 0 { total } else { wo.total_cents };
+    layout.text_bold(&fmt_money(total_display), 10.0, c_total);
+
+    // Footer
+    let footer = format!("Work Order — engagement: {} — Generated by Travis {}", eng.name, footer_ts);
+    layout.layer.use_text(
+        footer,
+        7.5,
+        Mm(MARGIN_MM),
+        Mm(MARGIN_MM * 0.55),
+        &layout.regular,
+    );
+    let _ = wo.id;
+
+    if let Some(parent) = dest_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create parent dir {}", parent.display()))?;
+        }
+    }
+    write_doc(doc, dest_path)?;
+    Ok(dest_path.to_path_buf())
+}
+
+// ===========================================================================
+// Sign-in Sheet PDF (LTE_INVOICING_SPEC §8.2).
+//
+// Replaces Taylor's Excel-cleanup dance. Reads coach_hours rows in the
+// period for the engagement and renders the LTE-internal table layout.
+// Per-row columns match the Signin sheet.pdf sample Taylor sent.
+// ===========================================================================
+
+#[derive(sqlx::FromRow)]
+struct SignInRow {
+    session_date: String,
+    description: Option<String>,
+    hours: f64,
+    module_name: Option<String>,
+    staff_supported: Option<String>,
+}
+
+pub async fn render_sign_in_sheet(
+    pool: &SqlitePool,
+    engagement_id: i64,
+    period_start: &str,
+    period_end: &str,
+    dest_path: &Path,
+) -> Result<PathBuf> {
+    let eng: EngagementMeta =
+        sqlx::query_as("SELECT name, school_id FROM engagement WHERE id = ?1")
+            .bind(engagement_id)
+            .fetch_optional(pool)
+            .await
+            .context("load engagement for sign-in sheet")?
+            .ok_or_else(|| anyhow!("engagement {engagement_id} not found"))?;
+    let workspace_id: i64 = sqlx::query_scalar(
+        "SELECT workspace_id FROM engagement WHERE id = ?1",
+    )
+    .bind(engagement_id)
+    .fetch_one(pool)
+    .await
+    .context("load engagement workspace_id")?;
+    let cp = load_company_profile(pool, workspace_id).await?;
+    let school: Option<SchoolMeta> = if let Some(sid) = eng.school_id {
+        sqlx::query_as("SELECT name, district, address FROM school WHERE id = ?1")
+            .bind(sid)
+            .fetch_optional(pool)
+            .await
+            .context("load school for sign-in sheet")?
+    } else {
+        None
+    };
+
+    // The LEFT JOIN on engagement_module → catalog_module surfaces the
+    // scope (e.g. "DATA COACHING") when the row is tagged with
+    // engagement_module_id; otherwise the row appears with the engagement
+    // name as a fallback.
+    let rows: Vec<SignInRow> = sqlx::query_as(
+        "SELECT ch.session_date AS session_date,
+                ch.description AS description,
+                ch.hours AS hours,
+                cm.name AS module_name,
+                NULL AS staff_supported
+         FROM coach_hours ch
+         LEFT JOIN engagement_module em ON em.id = ch.engagement_module_id
+         LEFT JOIN catalog_module cm ON cm.id = em.module_id
+         WHERE ch.engagement_id = ?1
+           AND ch.session_date BETWEEN ?2 AND ?3
+         ORDER BY ch.session_date ASC, ch.id ASC",
+    )
+    .bind(engagement_id)
+    .bind(period_start)
+    .bind(period_end)
+    .fetch_all(pool)
+    .await
+    .context("load coach_hours for sign-in sheet")?;
+
+    let footer_ts: String = sqlx::query_scalar("SELECT strftime('%Y-%m-%d %H:%M UTC', 'now')")
+        .fetch_one(pool)
+        .await
+        .unwrap_or_else(|_| "now".to_string());
+
+    // ----- no awaits past here -----
+    let (doc, page1, layer1) =
+        PdfDocument::new("Sign-in Sheet", Mm(PAGE_W_MM), Mm(PAGE_H_MM), "Layer 1");
+    let layer = doc.get_page(page1).get_layer(layer1);
+    let regular: IndirectFontRef = doc
+        .add_builtin_font(BuiltinFont::Helvetica)
+        .map_err(|e| anyhow!("Helvetica: {e}"))?;
+    let bold: IndirectFontRef = doc
+        .add_builtin_font(BuiltinFont::HelveticaBold)
+        .map_err(|e| anyhow!("Helvetica-Bold: {e}"))?;
+
+    let mut layout = Layout {
+        layer,
+        bold,
+        regular,
+        y_from_top_mm: MARGIN_MM,
+    };
+
+    // ----- Header -----
+    let header = cp.name.as_deref().unwrap_or("").to_uppercase();
+    if !header.is_empty() {
+        layout.text_bold(&header, 14.0, MARGIN_MM);
+        layout.advance(6.0);
+    }
+    layout.text_bold("Sign-in Sheet", 16.0, MARGIN_MM);
+    layout.advance(7.0);
+    let school_name = school
+        .as_ref()
+        .map(|s| s.name.clone())
+        .unwrap_or_default();
+    layout.text_regular(
+        &format!("Engagement: {}", eng.name),
+        9.5,
+        MARGIN_MM,
+    );
+    layout.advance(4.5);
+    if !school_name.is_empty() {
+        layout.text_regular(&format!("School: {school_name}"), 9.5, MARGIN_MM);
+        layout.advance(4.5);
+    }
+    layout.text_regular(
+        &format!("Period: {period_start} to {period_end}"),
+        9.5,
+        MARGIN_MM,
+    );
+    layout.advance(8.0);
+
+    // ----- Table -----
+    let c_date = MARGIN_MM;
+    let c_school = MARGIN_MM + 22.0;
+    let c_scope = MARGIN_MM + 48.0;
+    let c_staff = MARGIN_MM + 82.0;
+    let c_desc = MARGIN_MM + 118.0;
+    let c_hours = MARGIN_MM + 162.0;
+
+    layout.text_bold("Date", 8.5, c_date);
+    layout.text_bold("School", 8.5, c_school);
+    layout.text_bold("Scope", 8.5, c_scope);
+    layout.text_bold("Staff", 8.5, c_staff);
+    layout.text_bold("Description", 8.5, c_desc);
+    layout.text_bold("Hours", 8.5, c_hours);
+    layout.advance(4.5);
+    layout.text_regular(
+        "________________________________________________________________________________________",
+        7.0,
+        c_date,
+    );
+    layout.advance(3.5);
+
+    let mut total_hours: f64 = 0.0;
+    for r in &rows {
+        layout.text_regular(&r.session_date, 8.5, c_date);
+        layout.text_regular(&truncate(&school_name, 15), 8.5, c_school);
+        layout.text_regular(
+            &truncate(r.module_name.as_deref().unwrap_or("—"), 18),
+            8.5,
+            c_scope,
+        );
+        layout.text_regular(
+            &truncate(r.staff_supported.as_deref().unwrap_or(""), 18),
+            8.5,
+            c_staff,
+        );
+        layout.text_regular(
+            &truncate(r.description.as_deref().unwrap_or(""), 24),
+            8.5,
+            c_desc,
+        );
+        layout.text_regular(&format!("{:.1}", r.hours), 8.5, c_hours);
+        layout.advance(4.5);
+        total_hours += r.hours;
+        if layout.y_from_top_mm > PAGE_H_MM - 50.0 {
+            layout.text_regular("(additional rows truncated)", 8.0, c_desc);
+            layout.advance(4.5);
+            break;
+        }
+    }
+
+    // Total + signature
+    layout.advance(2.0);
+    layout.text_regular(
+        "________________________________________________________________________________________",
+        7.0,
+        c_date,
+    );
+    layout.advance(5.0);
+    layout.text_bold("Total Hours", 10.0, c_staff);
+    layout.text_bold(&format!("{:.1}", total_hours), 10.0, c_hours);
+    layout.advance(15.0);
+
+    let sig_y_top = layout.y_from_top_mm;
+    layout.text_regular("____________________________________________", 9.0, MARGIN_MM);
+    layout.text_regular("____________________", 9.0, MARGIN_MM + 95.0);
+    layout.advance(4.5);
+    layout.text_regular("Principal Signature", 8.5, MARGIN_MM);
+    layout.text_regular("Date", 8.5, MARGIN_MM + 95.0);
+    let _ = sig_y_top;
+
+    let footer = format!(
+        "Sign-in Sheet — {} — {}..{} — Generated by Travis {}",
+        eng.name, period_start, period_end, footer_ts
+    );
+    layout.layer.use_text(
+        &truncate(&footer, 110),
+        7.5,
+        Mm(MARGIN_MM),
+        Mm(MARGIN_MM * 0.55),
+        &layout.regular,
+    );
+
+    if let Some(parent) = dest_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create parent dir {}", parent.display()))?;
+        }
+    }
+    write_doc(doc, dest_path)?;
+    Ok(dest_path.to_path_buf())
+}
+
 fn wrap(s: &str, width: usize) -> Vec<String> {
     let mut out = Vec::new();
     for paragraph in s.split('\n') {
