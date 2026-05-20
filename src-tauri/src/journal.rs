@@ -1218,7 +1218,7 @@ pub async fn journal_ingest(
     // Fires for any turn where the user wrote a proper noun, not
     // just queries — captures with named entities benefit from the
     // model knowing the prior context too.
-    let graph_hits = if entities_hint.is_empty() {
+    let mut graph_hits = if entities_hint.is_empty() {
         Vec::new()
     } else {
         memory::graph::retrieve(
@@ -1228,6 +1228,33 @@ pub async fn journal_ingest(
         )
         .await
     };
+
+    // Semantic-similarity fallback (BRAIN.md Phase 4.5 #1). Runs on
+    // the raw user text whenever the intent could benefit from
+    // grounding context (same gate as the text-embedding retrieval).
+    // Catches references that aren't proper-noun-shaped: "the coach
+    // who teaches PS 142", "that parent from last month", pronouns
+    // resolved by surrounding conversation. Tight min_score keeps
+    // precision high — better to miss than to dump unrelated
+    // entities into the prompt.
+    if intent.needs_memory_retrieval() {
+        let seen: std::collections::HashSet<i64> =
+            graph_hits.iter().map(|h| h.entity_id).collect();
+        let semantic = memory::graph::retrieve_semantic(
+            &state.db.pool,
+            &ws_snapshot.visible_ids,
+            &raw,
+            3,
+            0.55,
+        )
+        .await;
+        for hit in semantic {
+            if !seen.contains(&hit.entity_id) {
+                graph_hits.push(hit);
+            }
+        }
+    }
+
     let graph_block = memory::graph::format_for_prompt(&graph_hits);
 
     let workspace_block = crate::workspaces::prompt_context_block(

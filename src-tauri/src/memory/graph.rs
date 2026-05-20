@@ -222,6 +222,111 @@ async fn build_hit(pool: &SqlitePool, entity_id: i64, kind: String) -> Option<Gr
     })
 }
 
+/// Embedding-based fuzzy retrieval (BRAIN.md Phase 4.5 item 1).
+///
+/// Embeds `query` and cosine-sims against every workspace-visible
+/// non-archived entity that has an embedding_vector. Returns the top
+/// `limit` matches with similarity ≥ `min_score`, each built into a
+/// full GraphHit so callers can drop the result straight into the
+/// LLM prompt alongside name-resolved hits.
+///
+/// This is the path for resolving "the coach who teaches PS 142",
+/// "that parent from last month", or pronominal references — the
+/// existing name-based `retrieve` returns empty for anything that
+/// isn't a literal name match.
+///
+/// Cost shape: O(n × 384) per query; n = entities in scope. At
+/// thousands of entities this is sub-100ms. If telemetry shows
+/// retrieval cost dominating, swap in `sqlite-vec` or precompute
+/// an in-memory index — the surface API stays the same.
+pub async fn retrieve_semantic(
+    pool: &SqlitePool,
+    workspace_ids: &[i64],
+    query: &str,
+    limit: usize,
+    min_score: f32,
+) -> Vec<GraphHit> {
+    let query = query.trim();
+    if workspace_ids.is_empty() || query.is_empty() || limit == 0 {
+        return Vec::new();
+    }
+
+    let q_vec = match crate::memory::embedder::embed_one(query) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("retrieve_semantic embed failed: {e}");
+            return Vec::new();
+        }
+    };
+
+    // Pull entity_id + display_name + kind + embedding_vector for
+    // every visible non-archived entity. Skip rows without an
+    // embedding (the indexer hasn't reached them yet).
+    let placeholders = (1..=workspace_ids.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT id, display_name, kind, embedding_vector
+         FROM entity
+         WHERE archived_at IS NULL
+           AND embedding_vector IS NOT NULL
+           AND workspace_id IN ({placeholders})"
+    );
+    let mut q = sqlx::query_as::<_, (i64, String, String, Vec<u8>)>(&sql);
+    for ws in workspace_ids {
+        q = q.bind(*ws);
+    }
+    let rows = match q.fetch_all(pool).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("retrieve_semantic query failed: {e}");
+            return Vec::new();
+        }
+    };
+
+    let mut scored: Vec<(f32, i64, String)> = Vec::with_capacity(rows.len());
+    for (id, _name, kind, blob) in rows {
+        let entity_vec = crate::memory::embedder::bytes_to_vec(&blob);
+        if entity_vec.is_empty() || entity_vec.len() != q_vec.len() {
+            continue;
+        }
+        let sim = cosine_similarity(&q_vec, &entity_vec);
+        if sim >= min_score {
+            scored.push((sim, id, kind));
+        }
+    }
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(limit);
+
+    let mut hits = Vec::with_capacity(scored.len());
+    for (_score, id, kind) in scored {
+        if let Some(hit) = build_hit(pool, id, kind).await {
+            hits.push(hit);
+        }
+    }
+    hits
+}
+
+/// Cosine similarity for two equal-length f32 vectors. Returns 0.0
+/// for zero-magnitude inputs rather than NaN.
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let mut dot = 0.0f32;
+    let mut na = 0.0f32;
+    let mut nb = 0.0f32;
+    for (x, y) in a.iter().zip(b.iter()) {
+        dot += x * y;
+        na += x * x;
+        nb += y * y;
+    }
+    let denom = na.sqrt() * nb.sqrt();
+    if denom == 0.0 {
+        0.0
+    } else {
+        dot / denom
+    }
+}
+
 /// Render a list of GraphHits as the GRAPH MEMORY block injected
 /// into the LLM's user message. Returns an empty string when there
 /// are no hits — caller can append the result without a separator.
