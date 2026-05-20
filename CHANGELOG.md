@@ -1,5 +1,44 @@
 # Travis Changelog
 
+## v0.8.0 — LTE contracts: first-class master agreements (2026-05-20)
+
+Promotes contract tracking from a free-text field to a typed table.
+The "don't abstract on n=1" guardrail no longer applies — the COO
+runs multiple master agreements in parallel, and the spec's deferred
+follow-up (`LTE_INVOICING_SPEC.md` §11) ships here. Pack v0.5.0.
+
+### Highlights
+
+- **`contract` table** — ref (unique per workspace), name,
+  counterparty, parent_solicitation, term_start/end, ceiling_cents,
+  signed_at, status (`draft`/`active`/`expired`/`terminated`/
+  `archived`), notes, pdf_path. Primary tab in Manage.
+- **Soft FK on the chain.** `engagement.contract_id`,
+  `work_order.contract_id`, and `purchase_order.contract_id`
+  added. `ON DELETE SET NULL` — deleting a contract leaves its
+  history visible rather than cascading away invoices.
+- **Backfill, no data loss.** Migration 0004 scans existing
+  `engagement.contract_ref` strings, inserts one contract row per
+  distinct ref (workspace-scoped), then sets the FKs by string
+  match. `contract_ref` stays as a display field for legacy.
+- **Two new alerts.** `contract_near_ceiling` (Money): active
+  contracts where invoiced ≥ 90% of `ceiling_cents` (skips
+  ceiling=0). `contract_expiring_soon` (Action): active contracts
+  with `term_end` ≤ 60 days out. Surfaces in Splash like every
+  other LTE alert.
+
+### What does *not* break
+
+- Existing `engagement.contract_ref` strings continue to work and
+  render. The new FK is additive — set the contract on the
+  engagement and downstream WO/PO inherit through the chain.
+- `propose_program_invoice_draft` and all PDF generators are
+  unchanged. They didn't reference contracts directly; the FK
+  routes through the engagement they already use.
+- Spec §11 in `LTE_INVOICING_SPEC.md` is now superseded — leaving
+  the line as a historical note since the rationale shaped the
+  v0.4.0 schema.
+
 ## v0.7.0 — LTE invoicing: document layer + validators + PDFs (2026-05-20)
 
 Closes the post-sale half of the Lead to Empower pack. v0.6.0

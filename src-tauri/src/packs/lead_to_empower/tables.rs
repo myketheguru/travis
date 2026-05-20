@@ -636,6 +636,53 @@ static CATALOG_MODULE: TableDef = TableDef {
 // engagement — one 3 A's run at a school
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// contract — first-class master agreement. Engagements (and through
+// them, work orders, POs, invoices) roll up under a contract for
+// ceiling/expiry reporting. Backfilled from engagement.contract_ref
+// strings by migration 0004.
+// ---------------------------------------------------------------------------
+
+static CONTRACT_FIELDS: &[FieldDef] = &[
+    FieldDef { slug: "id", label: "ID", field_type: FieldType::Integer, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "ref", label: "Contract #", field_type: FieldType::Text, required: true, help: Some("The external identifier — e.g. 'QR179CF'. Must be unique within the workspace."), default_in_list: true },
+    FieldDef { slug: "name", label: "Name", field_type: FieldType::Text, required: false, help: Some("Human-readable name — defaults to the contract # if not set."), default_in_list: true },
+    FieldDef { slug: "counterparty", label: "Counterparty", field_type: FieldType::Text, required: false, help: Some("Who the contract is with — 'NYC DOE', a specific district, a specific school."), default_in_list: true },
+    FieldDef { slug: "parent_solicitation", label: "Parent Solicitation", field_type: FieldType::Text, required: false, help: Some("The bid/MTAC/RFP this contract came out of (e.g. 'MTAC #R1179')."), default_in_list: false },
+    FieldDef { slug: "term_start", label: "Term Start", field_type: FieldType::Date, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "term_end", label: "Term End", field_type: FieldType::Date, required: false, help: Some("Drives the contract_expiring_soon alert at 60 days out."), default_in_list: true },
+    FieldDef { slug: "ceiling_cents", label: "Ceiling", field_type: FieldType::Currency, required: false, help: Some("Total billable ceiling. Drives contract_near_ceiling at 90% burn. Leave 0 to skip ceiling tracking."), default_in_list: true },
+    FieldDef { slug: "signed_at", label: "Signed", field_type: FieldType::Date, required: false, help: None, default_in_list: false },
+    FieldDef {
+        slug: "status",
+        label: "Status",
+        field_type: FieldType::Enum { options: &["draft","active","expired","terminated","archived"] },
+        required: true,
+        help: None,
+        default_in_list: true,
+    },
+    FieldDef { slug: "notes", label: "Notes", field_type: FieldType::LongText, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "pdf_path", label: "PDF Path", field_type: FieldType::Text, required: false, help: Some("Path to the executed contract document."), default_in_list: false },
+    FieldDef { slug: "created_at", label: "Created", field_type: FieldType::Timestamp, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "updated_at", label: "Updated", field_type: FieldType::Timestamp, required: false, help: None, default_in_list: false },
+];
+
+static CONTRACT: TableDef = TableDef {
+    slug: "contract",
+    display_name: "Contracts",
+    singular_name: "Contract",
+    display_field: "ref",
+    entity_kind: None,
+    fields: CONTRACT_FIELDS,
+    primary: true,
+    list_view: ListViewDef {
+        columns: &["ref", "name", "counterparty", "status", "term_end", "ceiling_cents"],
+        default_sort: Some("term_end"),
+        default_sort_dir: SortDir::Asc,
+        page_size: 50,
+    },
+};
+
 static ENGAGEMENT_FIELDS: &[FieldDef] = &[
     FieldDef { slug: "id", label: "ID", field_type: FieldType::Integer, required: false, help: None, default_in_list: false },
     FieldDef { slug: "name", label: "Name", field_type: FieldType::Text, required: true, help: Some("e.g. \"Roosevelt HS — Algebra I implementation 26-27\"."), default_in_list: true },
@@ -648,7 +695,8 @@ static ENGAGEMENT_FIELDS: &[FieldDef] = &[
         help: Some("The 3 A's. Travis advances this from conversation — confirm, don't hand-edit."),
         default_in_list: true,
     },
-    FieldDef { slug: "contract_ref", label: "Contract Ref", field_type: FieldType::Text, required: false, help: Some("e.g. \"MTAC R1179\" or \"NYCPS HS Math — Supt. White\"."), default_in_list: false },
+    FieldDef { slug: "contract_id", label: "Contract", field_type: FieldType::Ref { table: "contract" }, required: false, help: Some("Master agreement this engagement rolls up under. Picks up the contract_ref string at backfill time."), default_in_list: true },
+    FieldDef { slug: "contract_ref", label: "Contract Ref", field_type: FieldType::Text, required: false, help: Some("Free-text display version (legacy). The contract_id FK is the source of truth — set the contract above and this auto-resolves."), default_in_list: false },
     FieldDef { slug: "school_year", label: "School Year", field_type: FieldType::Text, required: false, help: Some("e.g. \"2026-2027\"."), default_in_list: false },
     FieldDef { slug: "metrics_agreement_signed", label: "Metrics Agreement Signed", field_type: FieldType::Bool, required: false, help: Some("The gate between Action Planning and delivery."), default_in_list: true },
     FieldDef { slug: "metrics_signed_on", label: "Metrics Signed On", field_type: FieldType::Date, required: false, help: None, default_in_list: false },
@@ -889,7 +937,8 @@ static COMPANY_PROFILE: TableDef = TableDef {
 static WORK_ORDER_FIELDS: &[FieldDef] = &[
     FieldDef { slug: "id", label: "ID", field_type: FieldType::Integer, required: false, help: None, default_in_list: false },
     FieldDef { slug: "engagement_id", label: "Engagement", field_type: FieldType::Ref { table: "engagement" }, required: true, help: None, default_in_list: true },
-    FieldDef { slug: "contract_ref", label: "Contract #", field_type: FieldType::Text, required: false, help: Some("Snapshot of the engagement's contract reference at WO time."), default_in_list: true },
+    FieldDef { slug: "contract_id", label: "Contract", field_type: FieldType::Ref { table: "contract" }, required: false, help: Some("Master agreement this WO bills against."), default_in_list: false },
+    FieldDef { slug: "contract_ref", label: "Contract #", field_type: FieldType::Text, required: false, help: Some("Snapshot of the engagement's contract reference at WO time (display)."), default_in_list: true },
     FieldDef { slug: "date_issued", label: "Date Issued", field_type: FieldType::Date, required: false, help: None, default_in_list: true },
     FieldDef { slug: "vendor_signed_at", label: "Vendor Signed", field_type: FieldType::DateTime, required: false, help: None, default_in_list: false },
     FieldDef { slug: "vendor_signed_by_name", label: "Signed By (Vendor)", field_type: FieldType::Text, required: false, help: None, default_in_list: false },
@@ -930,6 +979,7 @@ static PURCHASE_ORDER_FIELDS: &[FieldDef] = &[
     FieldDef { slug: "tracking_number", label: "Tracking #", field_type: FieldType::Text, required: false, help: None, default_in_list: false },
     FieldDef { slug: "engagement_id", label: "Engagement", field_type: FieldType::Ref { table: "engagement" }, required: true, help: None, default_in_list: true },
     FieldDef { slug: "work_order_id", label: "Work Order", field_type: FieldType::Ref { table: "work_order" }, required: false, help: Some("The WO that triggered this PO."), default_in_list: false },
+    FieldDef { slug: "contract_id", label: "Contract", field_type: FieldType::Ref { table: "contract" }, required: false, help: Some("Master agreement. Backfilled from the engagement's contract."), default_in_list: false },
     FieldDef { slug: "po_date", label: "PO Date", field_type: FieldType::Date, required: false, help: Some("DOE-side issue date on the PO."), default_in_list: true },
     FieldDef { slug: "activity_start", label: "Activity Start", field_type: FieldType::Date, required: true, help: Some("Billable window opens. Invoice periods must fall inside."), default_in_list: true },
     FieldDef { slug: "activity_end", label: "Activity End", field_type: FieldType::Date, required: true, help: Some("Billable window closes."), default_in_list: true },
@@ -1013,6 +1063,7 @@ pub static TABLES: &[TableDef] = &[
     SIGNING_SHEET,
     INVOICE,
     CATALOG_MODULE,
+    CONTRACT,
     ENGAGEMENT,
     ASSESSMENT,
     ENGAGEMENT_MODULE,

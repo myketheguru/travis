@@ -36,10 +36,11 @@ impl PackHandle for LeadToEmpowerPack {
     }
 
     fn version(&self) -> &'static str {
-        // 0.4.0 — adds the invoicing document layer (work_order,
-        // purchase_order, invoice_line, company_profile) + multi-line
-        // invoice columns. LTE_INVOICING_SPEC.md.
-        "0.4.0"
+        // 0.5.0 — first-class `contract` table with backfill from
+        // existing engagement.contract_ref strings. The
+        // "don't abstract on n=1" guardrail no longer applies — the
+        // COO runs multiple master agreements in parallel.
+        "0.5.0"
     }
 
     fn description(&self) -> &'static str {
@@ -223,6 +224,57 @@ static ALERTS: &[AlertDef] = &[
                      (SELECT invoice_id FROM problems LIMIT 1) AS sample_id \
               FROM problems",
     },
+    // --- Contracts: the burn/expiry pair (slice 6) ----------------------
+    AlertDef {
+        slug: "contract_near_ceiling",
+        label: "Contracts near their billing ceiling",
+        severity: AlertSeverity::Money,
+        // Active contracts where the sum of non-void invoice.amount_cents
+        // (rolled up via engagement.contract_id) is >= 90% of
+        // contract.ceiling_cents. Ceiling 0 is treated as "unset" and
+        // excluded — the alert is for tracked-ceiling contracts only.
+        sql: "WITH burn AS ( \
+                SELECT c.id AS contract_id, c.ref AS ref, c.ceiling_cents AS ceiling, \
+                       COALESCE(SUM(i.amount_cents), 0) AS billed \
+                FROM contract c \
+                LEFT JOIN engagement e ON e.contract_id = c.id \
+                LEFT JOIN invoice i ON i.engagement_id = e.id AND i.status != 'void' \
+                WHERE c.status = 'active' AND c.ceiling_cents > 0 \
+                GROUP BY c.id, c.ref, c.ceiling_cents \
+              ) \
+              SELECT COUNT(*) AS count, \
+                     (SELECT ref FROM burn WHERE billed * 10 >= ceiling * 9 \
+                       ORDER BY (billed * 1.0 / ceiling) DESC LIMIT 1) AS sample_label, \
+                     (SELECT contract_id FROM burn WHERE billed * 10 >= ceiling * 9 \
+                       ORDER BY (billed * 1.0 / ceiling) DESC LIMIT 1) AS sample_id \
+              FROM burn WHERE billed * 10 >= ceiling * 9",
+    },
+    AlertDef {
+        slug: "contract_expiring_soon",
+        label: "Active contracts expiring within 60 days",
+        severity: AlertSeverity::Action,
+        // Active contracts whose term_end falls between today and 60 days
+        // out. Excludes contracts with NULL term_end (term not set means
+        // no expiry tracking, not urgent).
+        sql: "SELECT COUNT(*) AS count, \
+                     (SELECT ref FROM contract \
+                       WHERE status = 'active' \
+                         AND term_end IS NOT NULL \
+                         AND term_end >= date('now') \
+                         AND term_end <= date('now', '+60 day') \
+                       ORDER BY term_end ASC LIMIT 1) AS sample_label, \
+                     (SELECT id FROM contract \
+                       WHERE status = 'active' \
+                         AND term_end IS NOT NULL \
+                         AND term_end >= date('now') \
+                         AND term_end <= date('now', '+60 day') \
+                       ORDER BY term_end ASC LIMIT 1) AS sample_id \
+              FROM contract \
+              WHERE status = 'active' \
+                AND term_end IS NOT NULL \
+                AND term_end >= date('now') \
+                AND term_end <= date('now', '+60 day')",
+    },
     AlertDef {
         slug: "wo_date_outside_school_year",
         label: "Work orders with a date outside the engagement's school year",
@@ -282,6 +334,7 @@ static ALERTS: &[AlertDef] = &[
 const PROGRAM_DELIVERY_SQL: &str = include_str!("migrations/0001_program_delivery.sql");
 const QUOTE_SQL: &str = include_str!("migrations/0002_quote.sql");
 const INVOICING_SQL: &str = include_str!("migrations/0003_invoicing.sql");
+const CONTRACTS_SQL: &str = include_str!("migrations/0004_contracts.sql");
 
 static MIGRATIONS: &[PackMigration] = &[
     PackMigration {
@@ -295,6 +348,10 @@ static MIGRATIONS: &[PackMigration] = &[
     PackMigration {
         name: "0003_invoicing",
         sql: INVOICING_SQL,
+    },
+    PackMigration {
+        name: "0004_contracts",
+        sql: CONTRACTS_SQL,
     },
 ];
 
