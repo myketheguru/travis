@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PresenceOrb } from "../components/PresenceOrb";
+import { ChatReplyBody } from "./ChatReplyBody";
 import { useAppStore } from "../stores/app";
 import { hideOverlay } from "../lib/overlay";
 import {
@@ -432,7 +433,11 @@ export default function Overlay() {
                   <div className="text-pulse-2 text-[10px] tracking-[0.18em] uppercase mb-1">
                     Travis
                   </div>
-                  <p className="text-bone leading-relaxed text-sm">{chatReply}</p>
+                  <ChatReplyBody
+                    reply={chatReply}
+                    onSubmit={(text) => submitText(text)}
+                    disabled={busy}
+                  />
                 </div>
                 <button
                   onClick={() => setChatReply(null)}
