@@ -597,6 +597,425 @@ fn format_qty_msg(qty: f64) -> String {
 }
 
 // ===========================================================================
+// record_coach_hours — chat-first sign-in row creation.
+// Resolves coach (silent create if new — coaches are observational),
+// school (silent), engagement (must exist — billable relationship),
+// optional engagement_module (the scope item this hour served — drives
+// per-module date_list on invoices).
+// ===========================================================================
+
+pub struct RecordCoachHoursHandler;
+
+#[async_trait::async_trait]
+impl ActionHandler for RecordCoachHoursHandler {
+    fn kind(&self) -> &'static str {
+        "lte_record_coach_hours"
+    }
+    async fn apply(
+        &self,
+        pool: &SqlitePool,
+        app: &AppHandle,
+        params_json: &str,
+    ) -> anyhow::Result<Applied> {
+        let state = app.state::<crate::AppState>();
+        let workspace_id = state.workspace.read().await.active_id;
+        apply_record_coach_hours(pool, workspace_id, params_json).await
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CoachHoursParams {
+    coach_name: Option<String>,
+    coach_id: Option<i64>,
+    school_name: Option<String>,
+    school_id: Option<i64>,
+    engagement_id: Option<i64>,
+    engagement_name: Option<String>,
+    /// Module name OR id; pinned to a specific engagement_module so the
+    /// hours roll up to the right invoice line. Optional — untagged
+    /// rows still record but won't show under any invoice_line.
+    module_name: Option<String>,
+    engagement_module_id: Option<i64>,
+    session_date: String,
+    hours: f64,
+    description: Option<String>,
+}
+
+async fn apply_record_coach_hours(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    params_json: &str,
+) -> anyhow::Result<Applied> {
+    let p: CoachHoursParams = serde_json::from_str(params_json)?;
+    if p.session_date.trim().is_empty() {
+        anyhow::bail!("sessionDate is required (YYYY-MM-DD)");
+    }
+    if p.hours <= 0.0 {
+        anyhow::bail!("hours must be positive");
+    }
+
+    let coach_id = if let Some(id) = p.coach_id {
+        id
+    } else if let Some(name) = p.coach_name.as_deref() {
+        resolve_or_create_coach(pool, workspace_id, name).await?.0
+    } else {
+        anyhow::bail!("coachName or coachId is required");
+    };
+
+    let school_id = if let Some(id) = p.school_id {
+        Some(id)
+    } else if let Some(name) = p.school_name.as_deref() {
+        Some(resolve_or_create_school(pool, workspace_id, name).await?.0)
+    } else {
+        None
+    };
+
+    let engagement_id = if let Some(id) = p.engagement_id {
+        Some(id)
+    } else if let Some(name) = p.engagement_name.as_deref() {
+        let like = format!("%{}%", name.to_lowercase());
+        let id: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM engagement
+             WHERE workspace_id = ?1 AND LOWER(name) LIKE ?2
+             ORDER BY updated_at DESC LIMIT 1",
+        )
+        .bind(workspace_id)
+        .bind(like)
+        .fetch_optional(pool)
+        .await?;
+        if id.is_none() {
+            anyhow::bail!(
+                "no engagement matching \"{name}\" — create one first via lte_create_engagement"
+            );
+        }
+        id
+    } else {
+        None
+    };
+
+    // Resolve engagement_module if a module hint was given.
+    let em_id = if let Some(id) = p.engagement_module_id {
+        Some(id)
+    } else if let (Some(eng_id), Some(mname)) = (engagement_id, p.module_name.as_deref()) {
+        let like = format!("%{}%", mname.to_lowercase());
+        sqlx::query_scalar(
+            "SELECT em.id FROM engagement_module em
+             JOIN catalog_module cm ON cm.id = em.module_id
+             WHERE em.engagement_id = ?1
+               AND LOWER(cm.name) LIKE ?2
+             ORDER BY em.id ASC LIMIT 1",
+        )
+        .bind(eng_id)
+        .bind(like)
+        .fetch_optional(pool)
+        .await?
+    } else {
+        None
+    };
+
+    let row_id: i64 = sqlx::query_scalar(
+        "INSERT INTO coach_hours
+            (workspace_id, coach_id, school_id, session_date, hours, description,
+             engagement_id, engagement_module_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) RETURNING id",
+    )
+    .bind(workspace_id)
+    .bind(coach_id)
+    .bind(school_id)
+    .bind(&p.session_date)
+    .bind(p.hours)
+    .bind(p.description.as_deref())
+    .bind(engagement_id)
+    .bind(em_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(Applied {
+        message: format!(
+            "Logged {} h on {} for coach #{coach_id}{}{}.",
+            p.hours,
+            p.session_date,
+            engagement_id.map(|e| format!(" (engagement #{e})")).unwrap_or_default(),
+            em_id.map(|m| format!(" tagged to scope item #{m}")).unwrap_or_default(),
+        ),
+        json: serde_json::json!({
+            "coachHoursId": row_id,
+            "coachId": coach_id,
+            "engagementId": engagement_id,
+            "engagementModuleId": em_id,
+            "hours": p.hours,
+            "sessionDate": p.session_date,
+        })
+        .to_string(),
+    })
+}
+
+// ===========================================================================
+// create_work_order — auto-totals from engagement_module rows.
+// ===========================================================================
+
+pub struct CreateWorkOrderHandler;
+
+#[async_trait::async_trait]
+impl ActionHandler for CreateWorkOrderHandler {
+    fn kind(&self) -> &'static str {
+        "lte_create_work_order"
+    }
+    async fn apply(
+        &self,
+        pool: &SqlitePool,
+        app: &AppHandle,
+        params_json: &str,
+    ) -> anyhow::Result<Applied> {
+        let state = app.state::<crate::AppState>();
+        let workspace_id = state.workspace.read().await.active_id;
+        apply_create_work_order(pool, workspace_id, params_json).await
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkOrderParams {
+    engagement_id: Option<i64>,
+    engagement_name: Option<String>,
+    date_issued: Option<String>,
+    vendor_signed_at: Option<String>,
+    vendor_signed_by_name: Option<String>,
+    school_signed_at: Option<String>,
+    school_signed_by_name: Option<String>,
+    notes: Option<String>,
+}
+
+async fn apply_create_work_order(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    params_json: &str,
+) -> anyhow::Result<Applied> {
+    let p: WorkOrderParams = serde_json::from_str(params_json)?;
+
+    let (eng_id, eng_name, contract_ref): (i64, String, Option<String>) = if let Some(id) = p.engagement_id
+    {
+        let row: Option<(String, Option<String>)> = sqlx::query_as(
+            "SELECT name, contract_ref FROM engagement WHERE id = ?1 AND workspace_id = ?2",
+        )
+        .bind(id)
+        .bind(workspace_id)
+        .fetch_optional(pool)
+        .await?;
+        let (n, cr) = row.ok_or_else(|| anyhow::anyhow!("engagement #{id} not found"))?;
+        (id, n, cr)
+    } else if let Some(name) = p.engagement_name.as_deref() {
+        let like = format!("%{}%", name.to_lowercase());
+        let row: Option<(i64, String, Option<String>)> = sqlx::query_as(
+            "SELECT id, name, contract_ref FROM engagement
+             WHERE workspace_id = ?1 AND LOWER(name) LIKE ?2
+             ORDER BY updated_at DESC LIMIT 1",
+        )
+        .bind(workspace_id)
+        .bind(like)
+        .fetch_optional(pool)
+        .await?;
+        row.ok_or_else(|| anyhow::anyhow!("no engagement matching \"{name}\""))?
+    } else {
+        anyhow::bail!("engagementId or engagementName is required");
+    };
+
+    let total_cents: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(em.qty * CASE WHEN em.agreed_price_cents > 0
+                                            THEN em.agreed_price_cents
+                                            ELSE cm.list_price_cents END), 0)
+         FROM engagement_module em
+         JOIN catalog_module cm ON cm.id = em.module_id
+         WHERE em.engagement_id = ?1",
+    )
+    .bind(eng_id)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+
+    let date_issued = p
+        .date_issued
+        .clone()
+        .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
+
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO work_order
+            (workspace_id, engagement_id, contract_ref, date_issued,
+             vendor_signed_at, vendor_signed_by_name,
+             school_signed_at, school_signed_by_name,
+             total_cents, notes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) RETURNING id",
+    )
+    .bind(workspace_id)
+    .bind(eng_id)
+    .bind(contract_ref.as_deref())
+    .bind(&date_issued)
+    .bind(p.vendor_signed_at.as_deref())
+    .bind(p.vendor_signed_by_name.as_deref())
+    .bind(p.school_signed_at.as_deref())
+    .bind(p.school_signed_by_name.as_deref())
+    .bind(total_cents)
+    .bind(p.notes.as_deref())
+    .fetch_one(pool)
+    .await?;
+
+    Ok(Applied {
+        message: format!(
+            "Created work order #{id} for \"{eng_name}\" dated {date_issued}. Scope totals {}.",
+            fmt_cents(total_cents)
+        ),
+        json: serde_json::json!({
+            "workOrderId": id,
+            "engagementId": eng_id,
+            "dateIssued": date_issued,
+            "totalCents": total_cents,
+        })
+        .to_string(),
+    })
+}
+
+// ===========================================================================
+// create_purchase_order — DOE-issued, received-by-LTE.
+// Optionally links to the work_order that triggered it. activity_start /
+// activity_end define the billable window; the invoice-within-PO-window
+// validator (slice 2) checks against these.
+// ===========================================================================
+
+pub struct CreatePurchaseOrderHandler;
+
+#[async_trait::async_trait]
+impl ActionHandler for CreatePurchaseOrderHandler {
+    fn kind(&self) -> &'static str {
+        "lte_create_purchase_order"
+    }
+    async fn apply(
+        &self,
+        pool: &SqlitePool,
+        app: &AppHandle,
+        params_json: &str,
+    ) -> anyhow::Result<Applied> {
+        let state = app.state::<crate::AppState>();
+        let workspace_id = state.workspace.read().await.active_id;
+        apply_create_purchase_order(pool, workspace_id, params_json).await
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PoParams {
+    po_number: String,
+    suffix: Option<String>,
+    tracking_number: Option<String>,
+    engagement_id: Option<i64>,
+    engagement_name: Option<String>,
+    work_order_id: Option<i64>,
+    po_date: Option<String>,
+    activity_start: String,
+    activity_end: String,
+    deliver_to_attention: Option<String>,
+    deliver_to_address: Option<String>,
+    authorized_by: Option<String>,
+    authorized_at: Option<String>,
+    total_cents: Option<i64>,
+    notes: Option<String>,
+}
+
+async fn apply_create_purchase_order(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    params_json: &str,
+) -> anyhow::Result<Applied> {
+    let p: PoParams = serde_json::from_str(params_json)?;
+    let po_number = p.po_number.trim().to_string();
+    if po_number.is_empty() {
+        anyhow::bail!("poNumber is required");
+    }
+    if p.activity_start > p.activity_end {
+        anyhow::bail!("activityStart must be on or before activityEnd");
+    }
+
+    let eng_id: i64 = if let Some(id) = p.engagement_id {
+        id
+    } else if let Some(name) = p.engagement_name.as_deref() {
+        let like = format!("%{}%", name.to_lowercase());
+        sqlx::query_scalar(
+            "SELECT id FROM engagement
+             WHERE workspace_id = ?1 AND LOWER(name) LIKE ?2
+             ORDER BY updated_at DESC LIMIT 1",
+        )
+        .bind(workspace_id)
+        .bind(like)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("no engagement matching \"{name}\""))?
+    } else {
+        anyhow::bail!("engagementId or engagementName is required");
+    };
+
+    // Default total from engagement_module if not supplied.
+    let total = if let Some(t) = p.total_cents {
+        t
+    } else {
+        sqlx::query_scalar(
+            "SELECT COALESCE(SUM(em.qty * CASE WHEN em.agreed_price_cents > 0
+                                                THEN em.agreed_price_cents
+                                                ELSE cm.list_price_cents END), 0)
+             FROM engagement_module em
+             JOIN catalog_module cm ON cm.id = em.module_id
+             WHERE em.engagement_id = ?1",
+        )
+        .bind(eng_id)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0)
+    };
+
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO purchase_order
+            (workspace_id, engagement_id, work_order_id, po_number, suffix, tracking_number,
+             po_date, activity_start, activity_end,
+             deliver_to_attention, deliver_to_address,
+             authorized_by, authorized_at, total_cents, notes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) RETURNING id",
+    )
+    .bind(workspace_id)
+    .bind(eng_id)
+    .bind(p.work_order_id)
+    .bind(&po_number)
+    .bind(p.suffix.as_deref().unwrap_or("01"))
+    .bind(p.tracking_number.as_deref())
+    .bind(p.po_date.as_deref())
+    .bind(&p.activity_start)
+    .bind(&p.activity_end)
+    .bind(p.deliver_to_attention.as_deref())
+    .bind(p.deliver_to_address.as_deref())
+    .bind(p.authorized_by.as_deref())
+    .bind(p.authorized_at.as_deref())
+    .bind(total)
+    .bind(p.notes.as_deref())
+    .fetch_one(pool)
+    .await?;
+
+    Ok(Applied {
+        message: format!(
+            "Recorded purchase order {} (#{id}), activity {}..{}, total {}.",
+            po_number,
+            p.activity_start,
+            p.activity_end,
+            fmt_cents(total),
+        ),
+        json: serde_json::json!({
+            "purchaseOrderId": id,
+            "poNumber": po_number,
+            "engagementId": eng_id,
+            "totalCents": total,
+        })
+        .to_string(),
+    })
+}
+
+// ===========================================================================
 // create_contract — confirmation-card action for new master agreements.
 // Schools are observational (silent create via lte_find_or_create_school).
 // Contracts commit to a relationship, so they go through the proposal/

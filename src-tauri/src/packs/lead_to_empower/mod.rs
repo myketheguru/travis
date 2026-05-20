@@ -36,11 +36,11 @@ impl PackHandle for LeadToEmpowerPack {
     }
 
     fn version(&self) -> &'static str {
-        // 0.5.0 — first-class `contract` table with backfill from
-        // existing engagement.contract_ref strings. The
-        // "don't abstract on n=1" guardrail no longer applies — the
-        // COO runs multiple master agreements in parallel.
-        "0.5.0"
+        // 0.6.0 — chat-first ops: every step in the LTE chain
+        // (school / contract / engagement / coach hours / WO / PO)
+        // is now a callable LLM action or tool with smart resolution
+        // and confirmation logic. Taylor stops clicking through tabs.
+        "0.6.0"
     }
 
     fn description(&self) -> &'static str {
@@ -72,6 +72,9 @@ impl PackHandle for LeadToEmpowerPack {
             "propose_program_invoice_draft",
             "lte_create_contract",
             "lte_create_engagement",
+            "lte_record_coach_hours",
+            "lte_create_work_order",
+            "lte_create_purchase_order",
         ]
     }
 
@@ -80,6 +83,9 @@ impl PackHandle for LeadToEmpowerPack {
         registry.register(Box::new(actions::ProposeProgramInvoiceDraftHandler));
         registry.register(Box::new(actions::CreateContractHandler));
         registry.register(Box::new(actions::CreateEngagementHandler));
+        registry.register(Box::new(actions::RecordCoachHoursHandler));
+        registry.register(Box::new(actions::CreateWorkOrderHandler));
+        registry.register(Box::new(actions::CreatePurchaseOrderHandler));
     }
 
     fn register_tools(&self, registry: &mut crate::tools::ToolRegistry) {
@@ -479,5 +485,59 @@ RESUMPTION:\n\
 BIAS TOWARD ACTION:\n\
 - If you have enough to draft something with sensible defaults, do\n\
   it and let her edit. Don't ask three questions to be polite. Don't\n\
-  explain the schema; just propose the next thing.\
+  explain the schema; just propose the next thing.\n\
+\n\
+=== Full chain of chat-first actions ===\n\
+\n\
+Every step of the LTE billing chain has a callable handler. Resolve\n\
+parents before children; ask one focused question per gap.\n\
+\n\
+SCHOOLS (observational, silent creates):\n\
+- lte_find_or_create_school — find by name, create silently on miss.\n\
+\n\
+CONTRACTS (relationship-committing, confirm card):\n\
+- lte_find_contract — search ranked.\n\
+- lte_create_contract — propose with confirmation. Default status\n\
+  active, term_end +1 year from start if unset, name = ref.\n\
+\n\
+ENGAGEMENTS (billable, confirm card):\n\
+- lte_find_engagement — search ranked by stage + recency.\n\
+- lte_create_engagement — resolves school silently + contract by ref.\n\
+  Default name '<School> — <SchoolYear>', stage 'assessment'.\n\
+\n\
+COACH HOURS (sign-in rows, confirm card per row OR batch):\n\
+- lte_record_coach_hours — resolves coach (silent create), school,\n\
+  engagement (must exist), engagement_module (so the row tags to the\n\
+  right invoice line). Required: sessionDate, hours. The module tag\n\
+  is what makes the date_list per scope item render on the invoice;\n\
+  if the user mentions which scope item, tag it.\n\
+\n\
+WORK ORDERS (confirm card):\n\
+- lte_create_work_order — resolves engagement; auto-totals from\n\
+  engagement_module rows (SUM(qty * agreed_price)); date_issued\n\
+  defaults to today. Vendor signature defaults from company_profile.\n\
+\n\
+PURCHASE ORDERS (received-from-DOE, confirm card):\n\
+- lte_create_purchase_order — Taylor uploads the PDF separately; this\n\
+  records the metadata so invoices can validate against the activity\n\
+  window. Required: poNumber, activityStart, activityEnd. Suffix\n\
+  defaults to '01'.\n\
+\n\
+INVOICES:\n\
+- propose_program_invoice_draft — already exists; pairs naturally\n\
+  with the rest. Pulls scope from engagement_module, dates from\n\
+  tagged coach_hours, snapshots prices to invoice_line.\n\
+- lte_validate_invoice — runs the draft→sent validators without\n\
+  mutating. Use BEFORE proposing a send.\n\
+\n\
+=== Generic pack bridge ===\n\
+\n\
+When the user asks a question whose home table you don't already\n\
+know:\n\
+- Call `pack_introspect` to list all enabled packs' tables + fields.\n\
+- Call `pack_query` with a filter map to read rows from any table.\n\
+  Workspace clamp is automatic. Validates field names; rejects\n\
+  unknown fields. Useful for arbitrary 'how many ...', 'show me\n\
+  the ...', 'find ... where ...' shape questions across any pack\n\
+  table, not just LTE.\
 ";

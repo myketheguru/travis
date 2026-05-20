@@ -1,5 +1,69 @@
 # Travis Changelog
 
+## v0.9.0 — Chat-first operations + generic pack bridge (2026-05-20)
+
+The COO can drive the entire LTE billing chain through conversation
+without opening a Manage tab. Travis decides per-call whether to
+silent-create or confirm-card, asks one focused question per gap
+with clickable options rather than typed input, ranks ambiguous
+matches by recency + activity, and resumes mid-flow on the next
+turn. Pack v0.6.0.
+
+### Highlights
+
+- **Six new LLM-callable handlers** for the LTE chain. Schools and
+  coaches are observational (silent creates via tools); contracts,
+  engagements, work orders, purchase orders, and coach hours go
+  through action confirmation cards (commit to relationships /
+  billable artifacts).
+- **Four read-only search tools** with ranking + rationale:
+  `lte_find_or_create_school`, `lte_find_contract`,
+  `lte_find_engagement`, `lte_summarize_context`. Each returns
+  ranked candidates so the LLM presents the top match or asks
+  between 2-3.
+- **Generic pack bridge.** `pack_introspect` lists every enabled
+  pack's tables + field schemas; `pack_query` reads rows from any
+  table with safe filters (`eq`/`ne`/`lt`/`lte`/`gt`/`gte`/`like`/
+  `ilike`/`in`/`isNull`/`isNotNull`), workspace-clamped
+  automatically. Field names validated; no SQL injection. Unblocks
+  every "Travis, look up …" question across any current or future
+  pack.
+- **Selection chip UX.** Chat reply parser detects `⊙ ⊕ ⊡ 📅`
+  markers. Single-select chips submit on click; add-new chips
+  styled subtly differently; multi-select accumulates with a "Send
+  selection (N)" button; date chips open the native OS picker and
+  submit the chosen ISO date. Pure markdown convention — zero
+  schema changes; Travis just emits markers in its reply text.
+- **Prompt fragment teaches the loop.** Confirmation policy,
+  ambiguity handling, selection markers, resumption cues, and
+  bias-toward-action are all spelled out so the LLM doesn't need
+  to re-derive intent each turn.
+
+### What this unlocks
+
+> **Taylor:** Create an invoice for PS95.
+>
+> **Travis** (silently creates PS95, finds three active contracts):
+> Saved PS95 as a new school. No engagement yet, and three contracts
+> could fit:
+> - ⊙ QR179CF — Systemwide Services (38% burn)
+> - ⊙ NYCPS HS Math — Supt. White pursuit
+> - ⊙ NYCPS Tutoring
+> - ⊕ New contract
+>
+> **Taylor** *(clicks QR179CF)*
+>
+> **Travis:** Proposing engagement "PS95 — 26-27" under QR179CF.
+> Stage assessment. *(Confirm card.)*
+>
+> *(After confirm…)*
+>
+> What scope items? You can paste from the WO or pick from the
+> catalog: ⊡ Data Coaching, ⊡ Leadership Coaching, ⊡ Instructional
+> Coaching, ⊡ School Assessment …
+
+End-to-end without a click into Manage.
+
 ## v0.8.0 — LTE contracts: first-class master agreements (2026-05-20)
 
 Promotes contract tracking from a free-text field to a typed table.
