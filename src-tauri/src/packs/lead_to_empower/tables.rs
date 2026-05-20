@@ -489,6 +489,46 @@ static INVOICE_FIELDS: &[FieldDef] = &[
         default_in_list: false,
     },
     FieldDef {
+        slug: "engagement_id",
+        label: "Engagement",
+        field_type: FieldType::Ref { table: "engagement" },
+        required: false,
+        help: Some("Tie this invoice to its engagement — drives validators + multi-line drafting."),
+        default_in_list: false,
+    },
+    FieldDef {
+        slug: "purchase_order_id",
+        label: "Purchase Order",
+        field_type: FieldType::Ref { table: "purchase_order" },
+        required: false,
+        help: Some("The PO this invoice bills against. Period checks reference its activity window."),
+        default_in_list: false,
+    },
+    FieldDef {
+        slug: "school_signed_at",
+        label: "Principal Signed",
+        field_type: FieldType::DateTime,
+        required: false,
+        help: Some("Date the school principal countersigned the invoice."),
+        default_in_list: false,
+    },
+    FieldDef {
+        slug: "school_signed_by_name",
+        label: "Signed By (Principal)",
+        field_type: FieldType::Text,
+        required: false,
+        help: None,
+        default_in_list: false,
+    },
+    FieldDef {
+        slug: "submitted_to_polaris_at",
+        label: "Submitted to Polaris",
+        field_type: FieldType::DateTime,
+        required: false,
+        help: Some("Manual marker — set when the invoice is uploaded to the DOE Polaris portal."),
+        default_in_list: false,
+    },
+    FieldDef {
         slug: "notes",
         label: "Notes",
         field_type: FieldType::LongText,
@@ -680,6 +720,7 @@ static ENGAGEMENT_MODULE_FIELDS: &[FieldDef] = &[
     FieldDef { slug: "id", label: "ID", field_type: FieldType::Integer, required: false, help: None, default_in_list: false },
     FieldDef { slug: "engagement_id", label: "Engagement", field_type: FieldType::Ref { table: "engagement" }, required: true, help: None, default_in_list: true },
     FieldDef { slug: "module_id", label: "Module", field_type: FieldType::Ref { table: "catalog_module" }, required: true, help: None, default_in_list: true },
+    FieldDef { slug: "qty", label: "Quantity", field_type: FieldType::Number, required: false, help: Some("Number of module deliveries — e.g. '2 days Data Coaching' = 2.0."), default_in_list: true },
     FieldDef { slug: "planned_start", label: "Planned Start", field_type: FieldType::Date, required: false, help: None, default_in_list: false },
     FieldDef { slug: "planned_end", label: "Planned End", field_type: FieldType::Date, required: false, help: None, default_in_list: false },
     FieldDef { slug: "participant_count", label: "Participants", field_type: FieldType::Integer, required: false, help: None, default_in_list: true },
@@ -699,7 +740,7 @@ static ENGAGEMENT_MODULE: TableDef = TableDef {
     fields: ENGAGEMENT_MODULE_FIELDS,
     primary: false,
     list_view: ListViewDef {
-        columns: &["engagement_id", "module_id", "participant_count", "agreed_price_cents"],
+        columns: &["engagement_id", "module_id", "qty", "agreed_price_cents"],
         default_sort: Some("created_at"),
         default_sort_dir: SortDir::Desc,
         page_size: 50,
@@ -788,11 +829,181 @@ static QUOTE: TableDef = TableDef {
     },
 };
 
+// ===========================================================================
+// Invoicing document layer (LTE_INVOICING_SPEC.md). Tables created by
+// the pack-owned migration 0003_invoicing.sql. The four documents wrap
+// engagement_module scope items into the NYC DOE billing flow:
+// Work Order -> Purchase Order -> Sign-in Sheet (existing) -> Invoice
+// (existing + new columns + invoice_line). company_profile parameterises
+// branding so a sibling consultancy can swap the row and reuse every PDF.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// company_profile — the brand strip pulled by every PDF. Single row per
+// workspace (Settings → Company; not a primary tab — only one row).
+// ---------------------------------------------------------------------------
+
+static COMPANY_PROFILE_FIELDS: &[FieldDef] = &[
+    FieldDef { slug: "id", label: "ID", field_type: FieldType::Integer, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "name", label: "Name", field_type: FieldType::Text, required: true, help: None, default_in_list: true },
+    FieldDef { slug: "legal_name", label: "Legal Name", field_type: FieldType::Text, required: false, help: Some("e.g. 'Lead to Empower LLC' — appears on the invoice 'From' block."), default_in_list: false },
+    FieldDef { slug: "address_line_1", label: "Address Line 1", field_type: FieldType::Text, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "address_line_2", label: "Address Line 2", field_type: FieldType::Text, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "city", label: "City", field_type: FieldType::Text, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "state", label: "State", field_type: FieldType::Text, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "zip", label: "ZIP", field_type: FieldType::Text, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "phone", label: "Phone", field_type: FieldType::Phone, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "email", label: "Email", field_type: FieldType::Email, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "website", label: "Website", field_type: FieldType::Text, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "ein", label: "EIN", field_type: FieldType::Text, required: false, help: Some("Federal Employer Identification Number — appears on the invoice."), default_in_list: false },
+    FieldDef { slug: "nyc_doe_vendor_number", label: "NYC DOE Vendor #", field_type: FieldType::Text, required: false, help: Some("e.g. 'LEA991893' — required on every PO/invoice."), default_in_list: true },
+    FieldDef { slug: "default_contract_ref", label: "Default Contract #", field_type: FieldType::Text, required: false, help: Some("Pre-filled on new engagements (e.g. 'QR179CF')."), default_in_list: true },
+    FieldDef { slug: "tagline", label: "Tagline", field_type: FieldType::Text, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "logo_path", label: "Logo Path", field_type: FieldType::Text, required: false, help: Some("Local path to a PNG/SVG for the invoice letterhead."), default_in_list: false },
+    FieldDef { slug: "default_invoice_signature_authority", label: "Default Signature Authority", field_type: FieldType::Text, required: false, help: Some("Name pre-filled into the invoice 'Authorized by' block."), default_in_list: false },
+    FieldDef { slug: "created_at", label: "Created", field_type: FieldType::Timestamp, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "updated_at", label: "Updated", field_type: FieldType::Timestamp, required: false, help: None, default_in_list: false },
+];
+
+static COMPANY_PROFILE: TableDef = TableDef {
+    slug: "company_profile",
+    display_name: "Company Profile",
+    singular_name: "Company Profile",
+    display_field: "name",
+    entity_kind: None,
+    fields: COMPANY_PROFILE_FIELDS,
+    primary: false,
+    list_view: ListViewDef {
+        columns: &["name", "nyc_doe_vendor_number", "default_contract_ref"],
+        default_sort: Some("name"),
+        default_sort_dir: SortDir::Asc,
+        page_size: 5,
+    },
+};
+
+// ---------------------------------------------------------------------------
+// work_order — the engagement contract artifact. Vendor-issued,
+// school-countersigned. One per engagement.
+// ---------------------------------------------------------------------------
+
+static WORK_ORDER_FIELDS: &[FieldDef] = &[
+    FieldDef { slug: "id", label: "ID", field_type: FieldType::Integer, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "engagement_id", label: "Engagement", field_type: FieldType::Ref { table: "engagement" }, required: true, help: None, default_in_list: true },
+    FieldDef { slug: "contract_ref", label: "Contract #", field_type: FieldType::Text, required: false, help: Some("Snapshot of the engagement's contract reference at WO time."), default_in_list: true },
+    FieldDef { slug: "date_issued", label: "Date Issued", field_type: FieldType::Date, required: false, help: None, default_in_list: true },
+    FieldDef { slug: "vendor_signed_at", label: "Vendor Signed", field_type: FieldType::DateTime, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "vendor_signed_by_name", label: "Signed By (Vendor)", field_type: FieldType::Text, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "school_signed_at", label: "Principal Signed", field_type: FieldType::DateTime, required: false, help: Some("Date the school principal countersigned. Blank means awaiting signature."), default_in_list: true },
+    FieldDef { slug: "school_signed_by_name", label: "Signed By (Principal)", field_type: FieldType::Text, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "total_cents", label: "Total", field_type: FieldType::Currency, required: false, help: Some("Sum of engagement_module qty × agreed_price_cents."), default_in_list: true },
+    FieldDef { slug: "pdf_path", label: "PDF Path", field_type: FieldType::Text, required: false, help: Some("Path to the generated/countersigned WO PDF."), default_in_list: false },
+    FieldDef { slug: "notes", label: "Notes", field_type: FieldType::LongText, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "created_at", label: "Created", field_type: FieldType::Timestamp, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "updated_at", label: "Updated", field_type: FieldType::Timestamp, required: false, help: None, default_in_list: false },
+];
+
+static WORK_ORDER: TableDef = TableDef {
+    slug: "work_order",
+    display_name: "Work Orders",
+    singular_name: "Work Order",
+    display_field: "contract_ref",
+    entity_kind: None,
+    fields: WORK_ORDER_FIELDS,
+    primary: true,
+    list_view: ListViewDef {
+        columns: &["engagement_id", "date_issued", "total_cents", "school_signed_at"],
+        default_sort: Some("date_issued"),
+        default_sort_dir: SortDir::Desc,
+        page_size: 50,
+    },
+};
+
+// ---------------------------------------------------------------------------
+// purchase_order — the school's authorization to bill. Inbound from DOE;
+// Taylor uploads the PDF she receives. One per engagement, typically.
+// ---------------------------------------------------------------------------
+
+static PURCHASE_ORDER_FIELDS: &[FieldDef] = &[
+    FieldDef { slug: "id", label: "ID", field_type: FieldType::Integer, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "po_number", label: "PO Number", field_type: FieldType::Text, required: true, help: Some("The 'WR…' identifier on the DOE Purchase Order."), default_in_list: true },
+    FieldDef { slug: "suffix", label: "Suffix", field_type: FieldType::Text, required: false, help: Some("Almost always '01' in observed data."), default_in_list: false },
+    FieldDef { slug: "tracking_number", label: "Tracking #", field_type: FieldType::Text, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "engagement_id", label: "Engagement", field_type: FieldType::Ref { table: "engagement" }, required: true, help: None, default_in_list: true },
+    FieldDef { slug: "work_order_id", label: "Work Order", field_type: FieldType::Ref { table: "work_order" }, required: false, help: Some("The WO that triggered this PO."), default_in_list: false },
+    FieldDef { slug: "po_date", label: "PO Date", field_type: FieldType::Date, required: false, help: Some("DOE-side issue date on the PO."), default_in_list: true },
+    FieldDef { slug: "activity_start", label: "Activity Start", field_type: FieldType::Date, required: true, help: Some("Billable window opens. Invoice periods must fall inside."), default_in_list: true },
+    FieldDef { slug: "activity_end", label: "Activity End", field_type: FieldType::Date, required: true, help: Some("Billable window closes."), default_in_list: true },
+    FieldDef { slug: "deliver_to_attention", label: "Deliver To (Attention)", field_type: FieldType::Text, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "deliver_to_address", label: "Deliver To (Address)", field_type: FieldType::Text, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "deliver_to_phone", label: "Deliver To (Phone)", field_type: FieldType::Phone, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "special_delivery", label: "Special Delivery", field_type: FieldType::LongText, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "authorized_by", label: "Authorized By", field_type: FieldType::Text, required: false, help: Some("Principal or DOE official who signed."), default_in_list: false },
+    FieldDef { slug: "authorized_at", label: "Authorized On", field_type: FieldType::Date, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "total_cents", label: "Total", field_type: FieldType::Currency, required: false, help: None, default_in_list: true },
+    FieldDef { slug: "pdf_path", label: "PDF Path", field_type: FieldType::Text, required: false, help: Some("Path to the PDF received from the school."), default_in_list: false },
+    FieldDef { slug: "notes", label: "Notes", field_type: FieldType::LongText, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "created_at", label: "Created", field_type: FieldType::Timestamp, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "updated_at", label: "Updated", field_type: FieldType::Timestamp, required: false, help: None, default_in_list: false },
+];
+
+static PURCHASE_ORDER: TableDef = TableDef {
+    slug: "purchase_order",
+    display_name: "Purchase Orders",
+    singular_name: "Purchase Order",
+    display_field: "po_number",
+    entity_kind: None,
+    fields: PURCHASE_ORDER_FIELDS,
+    primary: true,
+    list_view: ListViewDef {
+        columns: &["po_number", "engagement_id", "po_date", "activity_start", "activity_end", "total_cents"],
+        default_sort: Some("po_date"),
+        default_sort_dir: SortDir::Desc,
+        page_size: 50,
+    },
+};
+
+// ---------------------------------------------------------------------------
+// invoice_line — multi-line invoice support. Reached via the invoice
+// detail; not a primary tab. Validators (Slice 2) refuse draft→sent when
+// unit_price_cents diverges from engagement_module.agreed_price_cents.
+// ---------------------------------------------------------------------------
+
+static INVOICE_LINE_FIELDS: &[FieldDef] = &[
+    FieldDef { slug: "id", label: "ID", field_type: FieldType::Integer, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "invoice_id", label: "Invoice", field_type: FieldType::Ref { table: "invoice" }, required: true, help: None, default_in_list: true },
+    FieldDef { slug: "engagement_module_id", label: "Scope Item", field_type: FieldType::Ref { table: "engagement_module" }, required: true, help: None, default_in_list: true },
+    FieldDef { slug: "description", label: "Description", field_type: FieldType::Text, required: true, help: Some("e.g. 'DATA COACHING' — renders on the invoice PDF."), default_in_list: true },
+    FieldDef { slug: "qty", label: "Qty", field_type: FieldType::Number, required: true, help: Some("How much of this scope item is billed on THIS invoice."), default_in_list: true },
+    FieldDef { slug: "unit_price_cents", label: "Unit Price", field_type: FieldType::Currency, required: true, help: Some("Snapshot of engagement_module.agreed_price_cents at billing."), default_in_list: true },
+    FieldDef { slug: "subtotal_cents", label: "Subtotal", field_type: FieldType::Currency, required: true, help: Some("qty × unit_price_cents."), default_in_list: true },
+    FieldDef { slug: "date_list", label: "Dates", field_type: FieldType::LongText, required: false, help: Some("Rendered 'Jan: 29, Feb: 24…' string for the PDF."), default_in_list: false },
+    FieldDef { slug: "sort_order", label: "Sort", field_type: FieldType::Integer, required: false, help: None, default_in_list: false },
+    FieldDef { slug: "created_at", label: "Created", field_type: FieldType::Timestamp, required: false, help: None, default_in_list: false },
+];
+
+static INVOICE_LINE: TableDef = TableDef {
+    slug: "invoice_line",
+    display_name: "Invoice Lines",
+    singular_name: "Invoice Line",
+    display_field: "description",
+    entity_kind: None,
+    fields: INVOICE_LINE_FIELDS,
+    primary: false,
+    list_view: ListViewDef {
+        columns: &["invoice_id", "description", "qty", "unit_price_cents", "subtotal_cents"],
+        default_sort: Some("sort_order"),
+        default_sort_dir: SortDir::Asc,
+        page_size: 50,
+    },
+};
+
 // ---------------------------------------------------------------------------
 // All tables in display order. Billing spine first (existing), then the
 // program-delivery surface: catalog + engagements are primary tabs;
 // assessments / scope items / reviews are secondary (reached via refs);
-// quotes are a primary pre-sale modeling tab.
+// quotes are a primary pre-sale modeling tab. Then the invoicing
+// document layer: work_order and purchase_order are primary; invoice_line
+// is reached via invoice detail; company_profile is Settings-only.
 // ---------------------------------------------------------------------------
 
 pub static TABLES: &[TableDef] = &[
@@ -807,4 +1018,8 @@ pub static TABLES: &[TableDef] = &[
     ENGAGEMENT_MODULE,
     ACCOUNTABILITY_REVIEW,
     QUOTE,
+    WORK_ORDER,
+    PURCHASE_ORDER,
+    INVOICE_LINE,
+    COMPANY_PROFILE,
 ];

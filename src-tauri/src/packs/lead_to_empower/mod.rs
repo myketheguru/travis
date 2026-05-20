@@ -36,9 +36,10 @@ impl PackHandle for LeadToEmpowerPack {
     }
 
     fn version(&self) -> &'static str {
-        // 0.3.0 — adds quote/margin scenarios (Appendix G model) on
-        // top of 0.2.0's program-delivery surface (3 A's + catalog).
-        "0.3.0"
+        // 0.4.0 — adds the invoicing document layer (work_order,
+        // purchase_order, invoice_line, company_profile) + multi-line
+        // invoice columns. LTE_INVOICING_SPEC.md.
+        "0.4.0"
     }
 
     fn description(&self) -> &'static str {
@@ -194,6 +195,7 @@ static ALERTS: &[AlertDef] = &[
 // and stay in core's 0003_domain.sql — see domain/mod.rs.
 const PROGRAM_DELIVERY_SQL: &str = include_str!("migrations/0001_program_delivery.sql");
 const QUOTE_SQL: &str = include_str!("migrations/0002_quote.sql");
+const INVOICING_SQL: &str = include_str!("migrations/0003_invoicing.sql");
 
 static MIGRATIONS: &[PackMigration] = &[
     PackMigration {
@@ -203,6 +205,10 @@ static MIGRATIONS: &[PackMigration] = &[
     PackMigration {
         name: "0002_quote",
         sql: QUOTE_SQL,
+    },
+    PackMigration {
+        name: "0003_invoicing",
+        sql: INVOICING_SQL,
     },
 ];
 
