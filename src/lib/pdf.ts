@@ -18,3 +18,26 @@ export const exportInvoicePdf = (invoiceId: number, destPath: string) =>
  */
 export const exportInvoicePdfPreview = (invoiceId: number) =>
   invoke<string>("export_invoice_pdf_preview", { invoiceId });
+
+/**
+ * Render a Work Order PDF to the user's Downloads folder. Returns the
+ * absolute path. Backend handles the destination — frontend doesn't
+ * pick a path.
+ */
+export const exportWorkOrderPdf = (workOrderId: number) =>
+  invoke<string>("export_work_order_pdf", { workOrderId });
+
+/**
+ * Render a Sign-in Sheet PDF for an engagement + period to the user's
+ * Downloads folder. Returns the absolute path.
+ */
+export const exportSignInSheetPdf = (
+  engagementId: number,
+  periodStart: string,
+  periodEnd: string,
+) =>
+  invoke<string>("export_sign_in_sheet_pdf", {
+    engagementId,
+    periodStart,
+    periodEnd,
+  });
