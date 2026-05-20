@@ -10,6 +10,8 @@ use crate::llm::ToolDef;
 pub mod clipboard;
 pub mod list_open_tasks;
 pub mod open_url;
+pub mod pack_introspect;
+pub mod pack_query;
 pub mod search_memory;
 pub mod web_fetch;
 
@@ -82,6 +84,8 @@ pub fn read_only_registry(packs: &[&dyn crate::packs::PackHandle]) -> ToolRegist
     reg.register(Box::new(list_open_tasks::ListOpenTasksTool));
     reg.register(Box::new(clipboard::ReadClipboardTool));
     reg.register(Box::new(open_url::OpenUrlTool));
+    reg.register(Box::new(pack_introspect::PackIntrospectTool));
+    reg.register(Box::new(pack_query::PackQueryTool));
     for pack in packs {
         pack.register_tools(&mut reg);
     }

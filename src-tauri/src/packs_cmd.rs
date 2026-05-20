@@ -537,7 +537,7 @@ fn lookup_table<'a>(
         .ok_or_else(|| format!("table {table_slug} not declared by pack {pack_slug}"))
 }
 
-fn row_to_json(row: &sqlx::sqlite::SqliteRow, fields: &[packs::FieldDef]) -> serde_json::Value {
+pub fn row_to_json(row: &sqlx::sqlite::SqliteRow, fields: &[packs::FieldDef]) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
     for f in fields {
         let value = column_to_json(row, f);
