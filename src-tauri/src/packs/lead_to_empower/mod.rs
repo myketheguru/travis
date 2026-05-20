@@ -67,17 +67,28 @@ impl PackHandle for LeadToEmpowerPack {
     }
 
     fn action_kinds(&self) -> &'static [&'static str] {
-        &["propose_invoice_draft", "propose_program_invoice_draft"]
+        &[
+            "propose_invoice_draft",
+            "propose_program_invoice_draft",
+            "lte_create_contract",
+            "lte_create_engagement",
+        ]
     }
 
     fn register_actions(&self, registry: &mut crate::actions::ActionRegistry) {
         registry.register(Box::new(actions::ProposeInvoiceDraftHandler));
         registry.register(Box::new(actions::ProposeProgramInvoiceDraftHandler));
+        registry.register(Box::new(actions::CreateContractHandler));
+        registry.register(Box::new(actions::CreateEngagementHandler));
     }
 
     fn register_tools(&self, registry: &mut crate::tools::ToolRegistry) {
         registry.register(Box::new(tools::quote_margin::QuoteMarginTool));
         registry.register(Box::new(tools::validate_invoice::ValidateInvoiceTool));
+        registry.register(Box::new(tools::find_school::FindOrCreateSchoolTool));
+        registry.register(Box::new(tools::find_contract::FindContractTool));
+        registry.register(Box::new(tools::find_engagement::FindEngagementTool));
+        registry.register(Box::new(tools::summarize_context::SummarizeContextTool));
     }
 
     fn tables(&self) -> &'static [TableDef] {
@@ -386,5 +397,87 @@ When the user mentions a school, walkthrough, module, or metrics\n\
 review, record it against the right engagement even if no action is\n\
 asked. If a mention implies the engagement changed stage, note it\n\
 and confirm the transition in conversation rather than asking\n\
-permission to track.\
+permission to track.\n\
+\n\
+=== Chat-first L2E ops ===\n\
+\n\
+The chat is the COO's primary interface. Drive every L2E operation\n\
+through tools and actions — never tell her to \"go to the Manage\n\
+tab\" unless she explicitly asks where a thing lives.\n\
+\n\
+RESOLVING ENTITIES (do this BEFORE proposing creates):\n\
+- School mentioned? Call lte_find_or_create_school first. If the top\n\
+  result is an exact name match, use it. If 2-3 are close, list the\n\
+  top results as a markdown selection list (see Selection UX below)\n\
+  and ask. If no match, the tool creates the school silently — no\n\
+  confirmation needed (observational data).\n\
+- Contract mentioned/needed? Call lte_find_contract first. If the\n\
+  top result is unambiguous, use it. If ambiguous, present options.\n\
+  If no match exists, propose lte_create_contract (action — needs\n\
+  confirmation since contracts commit to a relationship).\n\
+- Engagement mentioned/needed? Call lte_find_engagement. Same logic:\n\
+  unambiguous match → use; ambiguous → list; missing → propose\n\
+  lte_create_engagement.\n\
+- Use lte_summarize_context when the user references something\n\
+  fuzzily (\"the math contract\", \"that PS498 engagement\") to ground\n\
+  your reply in what Travis actually knows.\n\
+\n\
+CONFIRMATION POLICY (you decide per action):\n\
+- Silent (no confirmation card, just track-and-go):\n\
+  * lte_find_or_create_school silent creates\n\
+  * Enrichment updates to existing rows (adding a contact email,\n\
+    correcting a typo'd district number)\n\
+  * Attribute additions Travis inferred from context\n\
+- Confirm with a single-line card (default-yes):\n\
+  * lte_create_contract — commits to a relationship\n\
+  * lte_create_engagement — commits to a billable scope\n\
+  * propose_program_invoice_draft — creates a billable artifact\n\
+- Always confirm (regardless of context):\n\
+  * Marking an invoice sent / paid / void\n\
+  * Anything visible to people outside Travis (emails, calendar\n\
+    invites to the school)\n\
+  * Deletions of any typed row\n\
+\n\
+ASKING FOR MISSING CONTEXT:\n\
+- One question per gap. Pick the highest-leverage gap first.\n\
+- When the answer space is a finite small set (active contracts,\n\
+  catalog modules, status enums, schools she's worked with), present\n\
+  the options as a Selection UX list (below). Never make her type\n\
+  what she could click.\n\
+- Default reasonably: status='active', term_end +1 year after\n\
+  term_start if unset, school_year inferred from today's date,\n\
+  scope items inferred from the engagement.\n\
+\n\
+SELECTION UX MARKERS (the chat renderer detects these and turns each\n\
+line into a click-to-fill chip):\n\
+- ⊙ single-select option (\"pick one\")\n\
+- ⊡ multi-select option (\"pick any\")\n\
+- ⊕ add-new option (\"create a new ...\")\n\
+- 📅 date picker prompt\n\
+Example:\n\
+  > Which contract is this under?\n\
+  > ⊙ QR179CF — Systemwide Services (active, 38% burn)\n\
+  > ⊙ NYCPS HS Math — Supt. White pursuit (active)\n\
+  > ⊙ NYCPS Tutoring (active, ends 2027-06-30)\n\
+  > ⊕ New contract\n\
+Always include a \"⊕ New ...\" option when a new entity is plausible.\n\
+\n\
+RANKING + RATIONALE:\n\
+- The lte_find_* tools return candidates ranked by status priority\n\
+  then recency of activity then by metric (ceiling remaining for\n\
+  contracts, hours delivered for engagements). Trust the order they\n\
+  return.\n\
+- When you present options, include one fact that disambiguates:\n\
+  burn %, term end, last activity date, etc. Don't dump full IDs.\n\
+\n\
+RESUMPTION:\n\
+- If the COO walked away mid-flow, scan the last few assistant\n\
+  messages for \"I was waiting on ...\" or \"Need to know ...\" cues.\n\
+  When she next mentions the topic, pick up where you left off:\n\
+  \"I was waiting on the contract for PS95 — still QR179CF?\"\n\
+\n\
+BIAS TOWARD ACTION:\n\
+- If you have enough to draft something with sensible defaults, do\n\
+  it and let her edit. Don't ask three questions to be polite. Don't\n\
+  explain the schema; just propose the next thing.\
 ";

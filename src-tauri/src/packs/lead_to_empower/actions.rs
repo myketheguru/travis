@@ -595,3 +595,284 @@ fn format_qty_msg(qty: f64) -> String {
         format!("{qty}")
     }
 }
+
+// ===========================================================================
+// create_contract — confirmation-card action for new master agreements.
+// Schools are observational (silent create via lte_find_or_create_school).
+// Contracts commit to a relationship, so they go through the proposal/
+// confirmation flow even when Travis has all the data.
+// ===========================================================================
+
+pub struct CreateContractHandler;
+
+#[async_trait::async_trait]
+impl ActionHandler for CreateContractHandler {
+    fn kind(&self) -> &'static str {
+        "lte_create_contract"
+    }
+    async fn apply(
+        &self,
+        pool: &SqlitePool,
+        app: &AppHandle,
+        params_json: &str,
+    ) -> anyhow::Result<Applied> {
+        let state = app.state::<crate::AppState>();
+        let workspace_id = state.workspace.read().await.active_id;
+        apply_create_contract(pool, workspace_id, params_json).await
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateContractParams {
+    /// External ref (e.g. "QR179CF"). Required. Uppercased + trimmed on save.
+    contract_ref: String,
+    name: Option<String>,
+    counterparty: Option<String>,
+    parent_solicitation: Option<String>,
+    term_start: Option<String>,
+    term_end: Option<String>,
+    ceiling_cents: Option<i64>,
+    status: Option<String>,
+    notes: Option<String>,
+}
+
+async fn apply_create_contract(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    params_json: &str,
+) -> anyhow::Result<Applied> {
+    let p: CreateContractParams = serde_json::from_str(params_json)?;
+    let r = p.contract_ref.trim().to_uppercase();
+    if r.is_empty() {
+        anyhow::bail!("contractRef is required");
+    }
+
+    // Idempotent: if a contract with this ref already exists in this
+    // workspace, return it instead of erroring out. Lets Travis re-issue
+    // the same action safely on a retry.
+    let existing: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM contract WHERE workspace_id = ?1 AND ref = ?2",
+    )
+    .bind(workspace_id)
+    .bind(&r)
+    .fetch_optional(pool)
+    .await?;
+
+    if let Some(id) = existing {
+        return Ok(Applied {
+            message: format!("Contract {r} already exists (#{id}). No change."),
+            json: serde_json::json!({ "contractId": id, "ref": r, "wasCreated": false })
+                .to_string(),
+        });
+    }
+
+    let status = p.status.as_deref().unwrap_or("active");
+    let name = p.name.as_deref().unwrap_or(&r);
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO contract
+            (workspace_id, ref, name, counterparty, parent_solicitation,
+             term_start, term_end, ceiling_cents, status, notes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) RETURNING id",
+    )
+    .bind(workspace_id)
+    .bind(&r)
+    .bind(name)
+    .bind(p.counterparty.as_deref())
+    .bind(p.parent_solicitation.as_deref())
+    .bind(p.term_start.as_deref())
+    .bind(p.term_end.as_deref())
+    .bind(p.ceiling_cents.unwrap_or(0))
+    .bind(status)
+    .bind(p.notes.as_deref())
+    .fetch_one(pool)
+    .await?;
+
+    Ok(Applied {
+        message: format!(
+            "Created contract {r} (#{id}, {status}){}{}",
+            p.counterparty
+                .as_deref()
+                .map(|c| format!(" with {c}"))
+                .unwrap_or_default(),
+            p.term_end
+                .as_deref()
+                .map(|t| format!(", ends {t}"))
+                .unwrap_or_default(),
+        ),
+        json: serde_json::json!({
+            "contractId": id,
+            "ref": r,
+            "status": status,
+            "wasCreated": true,
+        })
+        .to_string(),
+    })
+}
+
+// ===========================================================================
+// create_engagement — confirmation-card action for new engagements.
+// Resolves school + contract first (creating school silently if missing,
+// resolving contract by ref), then inserts the engagement linking both.
+// ===========================================================================
+
+pub struct CreateEngagementHandler;
+
+#[async_trait::async_trait]
+impl ActionHandler for CreateEngagementHandler {
+    fn kind(&self) -> &'static str {
+        "lte_create_engagement"
+    }
+    async fn apply(
+        &self,
+        pool: &SqlitePool,
+        app: &AppHandle,
+        params_json: &str,
+    ) -> anyhow::Result<Applied> {
+        let state = app.state::<crate::AppState>();
+        let workspace_id = state.workspace.read().await.active_id;
+        apply_create_engagement(pool, workspace_id, params_json).await
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateEngagementParams {
+    /// School name OR id. If name and no match, school is created silently.
+    school_name: Option<String>,
+    school_id: Option<i64>,
+    /// Contract ref OR id. Optional — engagement can exist without a
+    /// contract link initially (Travis will surface that as a gap).
+    contract_ref: Option<String>,
+    contract_id: Option<i64>,
+    /// Engagement display name. Defaults to "<School> — <School Year>"
+    /// when omitted.
+    name: Option<String>,
+    school_year: Option<String>,
+    stage: Option<String>,
+    summary: Option<String>,
+}
+
+async fn apply_create_engagement(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    params_json: &str,
+) -> anyhow::Result<Applied> {
+    let p: CreateEngagementParams = serde_json::from_str(params_json)?;
+
+    // ----- resolve school -----
+    let (school_id, school_name) = if let Some(id) = p.school_id {
+        let name: String =
+            sqlx::query_scalar("SELECT name FROM school WHERE id = ?1 AND workspace_id = ?2")
+                .bind(id)
+                .bind(workspace_id)
+                .fetch_optional(pool)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("school #{id} not found in workspace"))?;
+        (Some(id), name)
+    } else if let Some(name) = p.school_name.as_deref() {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            anyhow::bail!("schoolName cannot be empty");
+        }
+        let existing: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM school WHERE workspace_id = ?1
+             AND LOWER(TRIM(name)) = LOWER(TRIM(?2)) LIMIT 1",
+        )
+        .bind(workspace_id)
+        .bind(trimmed)
+        .fetch_optional(pool)
+        .await?;
+        let id = if let Some(id) = existing {
+            id
+        } else {
+            sqlx::query_scalar(
+                "INSERT INTO school (workspace_id, name) VALUES (?1, ?2) RETURNING id",
+            )
+            .bind(workspace_id)
+            .bind(trimmed)
+            .fetch_one(pool)
+            .await?
+        };
+        (Some(id), trimmed.to_string())
+    } else {
+        anyhow::bail!("schoolName or schoolId is required");
+    };
+
+    // ----- resolve contract (optional) -----
+    let (contract_id, contract_ref_resolved) = if let Some(id) = p.contract_id {
+        let r: Option<String> =
+            sqlx::query_scalar("SELECT ref FROM contract WHERE id = ?1 AND workspace_id = ?2")
+                .bind(id)
+                .bind(workspace_id)
+                .fetch_optional(pool)
+                .await?;
+        (Some(id), r)
+    } else if let Some(r) = p.contract_ref.as_deref() {
+        let trimmed = r.trim().to_uppercase();
+        let existing: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM contract WHERE workspace_id = ?1 AND ref = ?2",
+        )
+        .bind(workspace_id)
+        .bind(&trimmed)
+        .fetch_optional(pool)
+        .await?;
+        if existing.is_none() {
+            anyhow::bail!(
+                "contract {trimmed} not found — create it first via lte_create_contract"
+            );
+        }
+        (existing, Some(trimmed))
+    } else {
+        (None, None)
+    };
+
+    let school_year = p.school_year.as_deref().unwrap_or("");
+    let display_name = p.name.clone().unwrap_or_else(|| {
+        if !school_year.is_empty() {
+            format!("{school_name} — {school_year}")
+        } else {
+            school_name.clone()
+        }
+    });
+    let stage = p.stage.as_deref().unwrap_or("assessment");
+
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO engagement
+            (workspace_id, name, school_id, stage, contract_ref, school_year, contract_id, summary)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) RETURNING id",
+    )
+    .bind(workspace_id)
+    .bind(&display_name)
+    .bind(school_id)
+    .bind(stage)
+    .bind(contract_ref_resolved.as_deref())
+    .bind(if school_year.is_empty() {
+        None
+    } else {
+        Some(school_year)
+    })
+    .bind(contract_id)
+    .bind(p.summary.as_deref())
+    .fetch_one(pool)
+    .await?;
+
+    let contract_note = contract_ref_resolved
+        .as_deref()
+        .map(|r| format!(", under contract {r}"))
+        .unwrap_or_else(|| " (no contract linked yet)".to_string());
+
+    Ok(Applied {
+        message: format!(
+            "Created engagement \"{display_name}\" (#{id}, stage {stage}) at {school_name}{contract_note}."
+        ),
+        json: serde_json::json!({
+            "engagementId": id,
+            "schoolId": school_id,
+            "contractId": contract_id,
+            "name": display_name,
+            "stage": stage,
+        })
+        .to_string(),
+    })
+}
