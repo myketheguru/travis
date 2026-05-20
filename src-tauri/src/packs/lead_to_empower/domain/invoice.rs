@@ -25,6 +25,13 @@ pub struct Invoice {
     pub notes: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    // Added in pack migration 0003_invoicing — nullable, present on
+    // multi-line program-delivery invoices and used by Slice 2 validators.
+    pub engagement_id: Option<i64>,
+    pub purchase_order_id: Option<i64>,
+    pub school_signed_at: Option<String>,
+    pub school_signed_by_name: Option<String>,
+    pub submitted_to_polaris_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,7 +70,9 @@ pub async fn list(
     let sql = format!(
         "SELECT id, workspace_id, number, recipient, coach_id, school_id, signing_sheet_id,
                 period_start, period_end, hours_total, rate_cents, amount_cents,
-                status, issued_at, paid_at, notes, created_at, updated_at
+                status, issued_at, paid_at, notes, created_at, updated_at,
+                engagement_id, purchase_order_id, school_signed_at, school_signed_by_name,
+                submitted_to_polaris_at
          FROM invoice
          WHERE (?1 IS NULL OR status = ?1)
            AND (?2 IS NULL OR coach_id = ?2)
@@ -202,7 +211,9 @@ pub async fn fetch_one(pool: &SqlitePool, id: i64) -> Result<Invoice, DomainErro
     let row = sqlx::query_as::<_, Invoice>(
         "SELECT id, workspace_id, number, recipient, coach_id, school_id, signing_sheet_id,
                 period_start, period_end, hours_total, rate_cents, amount_cents,
-                status, issued_at, paid_at, notes, created_at, updated_at
+                status, issued_at, paid_at, notes, created_at, updated_at,
+                engagement_id, purchase_order_id, school_signed_at, school_signed_by_name,
+                submitted_to_polaris_at
          FROM invoice WHERE id=?1",
     )
     .bind(id)
@@ -281,6 +292,26 @@ pub async fn transition_status(
 }
 
 async fn validate_for_send(pool: &SqlitePool, invoice: &Invoice) -> Result<(), DomainError> {
+    // Program-delivery invoices carry invoice_line rows and bill multiple
+    // catalog modules; their unit prices come from engagement_module, not
+    // a single coach.rate_cents. Detect that shape first and dispatch to
+    // the right validator set. Single-line/single-coach (after-school
+    // enrichment, the legacy shape) stays on the original checks.
+    let line_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM invoice_line WHERE invoice_id = ?1")
+        .bind(invoice.id)
+        .fetch_one(pool)
+        .await?;
+
+    if line_count > 0 {
+        validate_lines_match_scope(pool, invoice.id).await?;
+        validate_invoice_line_arithmetic(pool, invoice).await?;
+        if let Some(po_id) = invoice.purchase_order_id {
+            validate_within_po_window(pool, invoice, po_id).await?;
+        }
+        return Ok(());
+    }
+
+    // ----- legacy single-line / single-coach validation -------------------
     let coach_id = invoice
         .coach_id
         .ok_or_else(|| DomainError::invalid("invoice has no coach assigned"))?;
@@ -346,5 +377,195 @@ async fn validate_for_send(pool: &SqlitePool, invoice: &Invoice) -> Result<(), D
         )));
     }
 
+    // Legacy invoices may also link to a PO; same window rule applies.
+    if let Some(po_id) = invoice.purchase_order_id {
+        validate_within_po_window(pool, invoice, po_id).await?;
+    }
+
     Ok(())
+}
+
+// ----- multi-line (program-delivery) validators ---------------------------
+//
+// These checks operationalise LTE_INVOICING_SPEC.md §6. Each one
+// surfaces a specific, fix-shaped error message — the PS 498 sample
+// would refuse with a clear "Leadership Coaching is $2,993 in the
+// catalog, not $5,013.30" rather than a generic 400.
+
+/// Every invoice_line's unit_price_cents must equal the engagement_module's
+/// agreed_price_cents (or the catalog list price when agreed is 0). This
+/// is the check that catches the PS 498 invoice's Leadership Coaching
+/// row being billed at the Instructional Coaching total ($5,013.30
+/// instead of $2,993).
+async fn validate_lines_match_scope(pool: &SqlitePool, invoice_id: i64) -> Result<(), DomainError> {
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        description: String,
+        line_unit_price: i64,
+        agreed_price: i64,
+        catalog_list_price: i64,
+        catalog_name: String,
+    }
+    let rows = sqlx::query_as::<_, Row>(
+        "SELECT il.description AS description,
+                il.unit_price_cents AS line_unit_price,
+                em.agreed_price_cents AS agreed_price,
+                cm.list_price_cents AS catalog_list_price,
+                cm.name AS catalog_name
+         FROM invoice_line il
+         JOIN engagement_module em ON em.id = il.engagement_module_id
+         JOIN catalog_module cm ON cm.id = em.module_id
+         WHERE il.invoice_id = ?1",
+    )
+    .bind(invoice_id)
+    .fetch_all(pool)
+    .await?;
+
+    for r in rows {
+        let expected = if r.agreed_price > 0 { r.agreed_price } else { r.catalog_list_price };
+        if r.line_unit_price != expected {
+            return Err(DomainError::invalid(format!(
+                "{}: unit price is {} but the catalog/agreed price is {}. \
+                 Looks like a copy from the wrong line — fix the line's unit price before sending.",
+                r.description,
+                fmt_cents(r.line_unit_price),
+                fmt_cents(expected),
+            )));
+        }
+        // Also sanity-check the description against the catalog so a
+        // scope-item swap doesn't go undetected at the PDF stage.
+        if !description_matches_catalog(&r.description, &r.catalog_name) {
+            return Err(DomainError::invalid(format!(
+                "Line description \"{}\" doesn't match the catalog module \"{}\" — \
+                 was the wrong scope item linked?",
+                r.description, r.catalog_name
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Each invoice_line's subtotal must equal qty × unit_price (rounded to
+/// cents), and the invoice header's amount_cents must equal the sum of
+/// all line subtotals. Catches the PS 498 case where qty 2 × $2,993
+/// should have been $5,986 but the row claimed $5,013.30.
+async fn validate_invoice_line_arithmetic(pool: &SqlitePool, invoice: &Invoice) -> Result<(), DomainError> {
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        description: String,
+        qty: f64,
+        unit_price_cents: i64,
+        subtotal_cents: i64,
+    }
+    let lines = sqlx::query_as::<_, Row>(
+        "SELECT description, qty, unit_price_cents, subtotal_cents
+         FROM invoice_line WHERE invoice_id = ?1",
+    )
+    .bind(invoice.id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut total: i64 = 0;
+    for l in &lines {
+        let expected = (l.qty * l.unit_price_cents as f64).round() as i64;
+        if (l.subtotal_cents - expected).abs() > 0 {
+            return Err(DomainError::invalid(format!(
+                "{}: qty {} × {} = {}, but the line subtotal is {}. The math on the invoice doesn't agree with itself.",
+                l.description,
+                l.qty,
+                fmt_cents(l.unit_price_cents),
+                fmt_cents(expected),
+                fmt_cents(l.subtotal_cents),
+            )));
+        }
+        total += l.subtotal_cents;
+    }
+
+    if invoice.amount_cents != total {
+        return Err(DomainError::invalid(format!(
+            "Invoice total is {} but the line subtotals add to {}. Recompute the header total before sending.",
+            fmt_cents(invoice.amount_cents),
+            fmt_cents(total),
+        )));
+    }
+
+    Ok(())
+}
+
+/// Invoice period must fall inside the linked PO's activity window.
+/// Catches "billing for work outside what the PO authorized" — one of
+/// the failure modes implied by Jacob's memory-driven tracking.
+async fn validate_within_po_window(pool: &SqlitePool, invoice: &Invoice, po_id: i64) -> Result<(), DomainError> {
+    #[derive(sqlx::FromRow)]
+    struct PoWindow {
+        po_number: String,
+        activity_start: String,
+        activity_end: String,
+    }
+    let po: Option<PoWindow> = sqlx::query_as(
+        "SELECT po_number, activity_start, activity_end FROM purchase_order WHERE id = ?1",
+    )
+    .bind(po_id)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(po) = po else {
+        return Err(DomainError::invalid(format!("linked purchase order #{po_id} not found")));
+    };
+
+    if invoice.period_start < po.activity_start || invoice.period_end > po.activity_end {
+        return Err(DomainError::invalid(format!(
+            "Invoice covers {}..{} but PO {} only authorizes {}..{}. Move the work outside the window onto another PO before sending.",
+            invoice.period_start,
+            invoice.period_end,
+            po.po_number,
+            po.activity_start,
+            po.activity_end,
+        )));
+    }
+    Ok(())
+}
+
+/// Display-format cents like "$2,993.00". Matches the convention in
+/// `pdf::fmt_money` so error messages and PDF text line up visually.
+fn fmt_cents(cents: i64) -> String {
+    let neg = cents < 0;
+    let abs = cents.unsigned_abs() as u128;
+    let dollars = abs / 100;
+    let frac = abs % 100;
+    let dollars_str = {
+        let raw = dollars.to_string();
+        let bytes = raw.as_bytes();
+        let mut out = String::with_capacity(raw.len() + raw.len() / 3);
+        let len = bytes.len();
+        for (i, b) in bytes.iter().enumerate() {
+            if i > 0 && (len - i) % 3 == 0 {
+                out.push(',');
+            }
+            out.push(*b as char);
+        }
+        out
+    };
+    if neg {
+        format!("-${}.{:02}", dollars_str, frac)
+    } else {
+        format!("${}.{:02}", dollars_str, frac)
+    }
+}
+
+/// Lightly-normalised string comparison so "DATA COACHING" matches
+/// "Data Coaching" matches "Data Coaching Module". Catalog names in
+/// migration 0001 include the "Module" suffix; invoice descriptions
+/// usually drop it. Compare on lowercased prefix-or-substring.
+fn description_matches_catalog(line_desc: &str, catalog_name: &str) -> bool {
+    let l = line_desc.trim().to_ascii_lowercase();
+    let c = catalog_name.trim().to_ascii_lowercase();
+    if l == c {
+        return true;
+    }
+    let c_stripped = c.trim_end_matches(" module").trim();
+    if l == c_stripped {
+        return true;
+    }
+    l.contains(c_stripped) || c_stripped.contains(&l)
 }

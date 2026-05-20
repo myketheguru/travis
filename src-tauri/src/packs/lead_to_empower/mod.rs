@@ -187,6 +187,90 @@ static ALERTS: &[AlertDef] = &[
                 AND NOT EXISTS (SELECT 1 FROM assessment a \
                                  WHERE a.engagement_id = e.id)",
     },
+    // --- Invoicing: the "is the billing tidy?" set (LTE_INVOICING_SPEC §7)
+    AlertDef {
+        slug: "overlapping_invoice_period",
+        label: "Invoices with overlapping periods or outside their PO window",
+        severity: AlertSeverity::Money,
+        // Solves Jacob-goes-from-memory: two non-void invoices for the
+        // same engagement cover overlapping date ranges, OR an invoice
+        // period falls outside its linked PO's activity window. Scope is
+        // engagement_id (not school_id) — a school can host multiple
+        // engagements in parallel (math + science + ELA), so two POs in
+        // the same week are normal as long as they're different engagements.
+        sql: "WITH problems AS ( \
+                SELECT i1.id AS invoice_id, i1.number AS sample_label \
+                FROM invoice i1 \
+                JOIN invoice i2 \
+                  ON i1.engagement_id IS NOT NULL \
+                 AND i1.engagement_id = i2.engagement_id \
+                 AND i1.id < i2.id \
+                 AND i1.status != 'void' AND i2.status != 'void' \
+                 AND i1.period_end >= i2.period_start \
+                 AND i1.period_start <= i2.period_end \
+                UNION \
+                SELECT i.id AS invoice_id, i.number AS sample_label \
+                FROM invoice i \
+                JOIN purchase_order po ON po.id = i.purchase_order_id \
+                WHERE i.status != 'void' \
+                  AND (i.period_start < po.activity_start \
+                       OR i.period_end > po.activity_end) \
+              ) \
+              SELECT COUNT(*) AS count, \
+                     (SELECT sample_label FROM problems LIMIT 1) AS sample_label, \
+                     (SELECT invoice_id FROM problems LIMIT 1) AS sample_id \
+              FROM problems",
+    },
+    AlertDef {
+        slug: "wo_date_outside_school_year",
+        label: "Work orders with a date outside the engagement's school year",
+        severity: AlertSeverity::Action,
+        // Catches the PS 498-style 02/15/2025-vs-2026 typo. We parse
+        // engagement.school_year as the first four chars (\"2026-2027\"
+        // -> \"2026\") and check that the WO date's year is within
+        // [start_year, start_year+1]. Schools with malformed school_year
+        // values (NULL, empty, non-numeric) are skipped — the alert
+        // is for fixing typos, not for hassling about unset fields.
+        sql: "SELECT COUNT(*) AS count, \
+                     (SELECT contract_ref FROM work_order wo \
+                       JOIN engagement e ON e.id = wo.engagement_id \
+                       WHERE wo.date_issued IS NOT NULL \
+                         AND e.school_year IS NOT NULL \
+                         AND LENGTH(e.school_year) >= 4 \
+                         AND CAST(substr(e.school_year, 1, 4) AS INTEGER) > 0 \
+                         AND ( \
+                            CAST(substr(wo.date_issued, 1, 4) AS INTEGER) \
+                              < CAST(substr(e.school_year, 1, 4) AS INTEGER) \
+                            OR CAST(substr(wo.date_issued, 1, 4) AS INTEGER) \
+                              > CAST(substr(e.school_year, 1, 4) AS INTEGER) + 1 \
+                         ) \
+                       ORDER BY wo.id ASC LIMIT 1) AS sample_label, \
+                     (SELECT wo.id FROM work_order wo \
+                       JOIN engagement e ON e.id = wo.engagement_id \
+                       WHERE wo.date_issued IS NOT NULL \
+                         AND e.school_year IS NOT NULL \
+                         AND LENGTH(e.school_year) >= 4 \
+                         AND CAST(substr(e.school_year, 1, 4) AS INTEGER) > 0 \
+                         AND ( \
+                            CAST(substr(wo.date_issued, 1, 4) AS INTEGER) \
+                              < CAST(substr(e.school_year, 1, 4) AS INTEGER) \
+                            OR CAST(substr(wo.date_issued, 1, 4) AS INTEGER) \
+                              > CAST(substr(e.school_year, 1, 4) AS INTEGER) + 1 \
+                         ) \
+                       ORDER BY wo.id ASC LIMIT 1) AS sample_id \
+              FROM work_order wo \
+              JOIN engagement e ON e.id = wo.engagement_id \
+              WHERE wo.date_issued IS NOT NULL \
+                AND e.school_year IS NOT NULL \
+                AND LENGTH(e.school_year) >= 4 \
+                AND CAST(substr(e.school_year, 1, 4) AS INTEGER) > 0 \
+                AND ( \
+                   CAST(substr(wo.date_issued, 1, 4) AS INTEGER) \
+                     < CAST(substr(e.school_year, 1, 4) AS INTEGER) \
+                   OR CAST(substr(wo.date_issued, 1, 4) AS INTEGER) \
+                     > CAST(substr(e.school_year, 1, 4) AS INTEGER) + 1 \
+                )",
+    },
 ];
 
 // Pack-owned migrations. Numbering is independent of core's
