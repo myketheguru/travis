@@ -66,15 +66,17 @@ impl PackHandle for LeadToEmpowerPack {
     }
 
     fn action_kinds(&self) -> &'static [&'static str] {
-        &["propose_invoice_draft"]
+        &["propose_invoice_draft", "propose_program_invoice_draft"]
     }
 
     fn register_actions(&self, registry: &mut crate::actions::ActionRegistry) {
         registry.register(Box::new(actions::ProposeInvoiceDraftHandler));
+        registry.register(Box::new(actions::ProposeProgramInvoiceDraftHandler));
     }
 
     fn register_tools(&self, registry: &mut crate::tools::ToolRegistry) {
         registry.register(Box::new(tools::quote_margin::QuoteMarginTool));
+        registry.register(Box::new(tools::validate_invoice::ValidateInvoiceTool));
     }
 
     fn tables(&self) -> &'static [TableDef] {

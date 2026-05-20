@@ -5,3 +5,4 @@
 //! confirmation gate (they never write).
 
 pub mod quote_margin;
+pub mod validate_invoice;

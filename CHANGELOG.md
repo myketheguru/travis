@@ -1,5 +1,64 @@
 # Travis Changelog
 
+## v0.7.0 — LTE invoicing: document layer + validators + PDFs (2026-05-20)
+
+Closes the post-sale half of the Lead to Empower pack. v0.6.0
+modeled what LTE sells (catalog) and how it delivers (the 3 A's);
+this release handles **turning delivered work into a paid invoice**
+through the NYC DOE four-document chain — Work Order → Purchase
+Order → Sign-in Sheet → Invoice → Polaris submission.
+
+Driven by the COO's recorded walkthrough and the PS/MS 498 sample
+documents (PO `WR260363316`, invoice `LTE2064981`). Spec:
+`LTE_INVOICING_SPEC.md`. Pack version `0.4.0`.
+
+### Highlights
+
+- **The document layer.** Two new typed tables — `work_order`
+  (vendor-issued, school-countersigned) and `purchase_order`
+  (DOE-issued, received) — both linked to engagements and pulling
+  line items from `engagement_module` (no schema duplication).
+  `invoice_line` table for multi-module invoices with snapshot
+  qty + unit_price so post-send scope edits don't rewrite history.
+  `engagement_module.qty` (NEW) captures billable units per module.
+- **Three deterministic validators at draft→sent.** Catalog/agreed
+  unit-price match (catches the PS 498 Leadership-billed-at-
+  Instructional-rate error); per-line arithmetic (catches the
+  qty × price ≠ subtotal mismatch); period-within-PO-window. Refuses
+  the transition with a *fix-shaped* message, not a generic 400.
+- **Two new alerts.** `overlapping_invoice_period` — engagement-
+  scoped (so multi-engagement schools don't false-positive), covers
+  same-date double-billing, period overlap, and outside-PO-window
+  in one cast. Solves Jacob-goes-from-memory. `wo_date_outside_
+  school_year` catches the 02/15/2025-vs-2026 typo.
+- **Three PDF generators.** Work Order in NYC DOE format,
+  Sign-in Sheet in LTE table layout (replaces Taylor's Excel
+  cleanup dance entirely), Invoice in LTE letterhead (replaces
+  Canva). All write to Downloads. All branding parameterised from
+  `company_profile` — a sibling consulting firm swaps the row and
+  reuses every template.
+- **Settings → Company.** Single-row edit form for company_profile.
+  Edit once; every WO / sign-in sheet / invoice picks up the new
+  values automatically.
+- **`propose_program_invoice_draft` action.** Builds multi-line
+  invoices from an engagement + period: resolves engagement,
+  picks the covering PO, computes remaining billable qty per
+  scope item (planned − already billed), formats the date list
+  per module from coach_hours, inserts the invoice + invoice_line
+  rows. The "draft this month's invoices" handler.
+- **`lte_validate_invoice` LLM tool.** Read-only — runs the same
+  draft→sent validators against a draft and reports the verdict
+  conversationally. Travis can use it before suggesting send.
+
+### Migration
+
+Pack-owned migration `0003_invoicing.sql`. Creates 4 tables,
+ALTERs 3 existing (engagement_module, invoice, coach_hours), all
+additive with safe defaults. Pre-existing data stays intact.
+First-install seeds the `company_profile` row with LTE defaults
+(verbatim from the MTAC #R1179 application package); upgrades
+keep any existing row via `INSERT OR IGNORE`.
+
 ## v0.6.0 — LTE program delivery: the 3 A's, catalog & quotes (2026-05-19)
 
 The Lead to Empower pack modeled only the billing spine (coaches,
