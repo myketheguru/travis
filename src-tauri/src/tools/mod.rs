@@ -8,6 +8,7 @@ use crate::db::Db;
 use crate::llm::ToolDef;
 
 pub mod clipboard;
+pub mod graph_neighbors;
 pub mod list_open_tasks;
 pub mod open_url;
 pub mod pack_introspect;
@@ -86,6 +87,7 @@ pub fn read_only_registry(packs: &[&dyn crate::packs::PackHandle]) -> ToolRegist
     reg.register(Box::new(open_url::OpenUrlTool));
     reg.register(Box::new(pack_introspect::PackIntrospectTool));
     reg.register(Box::new(pack_query::PackQueryTool));
+    reg.register(Box::new(graph_neighbors::GraphNeighborsTool));
     for pack in packs {
         pack.register_tools(&mut reg);
     }
