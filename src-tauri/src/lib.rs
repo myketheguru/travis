@@ -302,6 +302,28 @@ pub fn run() {
             proactive::spawn(handle.clone(), db_arc.clone(), http.clone(), health_arc.clone());
             graph_indexer::spawn(db_arc.clone());
 
+            // Memory consolidation tick (BRAIN.md Phase 4.5 #3).
+            // Periodic pass that turns each entity's event cloud into
+            // a stable summary claim — keeps retrieval from getting
+            // noisier as usage accumulates. Fires every 30 minutes;
+            // each tick processes at most 25 stale entities.
+            {
+                let pool = db_arc.pool.clone();
+                tauri::async_runtime::spawn(async move {
+                    // Wait 60s on startup so we don't compete with
+                    // first-boot migrations or extraction warmup.
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    loop {
+                        let n = crate::memory::consolidate::run_tick(&pool).await;
+                        if n > 0 {
+                            tracing::info!("memory consolidate: refreshed {n} entit{}",
+                                if n == 1 { "y" } else { "ies" });
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(30 * 60)).await;
+                    }
+                });
+            }
+
             // Auto-close idle conversations: fire once at startup, then
             // daily. Cheap UPDATE; no side effects beyond status change.
             {

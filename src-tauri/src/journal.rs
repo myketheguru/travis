@@ -279,6 +279,28 @@ pub struct Extraction {
     /// entity rows on persist.
     #[serde(default)]
     pub generic_entities: Vec<GenericEntity>,
+    /// Typed facts about specific entities extracted from the note
+    /// (BRAIN.md Phase 4.5 #2). Each is persisted to the `claim`
+    /// table so it survives across sessions and surfaces in retrieval.
+    #[serde(default)]
+    pub entity_facts: Vec<ExtractedEntityFact>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractedEntityFact {
+    /// Entity name as the LLM extracted it. Resolved to entity_id on persist.
+    pub entity: String,
+    /// Optional second entity for relational facts.
+    #[serde(default)]
+    pub other_entity: Option<String>,
+    /// Predicate slug — role, relationship, contact, context, etc.
+    pub predicate: String,
+    /// The fact's value (short phrase).
+    pub value: String,
+    /// LLM-assigned confidence: high/medium/low.
+    #[serde(default)]
+    pub confidence: Option<String>,
 }
 
 /// One chip surfaced in the capture overlay when the LLM extraction
@@ -510,6 +532,21 @@ fn build_extraction_tool(action_kinds: &[&str], entity_kinds: &[&str]) -> ToolDe
                             "contextSnippet": { "type": ["string", "null"], "description": "Optional short snippet showing where in the note the name appeared." }
                         },
                         "required": ["name", "kind"]
+                    }
+                },
+                "entityFacts": {
+                    "type": "array",
+                    "description": "Typed facts you learned about specific entities in this note — role, relationship, contact, context, preference, etc. ONLY include facts that are stated or strongly implied. Travis persists each as a 'claim' so it survives across sessions. Skip mere mentions — those are already in entities/genericEntities. Examples: { entity: 'Maria', predicate: 'role', value: 'math coach at PS 142', confidence: 'high' }; { entity: 'Carlos', predicate: 'preference', value: 'prefers email over phone', confidence: 'medium' }.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "entity": { "type": "string", "description": "The entity this fact is about — name as the user wrote it." },
+                            "otherEntity": { "type": ["string", "null"], "description": "Optional second entity for relational facts (e.g. 'Maria coaches at PS 142' → entity=Maria, otherEntity=PS 142)." },
+                            "predicate": { "type": "string", "description": "Short slug — 'role', 'relationship', 'contact', 'context', 'preference', etc. Invent new ones when needed." },
+                            "value": { "type": "string", "description": "The fact's value as a short phrase." },
+                            "confidence": { "type": "string", "enum": ["high", "medium", "low"], "description": "high = explicitly stated, medium = strongly implied, low = single weak signal." }
+                        },
+                        "required": ["entity", "predicate", "value"]
                     }
                 }
             },
@@ -1777,6 +1814,59 @@ pub async fn journal_ingest(
                             "spine event sync (generic mention) for entity {eid}: {e}"
                         );
                     }
+                }
+            }
+
+            // Persist entity_facts as claims (BRAIN.md Phase 4.5 #2).
+            // The LLM extracted typed facts about entities Travis already
+            // recognised this turn; map each fact back to the matching
+            // entity by case-insensitive name and write it as a claim.
+            // Facts that don't match a known entity are dropped silently
+            // — better to miss than to attach to the wrong row.
+            for f in &extraction.entity_facts {
+                let entity_id = match identity::find_by_normalized_name(
+                    &state.db.pool,
+                    dest_ws_id,
+                    &f.entity,
+                )
+                .await
+                {
+                    Some((eid, _, _)) => eid,
+                    None => continue,
+                };
+                let other_id = if let Some(other) = f.other_entity.as_deref() {
+                    identity::find_by_normalized_name(&state.db.pool, dest_ws_id, other)
+                        .await
+                        .map(|(eid, _, _)| eid)
+                } else {
+                    None
+                };
+                let predicate = f.predicate.trim().to_lowercase();
+                let value = f.value.trim().to_string();
+                if predicate.is_empty() || value.is_empty() {
+                    continue;
+                }
+                let confidence = f
+                    .confidence
+                    .as_deref()
+                    .map(|c| c.trim().to_lowercase())
+                    .filter(|c| matches!(c.as_str(), "high" | "medium" | "low"));
+                if let Err(e) = crate::memory::claims::upsert(
+                    &state.db.pool,
+                    crate::memory::claims::ClaimInput {
+                        workspace_id: dest_ws_id,
+                        entity_id,
+                        other_entity_id: other_id,
+                        predicate,
+                        value,
+                        confidence,
+                        source: Some("extraction".into()),
+                        source_journal_entry_id: Some(entry_id),
+                    },
+                )
+                .await
+                {
+                    tracing::warn!("claims upsert for entity {entity_id}: {e}");
                 }
             }
 

@@ -33,6 +33,20 @@ pub struct GraphHit {
     pub related_entities: Vec<RelatedEntity>,
     /// Graded certainty Travis can quote rather than asserting flat.
     pub confidence: ConfidenceBand,
+    /// Persisted reasoning conclusions about this entity (Phase 4.5 #7).
+    /// Up to 5 active claims sorted by confidence then recency. Empty
+    /// when the entity is new or no reasoning has fired yet.
+    pub claims: Vec<ClaimSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimSummary {
+    pub predicate: String,
+    pub value: String,
+    pub confidence: String,
+    pub source: String,
+    pub contested: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -249,6 +263,27 @@ async fn build_hit(pool: &SqlitePool, entity_id: i64, kind: String) -> Option<Gr
     related.sort_by(|a, b| b.co_mention_count.cmp(&a.co_mention_count));
     related.truncate(2);
 
+    // Active claims for this entity (Phase 4.5 #7).
+    let workspace_id: i64 =
+        sqlx::query_scalar("SELECT workspace_id FROM entity WHERE id = ?1")
+            .bind(entity_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+    let claim_rows = crate::memory::claims::for_entity(pool, workspace_id, entity_id, 5).await;
+    let claims: Vec<ClaimSummary> = claim_rows
+        .into_iter()
+        .map(|c| ClaimSummary {
+            predicate: c.predicate,
+            value: c.value,
+            confidence: c.confidence,
+            source: c.source,
+            contested: c.contested == 1,
+        })
+        .collect();
+
     Some(GraphHit {
         entity_id,
         display_name,
@@ -259,6 +294,7 @@ async fn build_hit(pool: &SqlitePool, entity_id: i64, kind: String) -> Option<Gr
         recent_mention_snippets,
         related_entities: related,
         confidence,
+        claims,
     })
 }
 
@@ -530,6 +566,16 @@ pub fn format_for_prompt(hits: &[GraphHit]) -> String {
                 .collect();
             out.push_str(&parts.join(", "));
             out.push('\n');
+        }
+        for c in &h.claims {
+            let contested = if c.contested { " [contested]" } else { "" };
+            out.push_str(&format!(
+                "    [{conf} confidence, {src}] {pred}: {val}{contested}\n",
+                conf = c.confidence,
+                src = c.source,
+                pred = c.predicate,
+                val = c.value,
+            ));
         }
     }
     out
