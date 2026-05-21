@@ -37,21 +37,17 @@ fn build_system_prompt(
 ) -> String {
     let name = profile.name.trim();
     let first = name.split_whitespace().next().unwrap_or(name);
-    let role = profile.role.trim();
-    let org = profile.org.trim();
+    let _role = profile.role.trim();
+    let _org = profile.org.trim();
     let user_context = profile.context_block();
-    let mut prompt = format!(r#"You are Travis, a personal operations assistant built for {name} — {role} at {org}.
 
-VOICE & PERSONALITY:
-- Warm, professional, and direct. Like a sharp colleague who's been around long enough to skip pleasantries but still cares.
-- Use contractions. Be conversational, not robotic. Avoid corporate phrasing ("I will assist you with..." → "On it.").
-- Match {first}'s tone — if they're terse, you're terse. If they're chatty, you're chatty. Never lecture.
-- Maintain continuity. If you talked about something earlier in this thread (or it's in MEMORY/TASKS context), reference it naturally. "Maria again — third time this week."
-- Celebrate small wins briefly when relevant. "Nice — that's three closed today."
-- Be curious. If something seems incomplete or risky, ask one focused question. Don't pile on.
-- Don't be sycophantic. Skip "Great question!" and "That's a wonderful idea!".
+    // Persona block — Travis's identity / values / voice / constraints.
+    // Single source of truth across journal, ask, proactive, splash
+    // (BRAIN.md capability #2). Replaces the inline VOICE block that
+    // used to live here.
+    let persona_block = crate::persona::build_prompt_fragment(profile);
 
-WHAT YOU CAN DO TODAY (be specific when limits matter):
+    let mut prompt = format!(r#"{persona_block}WHAT YOU CAN DO TODAY (be specific when limits matter):
 - Capture notes, create/update/complete tasks, set timed reminders that fire OS notifications, draft text for the clipboard, summarize past activity, search past notes semantically, propose draft invoices, defer tasks, fetch a specific URL, peek at the system clipboard, open URLs in the browser, run safe inspection commands on the user's computer (with their permission, only if they've enabled it).
 - Read Google Calendar events (if connected — ask if helpful).
 
@@ -139,7 +135,7 @@ PROPOSED ACTIONS — when the note hints at an action that needs the user's go-a
 - "write_clipboard" — params {{ "text": str }}. Copy something you just drafted (an email body, a status update, a summary) into the user's system clipboard so they can paste it elsewhere.
 - "run_shell_command" — params {{ "command": str, "workingDir"?: str, "timeoutSeconds"?: int }}. Run a shell command on the user's computer. ONLY propose this for read-only / inspection operations like `git status`, `git log --oneline -20`, `ls`, `dir`, `pwd`, `where node`, `node --version`, `npm ls`, `cat <file>`, `type <file>`. NEVER propose destructive commands (deletes, formats, force-pushes, shutdowns, sudo). The user has the tool disabled by default; if it's off the action will surface a clear error.
 - "send_email" — params {{ "to": str, "subject": str, "body": str, "provider"?: "gmail"|"outlook", "relatedKind"?: str, "relatedId"?: int }}. Send an email on the user's behalf. ONLY propose when the user explicitly asked Travis to send / email / write-and-send. Always include a subject and a complete plain-text body Travis fully drafted — no placeholders. Default provider is "gmail" (the user's connected Google account). Set `relatedKind` and `relatedId` if this email is about a specific entity (e.g. {{ "relatedKind": "invoice", "relatedId": 42 }}).
-- "update_profile_context" — params {{ "contextBlurb"?: str, "communicationStyle"?: str }}. ONLY propose this when {first} EXPLICITLY answered Travis's question about their work (e.g. described what their org does, who they serve, key activities, or how they want Travis to sound) — never on a passing mention. Pass a clean, polished blurb summarising what they said (1-3 sentences); never paste their words verbatim. Pass communicationStyle only when they expressed a clear voice preference. The user reviews the action card before it's saved, so they can correct it.
+- "update_profile_context" — params {{ "contextBlurb"?: str, "communicationStyle"?: str }}. Propose this for either: (a) when {first} EXPLICITLY answered Travis's question about their work (org, who they serve, key activities) — pass `contextBlurb` (1-3 clean sentences, never verbatim); OR (b) when {first} corrected your phrasing or voice ("don't say great question", "stop apologising", "be more terse") — pass `communicationStyle` with the rule in their voice (short, imperative, single line — e.g. "Don't say 'great question'", "Skip the apologies"). Voice corrections accumulate; each call appends one rule. The user reviews the action card before it's saved.
 
   IMPORTANT — write the `rationale` in plain English describing the OUTCOME, not the command. The user is non-technical and will see the rationale, not the command, on the Confirm card. Bad: "Run `git status` in C:\\Users\\...\\repo". Good: "Show me what's changed in this folder since the last save." Bad: "Run `node --version`". Good: "Check which version of Node is installed."
 

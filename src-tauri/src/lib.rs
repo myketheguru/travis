@@ -11,6 +11,7 @@ mod data_export_cmd;
 mod db;
 mod domain;
 mod identity_cmd_recall;
+mod persona;
 mod email;
 mod email_cmd;
 mod feedback;

@@ -314,7 +314,33 @@ async fn apply_update_profile_context(
         prof.context_blurb = if b.is_empty() { None } else { Some(b) };
     }
     if let Some(s) = new_style {
-        prof.communication_style = if s.is_empty() { None } else { Some(s) };
+        // Voice corrections accumulate rather than overwrite (BRAIN.md
+        // capability #2 slice 2b). Each correction is one bullet line.
+        // Dedup: skip if the new text already appears verbatim in the
+        // existing field. Bound: keep the last 10 lines so the prompt
+        // doesn't grow without limit.
+        prof.communication_style = if s.is_empty() {
+            prof.communication_style.clone()
+        } else {
+            let existing = prof.communication_style.as_deref().unwrap_or("").trim();
+            if existing.is_empty() {
+                Some(format!("- {s}"))
+            } else if existing
+                .lines()
+                .any(|l| l.trim().trim_start_matches('-').trim().eq_ignore_ascii_case(s.trim()))
+            {
+                Some(existing.to_string())
+            } else {
+                let mut lines: Vec<String> =
+                    existing.lines().map(|l| l.to_string()).collect();
+                lines.push(format!("- {s}"));
+                if lines.len() > 10 {
+                    let drop = lines.len() - 10;
+                    lines.drain(0..drop);
+                }
+                Some(lines.join("\n"))
+            }
+        };
     }
 
     sqlx::query(
