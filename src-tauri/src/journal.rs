@@ -284,6 +284,19 @@ pub struct Extraction {
     /// table so it survives across sessions and surfaces in retrieval.
     #[serde(default)]
     pub entity_facts: Vec<ExtractedEntityFact>,
+    /// Hypothesis-grade notes Travis writes to working memory for
+    /// the next ~30 minutes of this conversation (Phase 4.5 #6).
+    #[serde(default)]
+    pub hypotheses: Vec<ExtractedHypothesis>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractedHypothesis {
+    pub topic: String,
+    pub note: String,
+    #[serde(default)]
+    pub confidence: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -532,6 +545,19 @@ fn build_extraction_tool(action_kinds: &[&str], entity_kinds: &[&str]) -> ToolDe
                             "contextSnippet": { "type": ["string", "null"], "description": "Optional short snippet showing where in the note the name appeared." }
                         },
                         "required": ["name", "kind"]
+                    }
+                },
+                "hypotheses": {
+                    "type": "array",
+                    "description": "Short notes-to-self you want to remember across the next few turns of THIS conversation. Hypothesis-grade only — guesses you'd refine as more evidence comes in, NOT facts (facts go in entityFacts and get persisted permanently). Each lives 30 minutes in working memory. Example: { topic: 'PS498 invoice scope', note: 'Looks like Data + Leadership coaching only; waiting on confirmation', confidence: 'medium' }. Use sparingly — one or two per turn at most.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "topic": { "type": "string", "description": "Short tag — what this hypothesis is about." },
+                            "note": { "type": "string", "description": "The hypothesis itself, in your own voice." },
+                            "confidence": { "type": "string", "enum": ["high", "medium", "low"] }
+                        },
+                        "required": ["topic", "note"]
                     }
                 },
                 "entityFacts": {
@@ -1294,6 +1320,13 @@ pub async fn journal_ingest(
 
     let graph_block = memory::graph::format_for_prompt(&graph_hits);
 
+    // Working memory block (BRAIN.md Phase 4.5 #6). Surfaces the
+    // hypotheses Travis has written to itself earlier in this
+    // conversation, so multi-turn reasoning can revise/firm up rather
+    // than re-derive from scratch.
+    let working_hypotheses = state.working_memory.for_conversation(conv_id).await;
+    let working_block = memory::working::format_for_prompt(&working_hypotheses);
+
     let workspace_block = crate::workspaces::prompt_context_block(
         &state.db.pool,
         ws_snapshot.active_id,
@@ -1331,7 +1364,7 @@ pub async fn journal_ingest(
     };
 
     let user_msg = format!(
-        "Today is {today}.\n\nOPEN TASKS (id · title):\n{open}\n\nRELEVANT MEMORY:\n{mem}\n\n{graph}{ws}New turn:\n{raw}",
+        "Today is {today}.\n\nOPEN TASKS (id · title):\n{open}\n\nRELEVANT MEMORY:\n{mem}\n\n{graph}{working}{ws}New turn:\n{raw}",
         today = today_local(),
         open = format_open_tasks(&open_tasks),
         mem = format_memory(&mem_hits),
@@ -1339,6 +1372,11 @@ pub async fn journal_ingest(
             String::new()
         } else {
             format!("{graph_block}\n")
+        },
+        working = if working_block.is_empty() {
+            String::new()
+        } else {
+            format!("{working_block}\n")
         },
         ws = if workspace_options_block.is_empty() {
             String::new()
@@ -1815,6 +1853,33 @@ pub async fn journal_ingest(
                         );
                     }
                 }
+            }
+
+            // Persist hypotheses into working memory (Phase 4.5 #6).
+            // Hypothesis-grade notes-to-self for the next ~30 minutes
+            // of this conversation; lost on restart, not facts.
+            for h in &extraction.hypotheses {
+                let topic = h.topic.trim();
+                let note = h.note.trim();
+                if topic.is_empty() || note.is_empty() {
+                    continue;
+                }
+                let conf = h
+                    .confidence
+                    .as_deref()
+                    .map(|c| c.trim().to_lowercase())
+                    .filter(|c| matches!(c.as_str(), "high" | "medium" | "low"))
+                    .unwrap_or_else(|| "medium".to_string());
+                state
+                    .working_memory
+                    .record(
+                        conv_id,
+                        topic.to_string(),
+                        note.to_string(),
+                        conf,
+                        mentioned_entities.clone(),
+                    )
+                    .await;
             }
 
             // Persist entity_facts as claims (BRAIN.md Phase 4.5 #2).

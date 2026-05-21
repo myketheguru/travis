@@ -616,6 +616,14 @@ static CATALOG_MODULE_FIELDS: &[FieldDef] = &[
     FieldDef { slug: "updated_at", label: "Updated", field_type: FieldType::Timestamp, required: false, help: None, default_in_list: false },
 ];
 
+// Catalog is reference data — 21 priced modules from MTAC #R1179.
+// User can edit prices when LTE re-prices, but doesn't browse daily.
+// Per `feedback_minimal_surfaces` — surfaces appear in Manage only
+// when actively managed. Travis answers catalog questions through
+// chat (e.g. "what's the price of Data Coaching?"). Marked
+// primary: false; rows still queryable via pack_query / lte_*
+// tools and editable via auto-CRUD endpoints, just not a sidebar
+// tab.
 static CATALOG_MODULE: TableDef = TableDef {
     slug: "catalog_module",
     display_name: "Catalog",
@@ -623,7 +631,7 @@ static CATALOG_MODULE: TableDef = TableDef {
     display_field: "name",
     entity_kind: Some("module"),
     fields: CATALOG_MODULE_FIELDS,
-    primary: true,
+    primary: false,
     list_view: ListViewDef {
         columns: &["line_no", "name", "pillar", "list_price_cents"],
         default_sort: Some("line_no"),
