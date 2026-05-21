@@ -2074,6 +2074,43 @@ pub async fn journal_ingest(
     )
     .await;
 
+    // Inference-driven clarifying question (BRAIN.md Phase 4.5 #10).
+    // When the LLM didn't already produce a question and we have room,
+    // poll the inference helpers for a high-leverage one to slot in:
+    // refinement candidates (`*:unknown` entities with enough mentions
+    // to warrant categorisation), then name conflicts. One per turn,
+    // chosen by highest mentions_count.
+    if extraction.clarifying_questions.len() < 2 {
+        if let Ok(candidates) = crate::graph_inference::recurring_mention_candidates(
+            &state.db.pool,
+            &ws_snapshot.visible_ids,
+            1,
+        )
+        .await
+        {
+            if let Some(c) = candidates.into_iter().next() {
+                let base_kind = c.kind.split(':').next().unwrap_or("entity");
+                let suggestions = match base_kind {
+                    "person" => "coach, parent, teacher, principal, or someone else",
+                    "place" => "school, district office, vendor site, or somewhere else",
+                    "org" => "school, district, vendor, or something else",
+                    _ => "what kind of thing",
+                };
+                let q = format!(
+                    "I've seen \"{}\" come up {} times now — is this a {}?",
+                    c.display_name, c.mentions_count, suggestions
+                );
+                extraction.clarifying_questions.push(q);
+                // Stamp so we don't ask again within the cooldown window.
+                let _ = crate::graph_inference::mark_clarification_prompted(
+                    &state.db.pool,
+                    c.entity_id,
+                )
+                .await;
+            }
+        }
+    }
+
     // Conversation status: awaiting the user if there are clarifying questions
     // OR pending action proposals, resolved on conversational small-talk
     // (without gaps to surface), otherwise open for next note.

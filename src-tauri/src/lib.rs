@@ -10,6 +10,7 @@ mod data_export;
 mod data_export_cmd;
 mod db;
 mod domain;
+mod identity_cmd_recall;
 mod email;
 mod email_cmd;
 mod feedback;
@@ -68,6 +69,9 @@ pub struct AppState {
     /// active workspace or toggles a workspace's `cross_visible`
     /// flag. See WORKSPACES.md.
     pub workspace: Arc<tokio::sync::RwLock<workspaces::State>>,
+    /// In-process working memory — per-conversation hypothesis store
+    /// (BRAIN.md Phase 4.5 #6). 30-min TTL; lost on restart by design.
+    pub working_memory: memory::working::WorkingMemory,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -228,6 +232,7 @@ pub fn run() {
                 actions: actions_arc,
                 enabled_packs,
                 workspace: workspace_arc,
+                working_memory: memory::working::WorkingMemory::new(),
             });
 
             handle.global_shortcut().register(primary_shortcut)?;
@@ -428,6 +433,7 @@ pub fn run() {
             data_export_cmd::export_data,
             data_export_cmd::reveal_export,
             identity_cmd::list_entities,
+            identity_cmd_recall::recall_entity,
             identity_cmd::get_profile_blurb,
             #[cfg(feature = "pack-lead-to-empower")] pdf_cmd::export_invoice_pdf,
             #[cfg(feature = "pack-lead-to-empower")] pdf_cmd::export_invoice_pdf_preview,

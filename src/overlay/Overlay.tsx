@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PresenceOrb } from "../components/PresenceOrb";
 import { ChatReplyBody } from "./ChatReplyBody";
+import { EntityChipWithRecall } from "./EntityChipWithRecall";
 import { useAppStore } from "../stores/app";
 import { hideOverlay } from "../lib/overlay";
 import {
@@ -522,19 +523,13 @@ export default function Overlay() {
               className="px-7 pb-2 flex flex-wrap gap-1.5"
             >
               {mentionChips.slice(0, 6).map((c) => (
-                <span
+                <EntityChipWithRecall
                   key={c.entityId}
-                  className="inline-flex items-center gap-1 rounded-full border border-pulse/20 bg-pulse/[0.04] px-2 py-0.5 text-[10px] text-bone-3"
-                  title={`Travis recognised ${c.displayName} from ${c.mentionsCount} prior ${
-                    c.mentionsCount === 1 ? "mention" : "mentions"
-                  }`}
-                >
-                  <span className="text-pulse-2/80" aria-hidden>→</span>
-                  <span className="text-bone-2">{c.displayName}</span>
-                  <span className="text-bone-3/70">
-                    ({c.kind.split(":")[0]})
-                  </span>
-                </span>
+                  entityId={c.entityId}
+                  displayName={c.displayName}
+                  kind={c.kind}
+                  mentionsCount={c.mentionsCount}
+                />
               ))}
             </motion.div>
           )}

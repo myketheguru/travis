@@ -1,5 +1,54 @@
 # Travis Changelog
 
+## v0.10.0 — Phase 4.5 cognition complete (2026-05-21)
+
+The full BRAIN.md Phase 4.5 build list lands. Travis now thinks
+alongside the user with composed graph queries, persisted
+reasoning conclusions, multi-turn working memory, recency-aware
+ranking, and graded confidence — instead of recomposing intent
+from scratch every turn. Substrate work that unlocks the rest of
+the cognition roadmap (personality, learning others, proactivity,
+self-advocacy, wellbeing).
+
+### Items shipped (BRAIN.md ranking order)
+
+1. **Embedding-based entity retrieval** — `retrieve_semantic`
+   cosines against the existing entity index for fuzzy/pronoun-
+   shaped queries the exact-name path missed.
+2. **Structured fact extraction** — `entityFacts` bucket on the
+   journal extractor; each fact persists as a typed claim.
+3. **Memory consolidation tick** — background pass every 30 min
+   summarises stale entities into stable claim rows so retrieval
+   doesn't get noisier over time.
+4. **Multi-hop traversal** — `graph_neighbors` LLM tool walks
+   `mentioned_with` edges up to 3 hops out with strength ranking.
+5. **Confidence in answers** — `ConfidenceBand` (high/medium/low)
+   annotated on every GraphHit so Travis can quote certainty
+   rather than asserting flat.
+6. **Working memory cache** — in-process per-conversation
+   hypothesis store with 30-min TTL; multi-turn reasoning
+   compounds rather than restarting.
+7. **Persisted claims layer** — new `claim` table with
+   confidence + source attribution; contradicting claims kept
+   side-by-side flagged `contested` rather than silently
+   overwritten.
+8. **Active forgetting / decay** — 30-day half-life multiplier
+   on semantic ranking; ancient strong matches no longer outrank
+   recent weak ones.
+9. **Per-entity recall tooltip** — capture chips hover-expand
+   into a popover showing what Travis remembers about that
+   entity (mentions, claims, recent snippets, related entities).
+10. **Inference helpers driving conversation** — refinement
+    candidates piped into the in-thread clarifying-question
+    surface; `*:unknown` entities with 5+ mentions trigger one
+    focused question with role suggestions inline.
+
+### Migration
+
+Core migration `0023_claims_and_facts.sql` creates the `claim`
+table and adds `entity.last_consolidated_at`. Additive + safe;
+existing data unchanged.
+
 ## v0.9.0 — Chat-first operations + generic pack bridge (2026-05-20)
 
 The COO can drive the entire LTE billing chain through conversation
