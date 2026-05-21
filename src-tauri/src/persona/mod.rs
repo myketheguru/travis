@@ -22,6 +22,9 @@
 
 use crate::db::UserProfile;
 
+pub mod entity_model;
+pub mod user_model;
+
 /// One coherent persona. Versioned so future Travis variants
 /// (e.g. a more terse "command-line Travis" for power users) can
 /// branch cleanly. v1 is the default and only flavour today.
@@ -146,6 +149,18 @@ fn build_for(persona: &PersonaDef, profile: &UserProfile) -> String {
     // turns (slice 2b). When that field lands, it concatenates
     // onto the THIS USER PREFERS block above without needing
     // changes here — communication_style is the appendable target.
+
+    // Derived user-activity patterns (slice 3a). Comes last so the
+    // explicit preferences above win when they conflict.
+    if let Some(json) = profile.derived_model_json.as_deref() {
+        if let Some(model) = user_model::parse(json) {
+            let block = user_model::format_for_prompt(&model);
+            if !block.is_empty() {
+                s.push('\n');
+                s.push_str(&block);
+            }
+        }
+    }
 
     s
 }

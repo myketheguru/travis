@@ -114,6 +114,8 @@ async fn write_profile_and_key(
             .as_ref()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty()),
+        derived_model_json: None,
+        derived_model_at: None,
     };
 
     if profile.name.is_empty() || profile.role.is_empty() || profile.org.is_empty() {

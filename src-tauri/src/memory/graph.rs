@@ -37,6 +37,11 @@ pub struct GraphHit {
     /// Up to 5 active claims sorted by confidence then recency. Empty
     /// when the entity is new or no reasoning has fired yet.
     pub claims: Vec<ClaimSummary>,
+    /// Light-touch personality slots for person entities (capability
+    /// #3b): when the user tends to mention them, how the user tends
+    /// to talk about them, top co-occurring entities. None for
+    /// non-person entities or entities below the derivation threshold.
+    pub personality: Option<crate::persona::entity_model::PersonalitySlots>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -150,19 +155,21 @@ pub async fn retrieve(
 }
 
 async fn build_hit(pool: &SqlitePool, entity_id: i64, kind: String) -> Option<GraphHit> {
-    // Header — display_name + counts + confidence score. Cheap; one row.
-    let header: Result<Option<(String, i64, String, f32)>, _> = sqlx::query_as(
-        "SELECT display_name, mentions_count, last_seen, confidence
+    // Header — display_name + counts + confidence score + attrs.
+    // Cheap; one row.
+    let header: Result<Option<(String, i64, String, f32, Option<String>)>, _> = sqlx::query_as(
+        "SELECT display_name, mentions_count, last_seen, confidence, attributes_json
          FROM entity WHERE id = ?1 AND archived_at IS NULL",
     )
     .bind(entity_id)
     .fetch_optional(pool)
     .await;
-    let (display_name, mentions_count, last_seen, entity_confidence) = match header {
+    let (display_name, mentions_count, last_seen, entity_confidence, attributes_json) = match header {
         Ok(Some(row)) => row,
         _ => return None,
     };
     let confidence = ConfidenceBand::from_metrics(mentions_count, entity_confidence);
+    let personality = crate::persona::entity_model::extract(attributes_json.as_deref());
 
     // Recent events (any kind) — entity-detail timeline shape.
     let event_rows: Result<Vec<(String, String, Option<String>, Option<String>)>, _> =
@@ -295,6 +302,7 @@ async fn build_hit(pool: &SqlitePool, entity_id: i64, kind: String) -> Option<Gr
         related_entities: related,
         confidence,
         claims,
+        personality,
     })
 }
 
@@ -576,6 +584,23 @@ pub fn format_for_prompt(hits: &[GraphHit]) -> String {
                 pred = c.predicate,
                 val = c.value,
             ));
+        }
+        if let Some(p) = &h.personality {
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(w) = p.contact_window.as_deref() {
+                parts.push(format!("usually mentioned: {w}"));
+            }
+            if let Some(s) = p.style_hint.as_deref() {
+                parts.push(format!("style around them: {s}"));
+            }
+            if !p.top_topics.is_empty() {
+                parts.push(format!("often with: {}", p.top_topics.join(", ")));
+            }
+            if !parts.is_empty() {
+                out.push_str("    personality: ");
+                out.push_str(&parts.join("; "));
+                out.push('\n');
+            }
         }
     }
     out

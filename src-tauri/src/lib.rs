@@ -308,6 +308,51 @@ pub fn run() {
             proactive::spawn(handle.clone(), db_arc.clone(), http.clone(), health_arc.clone());
             graph_indexer::spawn(db_arc.clone());
 
+            // User model derivation (BRAIN.md capability #3a). Daily
+            // background pass that summarises capture patterns into
+            // user_profile.derived_model_json. Persona block consumes
+            // it so Travis adapts timing + length without being told.
+            {
+                let pool = db_arc.pool.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+                    loop {
+                        match crate::persona::user_model::refresh(&pool).await {
+                            Ok(Some(m)) => tracing::info!(
+                                "user model: refreshed ({} captures, peak {})",
+                                m.capture_count,
+                                m.peak_window
+                            ),
+                            Ok(None) => {}
+                            Err(e) => tracing::warn!("user model refresh failed: {e}"),
+                        }
+                        // Daily. Active hours / cadence are stable
+                        // signals; no need for higher cadence.
+                        tokio::time::sleep(std::time::Duration::from_secs(24 * 60 * 60)).await;
+                    }
+                });
+            }
+
+            // Entity personality slots (BRAIN.md capability #3b).
+            // Weekly background pass that for each frequently-mentioned
+            // person entity derives contact-window + style hints from
+            // mention timing and snippets. Writes into
+            // entity.attributes_json under a "personality" key.
+            {
+                let pool = db_arc.pool.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(180)).await;
+                    loop {
+                        let n = crate::persona::entity_model::run_tick(&pool).await;
+                        if n > 0 {
+                            tracing::info!("entity personality: updated {n} entit{}",
+                                if n == 1 { "y" } else { "ies" });
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(6 * 60 * 60)).await;
+                    }
+                });
+            }
+
             // Memory consolidation tick (BRAIN.md Phase 4.5 #3).
             // Periodic pass that turns each entity's event cloud into
             // a stable summary claim — keeps retrieval from getting

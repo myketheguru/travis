@@ -280,9 +280,12 @@ async fn apply_update_profile_context(
             Option<String>,
             Option<String>,
             Option<String>,
+            Option<String>,
+            Option<String>,
         )> = sqlx::query_as(
             "SELECT name, role, org, llm_provider, ollama_url, model,
-                    context_blurb, communication_style
+                    context_blurb, communication_style,
+                    derived_model_json, derived_model_at
              FROM user_profile WHERE id = 1",
         )
         .fetch_optional(pool)
@@ -297,6 +300,8 @@ async fn apply_update_profile_context(
                 model,
                 context_blurb,
                 communication_style,
+                derived_model_json,
+                derived_model_at,
             )| crate::db::UserProfile {
                 name,
                 role,
@@ -306,6 +311,8 @@ async fn apply_update_profile_context(
                 model,
                 context_blurb,
                 communication_style,
+                derived_model_json,
+                derived_model_at,
             },
         )
     };

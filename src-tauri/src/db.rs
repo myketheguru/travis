@@ -23,6 +23,13 @@ pub struct UserProfile {
     pub context_blurb: Option<String>,
     /// Optional voice/tone guidance, e.g. "warm and direct", "formal".
     pub communication_style: Option<String>,
+    /// Derived user-activity model — JSON written by the user_model
+    /// background pass (BRAIN.md capability #3). Consumed by the
+    /// persona block so Travis adapts timing + length without
+    /// being told. Shape: src/persona/user_model.rs::UserModel.
+    pub derived_model_json: Option<String>,
+    /// Timestamp the derived_model was last refreshed.
+    pub derived_model_at: Option<String>,
 }
 
 impl UserProfile {
@@ -144,9 +151,12 @@ impl Db {
             Option<String>,
             Option<String>,
             Option<String>,
+            Option<String>,
+            Option<String>,
         )> = sqlx::query_as(
             "SELECT name, role, org, llm_provider, ollama_url, model,
-                    context_blurb, communication_style
+                    context_blurb, communication_style,
+                    derived_model_json, derived_model_at
              FROM user_profile WHERE id = 1",
         )
         .fetch_optional(&self.pool)
@@ -161,6 +171,8 @@ impl Db {
                 model,
                 context_blurb,
                 communication_style,
+                derived_model_json,
+                derived_model_at,
             )| UserProfile {
                 name,
                 role,
@@ -170,6 +182,8 @@ impl Db {
                 model,
                 context_blurb,
                 communication_style,
+                derived_model_json,
+                derived_model_at,
             },
         ))
     }
