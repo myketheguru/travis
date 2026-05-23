@@ -1,5 +1,69 @@
 # Travis Changelog
 
+## v0.11.0 — BRAIN.md capabilities #2-#7 complete (2026-05-21)
+
+Travis goes from "graph-aware operations assistant" to "partner
+that thinks alongside you" — the seven BRAIN.md capabilities are
+now substrate-complete. Plus a macOS keychain fix that turns
+N-prompts-per-session into one.
+
+### Capabilities shipped
+
+- **#2 Personality.** Single source persona module
+  (`src/persona/mod.rs`) — values + voice + hard-line constraints
+  (Travis v1). Per-user voice corrections accumulate via the
+  `update_profile_context` action (append, dedup, bound at 10).
+- **#3 Learning others' personalities.** User-model background
+  task derives activity patterns (active hours, capture cadence,
+  question ratio) into `user_profile.derived_model_json`. Per-
+  entity personality slots (contact window, style hint, top
+  topics) for person entities with ≥5 mentions, persisted under
+  `entity.attributes_json.personality`.
+- **#4 Collaboration.** New `initiative` table. Tasks and
+  conversations can tag one. `create_initiative` and
+  `close_initiative` actions; journal prompt now includes an
+  ACTIVE INITIATIVES block so multi-session pushes resume
+  without restating context.
+- **#5 Proactivity 2.0.** Observer scans the graph every
+  proactive tick: mention spikes, signed sheets ready to invoice,
+  stale invoice drafts. Findings append as candidate reasons in
+  the proactive LLM prompt. Rhythm-aware timing reads the user
+  model's peak window and biases toward silence outside it.
+- **#6 Self-advocacy.** Recurring unaddressed capability gaps
+  (≥3 hits in 14 days) surface as ONE Travis-voice ask through
+  the clarifying-questions pipe, with a 7-day cooldown after
+  surface. No pestering; soft anti-pestering thresholds.
+- **#7 Wellbeing.** Affect-signal extraction (tone + themes)
+  per journal capture. Recurring-theme observer detects topics
+  the user keeps returning to with concerned/drained tone.
+  Persona gains wellbeing constraints (never therapeutic, never
+  wellness performance, push back once on self-harming asks).
+  Affect data **never** appears in exports.
+
+### Fixes
+
+- **macOS keychain prompt per LLM call.** `secrets.rs` now
+  caches API keys in a process-wide OnceLock map. First call
+  hits the keychain; every subsequent call reads from memory.
+  Same threat model (secret already in process memory when
+  used); meaningful UX win on macOS where keychain access
+  triggered a password modal per request.
+
+### Privacy posture
+
+Wellbeing affect signals are the most sensitive bytes Travis
+generates. The export logic excludes the `affect_signal` table
+explicitly. They're not in any pack-queryable surface. Per
+BRAIN.md's surveillance-creep failure mode: descriptive
+observations only, no aggregation, no transmission, no
+prescriptive labels.
+
+### Migrations
+
+`0024_user_model.sql`, `0025_advocacy_cooldown.sql`,
+`0026_initiatives.sql`, `0027_affect_signals.sql`. All
+additive; existing data unchanged.
+
 ## v0.10.0 — Phase 4.5 cognition complete (2026-05-21)
 
 The full BRAIN.md Phase 4.5 build list lands. Travis now thinks

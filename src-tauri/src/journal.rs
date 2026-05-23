@@ -284,6 +284,18 @@ pub struct Extraction {
     /// the next ~30 minutes of this conversation (Phase 4.5 #6).
     #[serde(default)]
     pub hypotheses: Vec<ExtractedHypothesis>,
+    /// Light tone + themes pulled from the note (capability #7 wellbeing).
+    /// Null when the note is pure ops with no emotional register.
+    #[serde(default)]
+    pub affect_signals: Option<ExtractedAffect>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractedAffect {
+    pub tone: Option<String>,
+    #[serde(default)]
+    pub themes: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -541,6 +553,14 @@ fn build_extraction_tool(action_kinds: &[&str], entity_kinds: &[&str]) -> ToolDe
                             "contextSnippet": { "type": ["string", "null"], "description": "Optional short snippet showing where in the note the name appeared." }
                         },
                         "required": ["name", "kind"]
+                    }
+                },
+                "affectSignals": {
+                    "type": ["object", "null"],
+                    "description": "Light operational read on the note's emotional register (BRAIN.md capability #7). Tone: one of 'concerned'|'energised'|'drained'|'stuck'|'neutral' — your honest summary, NOT a pop-psych label. Themes: 1-3 short phrases naming worries/topics the user is returning to (e.g. 'the audit response', 'PS498 hours'). LEAVE NULL when the note is a pure ops capture with no emotional content — this is observational only, never therapeutic. Travis surfaces patterns sparingly; over-extraction here is worse than under-extraction.",
+                    "properties": {
+                        "tone": { "type": ["string", "null"], "enum": ["concerned", "energised", "drained", "stuck", "neutral", null] },
+                        "themes": { "type": "array", "items": { "type": "string" }, "description": "1-3 short phrases. Skip if nothing recurring." }
                     }
                 },
                 "hypotheses": {
@@ -1864,6 +1884,52 @@ pub async fn journal_ingest(
                         tracing::warn!(
                             "spine event sync (generic mention) for entity {eid}: {e}"
                         );
+                    }
+                }
+            }
+
+            // Persist affect_signals (BRAIN.md capability #7 — wellbeing).
+            // Light tone + themes pulled by the LLM, scoped to this
+            // workspace. Privacy: stays in core's affect_signal table —
+            // not in any pack-queryable surface, not in data exports.
+            if let Some(affect) = &extraction.affect_signals {
+                let tone = affect
+                    .tone
+                    .as_deref()
+                    .map(|s| s.trim().to_lowercase())
+                    .filter(|s| matches!(
+                        s.as_str(),
+                        "concerned" | "energised" | "drained" | "stuck" | "neutral"
+                    ))
+                    .unwrap_or_else(|| "neutral".to_string());
+                let cleaned_themes: Vec<String> = affect
+                    .themes
+                    .iter()
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty())
+                    .take(3)
+                    .collect();
+                // Skip writes for the null-shaped case (neutral + no themes) —
+                // we don't want the table filling with no-signal rows.
+                if tone != "neutral" || !cleaned_themes.is_empty() {
+                    let themes_json = if cleaned_themes.is_empty() {
+                        None
+                    } else {
+                        Some(serde_json::to_string(&cleaned_themes).unwrap_or_default())
+                    };
+                    if let Err(e) = sqlx::query(
+                        "INSERT INTO affect_signal
+                            (workspace_id, journal_entry_id, tone, themes_json)
+                         VALUES (?1, ?2, ?3, ?4)",
+                    )
+                    .bind(dest_ws_id)
+                    .bind(entry_id)
+                    .bind(&tone)
+                    .bind(&themes_json)
+                    .execute(&state.db.pool)
+                    .await
+                    {
+                        tracing::warn!("affect_signal insert: {e}");
                     }
                 }
             }

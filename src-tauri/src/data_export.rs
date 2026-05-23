@@ -64,9 +64,13 @@ pub struct Export {
     pub redactions: Vec<String>,
 }
 
-/// Tables we never include (system tables, migration ledger).
+/// Tables we never include (system tables, migration ledger,
+/// and the affect_signal table — capability #7 wellbeing data is
+/// the most sensitive thing Travis tracks; never leaves the device
+/// even in an explicit user-initiated export. See BRAIN.md §6
+/// failure modes ("surveillance creep").
 fn system_tables() -> &'static [&'static str] {
-    &["sqlite_sequence"]
+    &["sqlite_sequence", "affect_signal"]
 }
 
 /// Tables (or specific columns) we always redact for security.

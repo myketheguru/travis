@@ -41,6 +41,11 @@ pub enum ObservationKind {
     SheetSignedReady,
     /// An invoice has been in draft past its period_end + 7 days.
     StaleInvoiceDraft,
+    /// A theme has appeared in the user's affect signals across
+    /// multiple recent captures without obvious resolution. Travis
+    /// might name it ONCE, like a colleague noticing — not therapy.
+    /// BRAIN.md capability #7 wellbeing.
+    RecurringTheme,
 }
 
 /// Scan once and return up to 6 ranked observations. Empty when
@@ -59,8 +64,83 @@ pub async fn scan(pool: &SqlitePool, workspace_ids: &[i64]) -> Vec<Observation> 
     if let Ok(mut stale) = stale_invoice_drafts(pool, workspace_ids).await {
         out.append(&mut stale);
     }
+    if let Ok(mut themes) = recurring_themes(pool, workspace_ids).await {
+        out.append(&mut themes);
+    }
     out.truncate(6);
     out
+}
+
+/// Wellbeing observer (BRAIN.md #7). Themes that appear in affect
+/// signals across 3+ captures in the last 7 days, picked from
+/// non-resolved threads. The proactive layer surfaces at most one
+/// — Travis is a colleague who notices, not a wellness app.
+async fn recurring_themes(
+    pool: &SqlitePool,
+    workspace_ids: &[i64],
+) -> anyhow::Result<Vec<Observation>> {
+    let placeholders = (1..=workspace_ids.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    // Pull recent affect signals + their themes; group in Rust
+    // because SQLite doesn't have JSON_EACH everywhere cleanly.
+    let sql = format!(
+        "SELECT themes_json, tone FROM affect_signal
+         WHERE workspace_id IN ({placeholders})
+           AND datetime(created_at) >= datetime('now', '-7 day')
+           AND themes_json IS NOT NULL"
+    );
+    let mut q = sqlx::query_as::<_, (Option<String>, String)>(&sql);
+    for ws in workspace_ids {
+        q = q.bind(*ws);
+    }
+    let rows = match q.fetch_all(pool).await {
+        Ok(r) => r,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let mut counts: std::collections::HashMap<String, (i64, i64)> =
+        std::collections::HashMap::new(); // theme -> (count, drained_count)
+    for (themes_json, tone) in rows {
+        let Some(json) = themes_json else { continue };
+        let Ok(themes) = serde_json::from_str::<Vec<String>>(&json) else { continue };
+        let weight_drained = matches!(tone.as_str(), "concerned" | "drained" | "stuck");
+        for t in themes {
+            let t = t.trim().to_lowercase();
+            if t.is_empty() {
+                continue;
+            }
+            let e = counts.entry(t).or_insert((0, 0));
+            e.0 += 1;
+            if weight_drained {
+                e.1 += 1;
+            }
+        }
+    }
+    let mut recurring: Vec<(String, i64, i64)> = counts
+        .into_iter()
+        .filter(|(_, (c, _))| *c >= 3)
+        .map(|(t, (c, d))| (t, c, d))
+        .collect();
+    recurring.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
+    Ok(recurring
+        .into_iter()
+        .take(2)
+        .map(|(theme, count, drained)| {
+            let qualifier = if drained >= 2 {
+                " and the tone around it has been concerned/drained"
+            } else {
+                ""
+            };
+            Observation {
+                kind: ObservationKind::RecurringTheme,
+                summary: format!(
+                    "\"{theme}\" has shown up in {count} captures this week{qualifier}"
+                ),
+                entity_id: None,
+            }
+        })
+        .collect())
 }
 
 /// Entities that resumed activity after a quiet stretch.
