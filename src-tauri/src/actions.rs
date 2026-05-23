@@ -709,7 +709,85 @@ pub fn builtin_registry() -> ActionRegistry {
     r.register(Box::new(RunShellCommandHandler));
     r.register(Box::new(SendEmailHandler));
     r.register(Box::new(UpdateProfileContextHandler));
+    r.register(Box::new(CreateInitiativeHandler));
+    r.register(Box::new(CloseInitiativeHandler));
     r
+}
+
+// ---------- Initiatives (BRAIN.md capability #4) ----------
+
+struct CreateInitiativeHandler;
+#[async_trait::async_trait]
+impl ActionHandler for CreateInitiativeHandler {
+    fn kind(&self) -> &'static str { "create_initiative" }
+    async fn apply(&self, pool: &SqlitePool, app: &AppHandle, params_json: &str) -> anyhow::Result<Applied> {
+        use tauri::Manager;
+        let state = app.state::<AppState>();
+        let ws_id = state.workspace.read().await.active_id;
+        apply_create_initiative(pool, ws_id, params_json).await
+    }
+}
+
+struct CloseInitiativeHandler;
+#[async_trait::async_trait]
+impl ActionHandler for CloseInitiativeHandler {
+    fn kind(&self) -> &'static str { "close_initiative" }
+    async fn apply(&self, pool: &SqlitePool, _app: &AppHandle, params_json: &str) -> anyhow::Result<Applied> {
+        apply_close_initiative(pool, params_json).await
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateInitiativeParams {
+    name: String,
+    summary: Option<String>,
+    owner_kind: Option<String>,
+    owner_label: Option<String>,
+    last_decision: Option<String>,
+    open_questions: Option<String>,
+}
+
+async fn apply_create_initiative(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    params_json: &str,
+) -> anyhow::Result<Applied> {
+    let p: CreateInitiativeParams = serde_json::from_str(params_json)?;
+    let row = crate::initiatives::upsert(
+        pool,
+        workspace_id,
+        crate::initiatives::InitiativeInput {
+            id: None,
+            name: p.name,
+            summary: p.summary,
+            owner_kind: p.owner_kind,
+            owner_label: p.owner_label,
+            entity_id: None,
+            last_decision: p.last_decision,
+            open_questions: p.open_questions,
+        },
+    )
+    .await?;
+    Ok(Applied {
+        message: format!("Tracked initiative \"{}\" (#{}). I'll resume context here next time the topic comes up.", row.name, row.id),
+        json: serde_json::json!({ "initiativeId": row.id, "name": row.name }).to_string(),
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloseInitiativeParams {
+    initiative_id: i64,
+}
+
+async fn apply_close_initiative(pool: &SqlitePool, params_json: &str) -> anyhow::Result<Applied> {
+    let p: CloseInitiativeParams = serde_json::from_str(params_json)?;
+    crate::initiatives::close(pool, p.initiative_id).await?;
+    Ok(Applied {
+        message: format!("Closed initiative #{}. I won't surface it as active context anymore.", p.initiative_id),
+        json: serde_json::json!({ "initiativeId": p.initiative_id, "status": "closed" }).to_string(),
+    })
 }
 
 // ---------- Handler wrappers ----------

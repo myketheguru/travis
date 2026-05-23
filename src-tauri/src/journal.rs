@@ -515,7 +515,7 @@ fn build_extraction_tool(action_kinds: &[&str], entity_kinds: &[&str]) -> ToolDe
                             "rationale": { "type": "string", "description": "Short human-readable explanation shown verbatim on the confirm card." },
                             "params": {
                                 "type": "object",
-                                "description": "Kind-specific params. defer_task: { taskId, newDueAt }. propose_invoice_draft: { coachName, periodStart, periodEnd, schoolName?, hoursTotal?, rateCents? }. set_reminder: { text, remindAt, kind? }. write_clipboard: { text }. run_shell_command: { command, workingDir?, timeoutSeconds? }. send_email: { to, subject, body, provider?, relatedKind?, relatedId? }. update_profile_context: { contextBlurb?, communicationStyle? }."
+                                "description": "Kind-specific params. defer_task: { taskId, newDueAt }. propose_invoice_draft: { coachName, periodStart, periodEnd, schoolName?, hoursTotal?, rateCents? }. set_reminder: { text, remindAt, kind? }. write_clipboard: { text }. run_shell_command: { command, workingDir?, timeoutSeconds? }. send_email: { to, subject, body, provider?, relatedKind?, relatedId? }. update_profile_context: { contextBlurb?, communicationStyle? }. create_initiative: { name, summary?, ownerKind? ('user'|'travis'|'external'), ownerLabel?, lastDecision?, openQuestions? } — propose when the user names or implies a multi-session push (project, campaign, audit, bid). close_initiative: { initiativeId } — propose when the user signals a push is done."
                             }
                         },
                         "required": ["kind", "rationale", "params"]
@@ -1323,6 +1323,18 @@ pub async fn journal_ingest(
     let working_hypotheses = state.working_memory.for_conversation(conv_id).await;
     let working_block = memory::working::format_for_prompt(&working_hypotheses);
 
+    // Active initiatives (BRAIN.md capability #4). When the user's
+    // note touches a long-running theme, Travis picks up where the
+    // last session left off — last decision, open questions, who's
+    // holding — rather than re-deriving context per turn.
+    let active_initiatives = crate::initiatives::list_active(
+        &state.db.pool,
+        &ws_snapshot.visible_ids,
+        5,
+    )
+    .await;
+    let initiatives_block = crate::initiatives::format_for_prompt(&active_initiatives);
+
     let workspace_block = crate::workspaces::prompt_context_block(
         &state.db.pool,
         ws_snapshot.active_id,
@@ -1360,7 +1372,7 @@ pub async fn journal_ingest(
     };
 
     let user_msg = format!(
-        "Today is {today}.\n\nOPEN TASKS (id · title):\n{open}\n\nRELEVANT MEMORY:\n{mem}\n\n{graph}{working}{ws}New turn:\n{raw}",
+        "Today is {today}.\n\nOPEN TASKS (id · title):\n{open}\n\nRELEVANT MEMORY:\n{mem}\n\n{graph}{working}{initiatives}{ws}New turn:\n{raw}",
         today = today_local(),
         open = format_open_tasks(&open_tasks),
         mem = format_memory(&mem_hits),
@@ -1373,6 +1385,11 @@ pub async fn journal_ingest(
             String::new()
         } else {
             format!("{working_block}\n")
+        },
+        initiatives = if initiatives_block.is_empty() {
+            String::new()
+        } else {
+            format!("{initiatives_block}\n")
         },
         ws = if workspace_options_block.is_empty() {
             String::new()
