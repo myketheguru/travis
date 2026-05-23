@@ -25,6 +25,80 @@ pub struct AppFeedbackInput {
     pub source_id: Option<i64>,
 }
 
+/// A recurring capability gap that hasn't been advocated for
+/// recently — candidate for a self-advocacy surface (BRAIN.md
+/// capability #6).
+#[derive(Debug, Clone)]
+pub struct RecurringGap {
+    pub capability: String,
+    pub hit_count: i64,
+    pub latest_context: Option<String>,
+}
+
+const MIN_HITS: i64 = 3;
+const RECENT_DAYS: i64 = 14;
+const COOLDOWN_DAYS: i64 = 7;
+
+/// Return up to `limit` capabilities that:
+///   - have ≥ [`MIN_HITS`] rows in the last [`RECENT_DAYS`] days
+///   - have NOT been surfaced within [`COOLDOWN_DAYS`] (any row's
+///     last_advocacy_surfaced_at)
+///   - are not yet marked addressed
+/// Ranked by hit_count DESC then most-recent activity.
+pub async fn recurring_unaddressed_gaps(
+    pool: &SqlitePool,
+    limit: i64,
+) -> Vec<RecurringGap> {
+    let sql = format!(
+        "SELECT capability,
+                COUNT(*) AS hit_count,
+                (SELECT context FROM app_feedback x
+                  WHERE x.capability = app_feedback.capability
+                  ORDER BY x.created_at DESC LIMIT 1) AS latest_context
+         FROM app_feedback
+         WHERE addressed_at IS NULL
+           AND datetime(created_at) >= datetime('now', '-{RECENT_DAYS} day')
+         GROUP BY capability
+         HAVING COUNT(*) >= {MIN_HITS}
+            AND COALESCE(
+              MAX(last_advocacy_surfaced_at),
+              datetime('now', '-{cool} day', '-1 day')
+            ) <= datetime('now', '-{cool} day')
+         ORDER BY hit_count DESC, MAX(created_at) DESC
+         LIMIT ?1",
+        cool = COOLDOWN_DAYS,
+    );
+    let rows: Vec<(String, i64, Option<String>)> = sqlx::query_as(&sql)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    rows.into_iter()
+        .map(|(capability, hit_count, latest_context)| RecurringGap {
+            capability,
+            hit_count,
+            latest_context,
+        })
+        .collect()
+}
+
+/// Stamp every active row for the given capability so the cooldown
+/// holds. Called immediately after Travis surfaces an advocacy ask.
+pub async fn mark_advocacy_surfaced(
+    pool: &SqlitePool,
+    capability: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE app_feedback
+         SET last_advocacy_surfaced_at = CURRENT_TIMESTAMP
+         WHERE capability = ?1 AND addressed_at IS NULL",
+    )
+    .bind(capability)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn record(pool: &SqlitePool, input: &AppFeedbackInput) -> Result<AppFeedback, sqlx::Error> {
     let cap = input.capability.trim();
     if cap.is_empty() {

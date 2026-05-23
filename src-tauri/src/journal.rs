@@ -2172,6 +2172,27 @@ pub async fn journal_ingest(
         }
     }
 
+    // Self-advocacy: recurring capability gaps (BRAIN.md capability #6).
+    // When the same gap (Gmail-not-connected, calendar-write, etc.) has
+    // fired ≥3 times in the last 14 days without being addressed and
+    // hasn't been surfaced in the last 7, slot in one Travis-voice ask
+    // — "I keep stalling on X because Y isn't set up — want to fix
+    // that?". Stamps so the cooldown holds. One advocacy per turn max.
+    if extraction.clarifying_questions.len() < 2 {
+        let gaps = crate::feedback::recurring_unaddressed_gaps(&state.db.pool, 1).await;
+        if let Some(g) = gaps.into_iter().next() {
+            let cap = g.capability.trim();
+            if !cap.is_empty() {
+                let q = format!(
+                    "I've punted on \"{cap}\" {} times now — usually because something isn't set up on my side. Want to address it together so I can actually do this for you?",
+                    g.hit_count,
+                );
+                extraction.clarifying_questions.push(q);
+                let _ = crate::feedback::mark_advocacy_surfaced(&state.db.pool, cap).await;
+            }
+        }
+    }
+
     // Conversation status: awaiting the user if there are clarifying questions
     // OR pending action proposals, resolved on conversational small-talk
     // (without gaps to surface), otherwise open for next note.
