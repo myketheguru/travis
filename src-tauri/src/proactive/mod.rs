@@ -26,6 +26,8 @@ use crate::health::{self, Health};
 use crate::llm::{
     self, ChatWithToolsOptions, Message, ToolChoice, ToolDef,
 };
+pub mod observer;
+
 use crate::secrets;
 use crate::telemetry;
 
@@ -554,7 +556,43 @@ async fn tick(
     )?;
 
     let tool = build_nudge_tool();
-    let user_msg = state.render(&today);
+    let mut user_msg = state.render(&today);
+
+    // Append observer signals (BRAIN.md capability #5). The state
+    // summary captures task / reminder counts; the observer surfaces
+    // graph-shaped events: mention spikes on previously-dormant
+    // entities, signed sheets ready to invoice, stale invoice
+    // drafts. These give the nudge LLM concrete, specific-by-name
+    // candidate reasons instead of inventing them.
+    let visible_ids: Vec<i64> = {
+        let app_state = app.state::<crate::AppState>();
+        let guard = app_state.workspace.read().await;
+        guard.visible_ids.clone()
+    };
+    let observations = observer::scan(pool, &visible_ids).await;
+    if !observations.is_empty() {
+        user_msg.push_str("\n\n");
+        user_msg.push_str(&observer::format_for_prompt(&observations));
+    }
+
+    // Rhythm-aware timing (BRAIN.md capability #5). If the user has
+    // a derived peak_window and we're outside it by more than the
+    // typical waking hours, bias the LLM toward silence — adds an
+    // explicit hint so this isn't a hard block, just guidance.
+    if let Some(model_json) = profile.derived_model_json.as_deref() {
+        if let Some(model) = crate::persona::user_model::parse(model_json) {
+            if !model.peak_window.is_empty() {
+                let current_hour = local_now.hour() as i64;
+                let in_peak = is_hour_in_window(current_hour, &model.peak_window);
+                if !in_peak {
+                    user_msg.push_str(&format!(
+                        "\n\nRHYTHM HINT: it's {current_hour}:00 local; the user typically captures during {}. Outside that window, weight your decision toward staying silent unless the observation is urgent.\n",
+                        model.peak_window
+                    ));
+                }
+            }
+        }
+    }
 
     let turn_res = provider
         .chat_with_tools(
@@ -656,4 +694,53 @@ async fn tick(
     );
 
     Ok(())
+}
+
+/// Is the given hour inside any of the windows in the
+/// user_model.peak_window string? Format examples: "9am-11am",
+/// "9am-11am, 4pm-6pm", "12pm". Returns true if `hour` matches any
+/// single hour or falls within any range. Best-effort parser —
+/// returns true on malformed input so a parse error doesn't
+/// suppress nudges entirely.
+fn is_hour_in_window(hour: i64, window: &str) -> bool {
+    if window.trim().is_empty() {
+        return true;
+    }
+    for part in window.split(|c| c == ',' || c == ';') {
+        let p = part.trim().replace(['–', '—'], "-");
+        if let Some((a, b)) = p.split_once('-') {
+            let (Some(start), Some(end)) = (parse_clock(a), parse_clock(b)) else { continue };
+            // The end hour is exclusive in our format (e.g. "9am-11am" = [9, 11)).
+            if hour >= start && hour < end {
+                return true;
+            }
+        } else if let Some(h) = parse_clock(&p) {
+            if hour == h {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn parse_clock(s: &str) -> Option<i64> {
+    let s = s.trim().to_lowercase();
+    let (digits, suffix) = if let Some(rest) = s.strip_suffix("am") {
+        (rest.trim(), "am")
+    } else if let Some(rest) = s.strip_suffix("pm") {
+        (rest.trim(), "pm")
+    } else {
+        (s.as_str(), "")
+    };
+    let h: i64 = digits.parse().ok()?;
+    let h = match suffix {
+        "am" => if h == 12 { 0 } else { h },
+        "pm" => if h == 12 { 12 } else { h + 12 },
+        _ => h,
+    };
+    if (0..=23).contains(&h) {
+        Some(h)
+    } else {
+        None
+    }
 }
