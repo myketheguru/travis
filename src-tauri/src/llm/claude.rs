@@ -114,6 +114,82 @@ impl LlmProvider for ClaudeProvider {
     fn name(&self) -> &'static str { "claude" }
     fn model(&self) -> &str { &self.model }
 
+    /// Vision-based PDF extraction using Claude's native `document`
+    /// content block. The model OCRs each page internally and returns
+    /// a text response — when the system prompt asks for JSON, that's
+    /// what comes back. No PDFium / Tesseract pipeline needed.
+    async fn extract_pdf(
+        &self,
+        bytes: &[u8],
+        system_prompt: &str,
+        max_tokens: Option<u32>,
+    ) -> anyhow::Result<String> {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let encoded = STANDARD.encode(bytes);
+
+        let body = json!({
+            "model": self.model,
+            "max_tokens": max_tokens.unwrap_or(2_000),
+            "system": [{
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": encoded,
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": "Extract structured fields from the attached PDF per the system instructions. Return ONLY valid JSON."
+                    }
+                ]
+            }],
+            "temperature": 0.0,
+        });
+
+        let resp = self
+            .http
+            .post(ENDPOINT)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        let bytes = resp.bytes().await?;
+        if !status.is_success() {
+            let msg = serde_json::from_slice::<AnthropicError>(&bytes)
+                .map(|e| e.error.message)
+                .unwrap_or_else(|_| String::from_utf8_lossy(&bytes).to_string());
+            return Err(anyhow::anyhow!(
+                "anthropic vision extract {}: {msg}",
+                status.as_u16()
+            ));
+        }
+
+        let parsed: AnthropicMessage = serde_json::from_slice(&bytes)?;
+        let text = parsed
+            .content
+            .into_iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        Ok(text)
+    }
+
     async fn ping(&self) -> anyhow::Result<PingResult> {
         let started = Instant::now();
         let res = self.chat(

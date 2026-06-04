@@ -75,26 +75,46 @@ pub async fn run_extraction(
     }
 
     let abs = storage::absolute_path(storage_root, Path::new(&doc.relative_path));
+    let prompt = prompt_for_kind(&doc.kind);
 
-    // Text-layer extraction.
-    let text = match extract_text(&abs) {
-        Ok(Some(t)) => t,
+    // Stage 1: text-layer extraction (cheap, on-device).
+    // Stage 2: when text layer is empty AND the provider supports
+    // document vision (Claude does, OpenAI/Ollama don't), send the
+    // PDF bytes directly. No PDFium / OCR pipeline needed.
+    let json_value = match extract_text(&abs) {
+        Ok(Some(text)) => {
+            match run_llm_extraction(pool, http.clone(), &text, prompt).await {
+                Ok(v) => v,
+                Err(e) => {
+                    db::set_extracted(
+                        pool,
+                        document_id,
+                        IngestStatus::Failed,
+                        None,
+                        Some(&format!("llm extraction failed: {e}")),
+                    )
+                    .await?;
+                    return Err(e);
+                }
+            }
+        }
         Ok(None) => {
-            // No text layer. Mark as failed with a clear, actionable
-            // message — once vision-fallback ships, this branch
-            // routes to vision instead.
-            db::set_extracted(
-                pool,
-                document_id,
-                IngestStatus::Failed,
-                None,
-                Some(
-                    "text layer empty (likely a scanned image PDF); \
-                     vision-fallback extraction not yet wired",
-                ),
-            )
-            .await?;
-            return Ok(());
+            // No text layer — likely a scanned PDF. Fall back to
+            // provider-side vision document input.
+            match run_vision_extraction(pool, http, &abs, prompt).await {
+                Ok(v) => v,
+                Err(e) => {
+                    db::set_extracted(
+                        pool,
+                        document_id,
+                        IngestStatus::Failed,
+                        None,
+                        Some(&format!("vision extraction failed: {e}")),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            }
         }
         Err(e) => {
             db::set_extracted(
@@ -103,26 +123,6 @@ pub async fn run_extraction(
                 IngestStatus::Failed,
                 None,
                 Some(&format!("pdf read failed: {e}")),
-            )
-            .await?;
-            return Err(e);
-        }
-    };
-
-    // LLM-driven structured extraction. The prompt is kind-specific;
-    // we look it up in the extractor catalog. Unknown kinds just store
-    // the raw text under {kind:"generic", text:"..."} so chat tools
-    // can still surface it.
-    let prompt = prompt_for_kind(&doc.kind);
-    let json_value = match run_llm_extraction(pool, http, &text, prompt).await {
-        Ok(v) => v,
-        Err(e) => {
-            db::set_extracted(
-                pool,
-                document_id,
-                IngestStatus::Failed,
-                None,
-                Some(&format!("llm extraction failed: {e}")),
             )
             .await?;
             return Err(e);
@@ -333,5 +333,59 @@ async fn run_llm_extraction(
 
     let value: serde_json::Value = serde_json::from_str(payload)
         .map_err(|e| anyhow::anyhow!("could not parse extraction JSON: {e} (got: {raw})"))?;
+    Ok(value)
+}
+
+/// Vision-fallback extraction for scanned PDFs with no text layer.
+/// Sends the raw PDF bytes to the configured LLM provider. Claude
+/// supports native document input; other providers return a clear
+/// error. The caller surfaces this as `extraction_error` on the
+/// document row.
+async fn run_vision_extraction(
+    pool: &sqlx::SqlitePool,
+    http: reqwest::Client,
+    pdf_path: &Path,
+    prompt: &str,
+) -> anyhow::Result<serde_json::Value> {
+    let bytes = tokio::fs::read(pdf_path).await?;
+    // Anthropic's PDF document block currently caps at ~32MB. Files
+    // bigger than that need page-splitting, which we punt for now —
+    // Taylor's real docs are 1–3 pages and well under this.
+    const MAX_BYTES: usize = 30 * 1024 * 1024;
+    if bytes.len() > MAX_BYTES {
+        anyhow::bail!(
+            "PDF is {}MB; vision-extraction cap is {}MB. Try splitting it.",
+            bytes.len() / 1_048_576,
+            MAX_BYTES / 1_048_576,
+        );
+    }
+
+    let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT llm_provider, ollama_url, model FROM user_profile WHERE id = 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+    let (llm_provider, ollama_url, model) = row
+        .ok_or_else(|| anyhow::anyhow!("user_profile row missing"))?;
+    let api_key = secrets::get_api_key(&llm_provider);
+
+    let provider = llm::build(
+        &llm_provider,
+        api_key.as_deref(),
+        ollama_url.as_deref(),
+        model.as_deref(),
+        http,
+    )?;
+
+    let raw = provider.extract_pdf(&bytes, prompt, Some(2_000)).await?;
+    let trimmed = raw.trim();
+    let payload = trimmed
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+    let value: serde_json::Value = serde_json::from_str(payload).map_err(|e| {
+        anyhow::anyhow!("could not parse vision-extracted JSON: {e} (got: {trimmed})")
+    })?;
     Ok(value)
 }

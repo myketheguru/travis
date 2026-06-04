@@ -162,6 +162,28 @@ pub trait LlmProvider: Send + Sync {
         opts: ChatOptions,
     ) -> anyhow::Result<ChatResponse>;
 
+    /// Vision-capable PDF extraction. Send a PDF's raw bytes + an
+    /// extraction prompt; the provider OCRs / parses internally and
+    /// returns the model's text response (typically JSON when the
+    /// prompt asks for it). Providers that don't support document
+    /// inputs return an error; the caller decides whether to fall
+    /// back or fail.
+    ///
+    /// Default impl: error. Override per-provider when supported.
+    /// Used by `documents::extract` when text-layer extraction returns
+    /// nothing (scanned-image PDFs).
+    async fn extract_pdf(
+        &self,
+        _bytes: &[u8],
+        _system_prompt: &str,
+        _max_tokens: Option<u32>,
+    ) -> anyhow::Result<String> {
+        anyhow::bail!(
+            "vision-based PDF extraction not supported by this provider; \
+             try switching to Claude in Settings for scanned-image PDFs"
+        )
+    }
+
     /// Tool-aware chat. Default impl maps to plain `chat()` — providers that
     /// implement native tool calling override this for richer behavior.
     async fn chat_with_tools(

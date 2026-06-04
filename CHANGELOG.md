@@ -47,9 +47,18 @@ the capabilities core needs for full horizontal scale.
 - Fire-and-forget background extraction on ingest; `extract_document`
   Tauri command for manual / forced re-extraction.
 - New LLM tools: `read_document`, `find_documents`.
-- Vision fallback for scanned PDFs is scoped out for this release —
-  tracked in WORKFLOWS_BACKLOG.md. Scanned docs ingest cleanly but
-  flag `extraction_error: text layer empty; vision not yet wired`.
+
+### Vision fallback for scanned PDFs
+
+- When `pdf-extract` returns no text layer (paper sheets faxed/scanned
+  back), Travis sends the PDF bytes directly to Claude via the native
+  `document` content block — no PDFium / Tesseract / OS-side OCR
+  needed. Claude OCRs and returns the same JSON shape as text-path
+  extraction.
+- New `LlmProvider::extract_pdf(bytes, prompt, max_tokens)` trait
+  method. Claude implements; OpenAI and Ollama return a clear "switch
+  to Claude in Settings for scanned PDFs" error.
+- 30MB cap per file; bigger PDFs need page-splitting (future).
 
 ### Slice 4 — Doc-entity round-trip wiring
 
@@ -84,6 +93,20 @@ the capabilities core needs for full horizontal scale.
   with the OS default viewer (Preview / Acrobat / browser / Excel) via
   the existing `tauri-plugin-opener`. Taylor says "show me that invoice",
   Travis opens the PDF.
+
+### Extraction confirmation cards
+
+- New `DocumentExtractCard` React component. Each attached-doc chip in
+  the overlay is now a toggle — tap to expand into a card showing every
+  extracted field, nested arrays (line items) rendered as sub-groups.
+- Inline editing: tap any field, type, hit save. Edits dispatch
+  `update_document_extraction` (full overwrite) — the source PDF is
+  untouched. Re-extract button forces a fresh extractor run.
+- "View source" button opens the original PDF via `preview_document`.
+- Card refreshes automatically when the backend emits the
+  `document-extracted` event after the background extractor finishes.
+- Type coercion on save: numeric strings become numbers, "true"/"false"
+  booleans, empty strings null. Conservative; preserves shape.
 
 ### Backlog
 

@@ -33,6 +33,7 @@ import {
   type ProposedAction,
 } from "../lib/actions";
 import { ingestDocument, formatBytes, type Document } from "../lib/documents";
+import { DocumentExtractCard } from "./DocumentExtractCard";
 
 type Tab = "open" | "done";
 
@@ -61,6 +62,9 @@ export default function Overlay() {
   /// these for the LLM to see.
   const [attachedDocs, setAttachedDocs] = useState<Document[]>([]);
   const [dropHovering, setDropHovering] = useState(false);
+  /// IDs of docs whose extraction card is expanded. Tap a chip to
+  /// expand; tap × on the card to collapse.
+  const [expandedDocs, setExpandedDocs] = useState<Set<number>>(new Set());
 
   const refreshActions = useCallback(async (cid: number | null) => {
     if (!cid) {
@@ -439,34 +443,81 @@ export default function Overlay() {
           }}
         >
           {attachedDocs.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 pb-2">
-              {attachedDocs.map((d) => (
-                <div
-                  key={d.id}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-pulse/12 border border-pulse/25 px-2 py-1 text-[11px] text-bone-2 font-mono"
-                  title={`${d.originalFilename} · ${formatBytes(d.sizeBytes)}`}
-                >
-                  <span className="text-pulse">◈</span>
-                  <span className="truncate max-w-[180px]">{d.displayName}</span>
-                  <span className="text-bone-3">{formatBytes(d.sizeBytes)}</span>
-                  <button
-                    onClick={() =>
-                      setAttachedDocs((prev) => prev.filter((x) => x.id !== d.id))
-                    }
-                    className="text-bone-3 hover:text-bone-2 ml-0.5"
-                    title="Remove from this turn"
-                    data-no-drag
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-              {dropHovering && (
-                <div className="text-[11px] text-pulse-2/80 font-mono self-center">
-                  drop to attach…
-                </div>
-              )}
-            </div>
+            <>
+              <div className="flex flex-wrap gap-1.5 pb-2">
+                {attachedDocs.map((d) => {
+                  const expanded = expandedDocs.has(d.id);
+                  return (
+                    <button
+                      key={d.id}
+                      onClick={() =>
+                        setExpandedDocs((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(d.id)) next.delete(d.id);
+                          else next.add(d.id);
+                          return next;
+                        })
+                      }
+                      className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-mono transition-colors ${
+                        expanded
+                          ? "bg-pulse/25 border border-pulse/50 text-bone"
+                          : "bg-pulse/12 border border-pulse/25 text-bone-2 hover:bg-pulse/18"
+                      }`}
+                      title={`${d.originalFilename} · ${formatBytes(d.sizeBytes)} · click to ${
+                        expanded ? "collapse" : "view extracted fields"
+                      }`}
+                      data-no-drag
+                    >
+                      <span className="text-pulse">◈</span>
+                      <span className="truncate max-w-[180px]">
+                        {d.displayName}
+                      </span>
+                      <span className="text-bone-3">{formatBytes(d.sizeBytes)}</span>
+                      <span
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setAttachedDocs((prev) =>
+                            prev.filter((x) => x.id !== d.id),
+                          );
+                          setExpandedDocs((prev) => {
+                            const next = new Set(prev);
+                            next.delete(d.id);
+                            return next;
+                          });
+                        }}
+                        className="text-bone-3 hover:text-bone-2 ml-0.5 cursor-pointer"
+                        title="Remove from this turn"
+                      >
+                        ×
+                      </span>
+                    </button>
+                  );
+                })}
+                {dropHovering && (
+                  <div className="text-[11px] text-pulse-2/80 font-mono self-center">
+                    drop to attach…
+                  </div>
+                )}
+              </div>
+              <AnimatePresence>
+                {attachedDocs
+                  .filter((d) => expandedDocs.has(d.id))
+                  .map((d) => (
+                    <div key={`card-${d.id}`} className="pb-3">
+                      <DocumentExtractCard
+                        documentId={d.id}
+                        onClose={() => {
+                          setExpandedDocs((prev) => {
+                            const next = new Set(prev);
+                            next.delete(d.id);
+                            return next;
+                          });
+                        }}
+                      />
+                    </div>
+                  ))}
+              </AnimatePresence>
+            </>
           )}
           {attachedDocs.length === 0 && dropHovering && (
             <div className="text-[11px] text-pulse-2 font-mono pb-2">

@@ -80,6 +80,28 @@ export async function setDocumentKind(
   });
 }
 
+/// Trigger (or re-trigger) extraction on a document. `force=true`
+/// resets status and re-runs even if already extracted.
+export async function extractDocument(
+  documentId: number,
+  force = false,
+): Promise<Document> {
+  return await invoke<Document>("extract_document", {
+    params: { documentId, force },
+  });
+}
+
+/// Overwrite a document's extracted JSON wholesale. Used by the
+/// confirmation card after the user edits fields inline.
+export async function updateDocumentExtraction(
+  documentId: number,
+  extractedJson: unknown,
+): Promise<Document> {
+  return await invoke<Document>("update_document_extraction", {
+    params: { documentId, extractedJson },
+  });
+}
+
 export async function deleteDocument(id: number): Promise<void> {
   await invoke("delete_document", { id });
 }
