@@ -43,6 +43,103 @@ pub fn extract_text(path: &Path) -> anyhow::Result<Option<String>> {
     }
 }
 
+/// Dispatch text extraction by file extension. PDFs go through
+/// `pdf-extract`; CSV files are read raw; XLSX/XLS workbooks go through
+/// `calamine` and get serialised to a CSV-shaped string the LLM can
+/// reason over with the same prompt shape as native CSVs.
+///
+/// Returns `Ok(None)` when the file has no meaningful text content
+/// (empty CSV, scanned PDF, etc.) so the caller can fall back to
+/// vision extraction.
+pub fn extract_text_any(path: &Path) -> anyhow::Result<Option<String>> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase());
+
+    match ext.as_deref() {
+        Some("csv") => {
+            let text = std::fs::read_to_string(path)?;
+            let cleaned = text.trim();
+            if cleaned.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(cleaned.to_string()))
+            }
+        }
+        Some("xlsx") | Some("xls") | Some("xlsm") | Some("xlsb") | Some("ods") => {
+            extract_spreadsheet_text(path)
+        }
+        Some("pdf") | None => extract_text(path),
+        _ => extract_text(path),
+    }
+}
+
+/// Render the first sheet of a workbook as CSV-shaped text. We send
+/// it to the LLM exactly like a raw CSV — same extraction prompts
+/// work for both. Empty workbooks return `Ok(None)`.
+fn extract_spreadsheet_text(path: &Path) -> anyhow::Result<Option<String>> {
+    use calamine::{open_workbook_auto, Data, Reader};
+
+    let mut workbook = open_workbook_auto(path)
+        .map_err(|e| anyhow::anyhow!("could not open workbook: {e}"))?;
+
+    let sheet_names = workbook.sheet_names();
+    if sheet_names.is_empty() {
+        return Ok(None);
+    }
+    let first = sheet_names[0].clone();
+    let range = workbook
+        .worksheet_range(&first)
+        .map_err(|e| anyhow::anyhow!("could not read sheet '{first}': {e}"))?;
+
+    if range.is_empty() {
+        return Ok(None);
+    }
+
+    let mut buf = String::new();
+    for row in range.rows() {
+        let cells: Vec<String> = row
+            .iter()
+            .map(|c| match c {
+                Data::Empty => String::new(),
+                Data::String(s) => csv_escape(s),
+                Data::Bool(b) => b.to_string(),
+                Data::Int(i) => i.to_string(),
+                Data::Float(f) => {
+                    if f.fract() == 0.0 && f.abs() < 1e15 {
+                        format!("{}", *f as i64)
+                    } else {
+                        format!("{f}")
+                    }
+                }
+                Data::DateTime(d) => format!("{d}"),
+                Data::DateTimeIso(s) => csv_escape(s),
+                Data::DurationIso(s) => csv_escape(s),
+                Data::Error(e) => format!("#ERR({e:?})"),
+            })
+            .collect();
+        buf.push_str(&cells.join(","));
+        buf.push('\n');
+    }
+
+    let trimmed = buf.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed.to_string()))
+    }
+}
+
+fn csv_escape(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') {
+        let escaped = s.replace('"', "\"\"");
+        format!("\"{escaped}\"")
+    } else {
+        s.to_string()
+    }
+}
+
 /// Run extraction on one document by id. Reads the file from managed
 /// storage, picks the right extraction prompt for its `kind`, calls
 /// the LLM in JSON mode, and updates the document row with the
@@ -77,11 +174,12 @@ pub async fn run_extraction(
     let abs = storage::absolute_path(storage_root, Path::new(&doc.relative_path));
     let prompt = prompt_for_kind(&doc.kind);
 
-    // Stage 1: text-layer extraction (cheap, on-device).
+    // Stage 1: text-layer extraction (cheap, on-device). Dispatches by
+    // file extension — PDFs via pdf-extract, CSV/XLSX via calamine.
     // Stage 2: when text layer is empty AND the provider supports
     // document vision (Claude does, OpenAI/Ollama don't), send the
     // PDF bytes directly. No PDFium / OCR pipeline needed.
-    let json_value = match extract_text(&abs) {
+    let json_value = match extract_text_any(&abs) {
         Ok(Some(text)) => {
             match run_llm_extraction(pool, http.clone(), &text, prompt).await {
                 Ok(v) => v,
@@ -153,6 +251,7 @@ fn prompt_for_kind(kind: &str) -> &'static str {
         "signed_sheet" | "sign_in_sheet" => SHEET_PROMPT,
         "invoice" => INVOICE_PROMPT,
         "contract" => CONTRACT_PROMPT,
+        "coach_hours_master" | "hours_master" | "master_hours_sheet" => MASTER_HOURS_PROMPT,
         _ => GENERIC_PROMPT,
     }
 }
@@ -274,6 +373,40 @@ You are reading a document of unspecified kind. Return ONLY valid JSON with this
     { \"label\": string, \"value\": string }
   ]
 }";
+
+const MASTER_HOURS_PROMPT: &str = "\
+You are reading a CSV/spreadsheet export of a master coach-hours log — \
+typically a Google Sheet fed by a Google Form that coaches fill out across \
+many schools. Each meaningful row is one delivery instance (a coach showed \
+up at a school on a date for some hours). The columns vary by deployment; \
+common headers include 'Coach', 'Facilitator', 'Site', 'School', 'Date', \
+'Session Date', 'Hours', 'Time', 'Notes'.
+
+Return ONLY valid JSON with this shape:
+{
+  \"column_mapping\": {           // Which source column maps to which normalised field.
+    \"coach_name\": string?,      // Source column header for the coach/facilitator
+    \"school_name\": string?,     // Source column header for the school/site
+    \"date\": string?,            // Source column header for the session date
+    \"hours\": string?,           // Source column header for hours worked
+    \"notes\": string?            // Optional: session notes / topics / scope
+  },
+  \"rows\": [                    // EVERY data row in the sheet, normalised.
+    {
+      \"coach_name\": string?,    // Coach / facilitator name (trim whitespace)
+      \"school_name\": string?,   // School / site name
+      \"date\": string?,          // ISO date YYYY-MM-DD if possible
+      \"hours\": number?,         // Hours as a decimal number
+      \"notes\": string?          // Free text, null if empty
+    }
+  ],
+  \"row_count\": integer         // Length of rows[] — used as a sanity check
+}
+
+Skip header rows, totals rows, and obvious summary/blank rows. If a row \
+has only some fields, include what you have and null the rest. Normalise \
+dates to ISO format aggressively (e.g. '1/29/26' → '2026-01-29'). Do NOT \
+filter — return everything; the caller filters by engagement downstream.";
 
 /// Build the LLM call: load user's profile to pick the provider /
 /// model, send the kind-specific prompt as system + the extracted text

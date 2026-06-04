@@ -1295,3 +1295,317 @@ async fn apply_create_engagement(
         .to_string(),
     })
 }
+
+// ===========================================================================
+// DeriveSignInSheet — Path A of the master-sheet → sign-in-sheet flow.
+//
+// Taylor's master coach-hours spreadsheet (Google Sheet → CSV/XLSX export)
+// has been ingested as a document and extracted into structured rows by
+// the documents pipeline. This action filters those rows down to one
+// engagement (school + period), upserts the matching rows into
+// `coach_hours`, and renders the printable sign-in sheet PDF via the
+// existing renderer. Closes the loop on [[feedback-docs-first]] for the
+// sign-in-sheet half of Taylor's monthly ritual.
+// ===========================================================================
+
+pub struct DeriveSignInSheetHandler;
+
+#[async_trait::async_trait]
+impl ActionHandler for DeriveSignInSheetHandler {
+    fn kind(&self) -> &'static str {
+        "lte_derive_sign_in_sheet"
+    }
+
+    async fn apply(
+        &self,
+        pool: &SqlitePool,
+        app: &AppHandle,
+        params_json: &str,
+    ) -> anyhow::Result<Applied> {
+        let state = app.state::<crate::AppState>();
+        let workspace_id = state.workspace.read().await.active_id;
+        apply_derive_sign_in_sheet(pool, app, workspace_id, params_json).await
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeriveParams {
+    /// The document id of the master coach-hours spreadsheet.
+    source_document_id: i64,
+    /// The engagement to derive the sheet for.
+    engagement_id: i64,
+    /// ISO date string YYYY-MM-DD.
+    period_start: String,
+    /// ISO date string YYYY-MM-DD.
+    period_end: String,
+}
+
+async fn apply_derive_sign_in_sheet(
+    pool: &SqlitePool,
+    app: &AppHandle,
+    workspace_id: i64,
+    params_json: &str,
+) -> anyhow::Result<Applied> {
+    let p: DeriveParams = serde_json::from_str(params_json)?;
+
+    // 1. Load source doc + extracted JSON.
+    let doc = crate::documents::db::get(pool, p.source_document_id)
+        .await?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "master sheet document {} not found",
+                p.source_document_id
+            )
+        })?;
+    if doc.workspace_id != workspace_id {
+        anyhow::bail!(
+            "master sheet document {} is in a different workspace",
+            p.source_document_id
+        );
+    }
+    let extracted: serde_json::Value = doc
+        .extracted_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("malformed extracted JSON on master sheet: {e}"))?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "master sheet document {} hasn't been extracted yet — try re-running \
+                 extraction with kind='coach_hours_master'",
+                p.source_document_id
+            )
+        })?;
+    let rows = extracted
+        .get("rows")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "master sheet document {} extracted JSON has no 'rows' array — was \
+                 it labelled as kind 'coach_hours_master'?",
+                p.source_document_id
+            )
+        })?;
+
+    // 2. Load the engagement + school.
+    let row: Option<(String, Option<i64>)> = sqlx::query_as(
+        "SELECT name, school_id FROM engagement WHERE id = ?1 AND workspace_id = ?2",
+    )
+    .bind(p.engagement_id)
+    .bind(workspace_id)
+    .fetch_optional(pool)
+    .await?;
+    let (engagement_name, school_id) = row.ok_or_else(|| {
+        anyhow::anyhow!(
+            "engagement {} not found in active workspace",
+            p.engagement_id
+        )
+    })?;
+    let school_id = school_id.ok_or_else(|| {
+        anyhow::anyhow!("engagement {} has no school linked", p.engagement_id)
+    })?;
+    let school_name: String = sqlx::query_scalar("SELECT name FROM school WHERE id = ?1")
+        .bind(school_id)
+        .fetch_one(pool)
+        .await?;
+    let school_lower = school_name.to_lowercase();
+
+    // 3. Filter rows: school name match (fuzzy) AND date in period AND
+    //    has a coach + hours.
+    let mut matched: Vec<(String, String, f64, Option<String>)> = Vec::new();
+    let mut skipped_school = 0i64;
+    let mut skipped_period = 0i64;
+    let mut skipped_incomplete = 0i64;
+
+    for row in rows {
+        let row_school = row
+            .get("school_name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_lowercase());
+        let row_date = row
+            .get("date")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string());
+        let row_coach = row
+            .get("coach_name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string());
+        let row_hours = row.get("hours").and_then(|v| v.as_f64());
+        let row_notes = row
+            .get("notes")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let school_matches = match row_school.as_deref() {
+            Some(s) if !s.is_empty() => {
+                s.contains(&school_lower) || school_lower.contains(s)
+            }
+            _ => false,
+        };
+        if !school_matches {
+            skipped_school += 1;
+            continue;
+        }
+
+        let date_in_period = match row_date.as_deref() {
+            Some(d) if d.len() >= 10 => {
+                d >= p.period_start.as_str() && d <= p.period_end.as_str()
+            }
+            _ => false,
+        };
+        if !date_in_period {
+            skipped_period += 1;
+            continue;
+        }
+
+        match (row_coach, row_hours, row_date) {
+            (Some(c), Some(h), Some(d)) if !c.is_empty() && h > 0.0 => {
+                matched.push((c, d, h, row_notes));
+            }
+            _ => skipped_incomplete += 1,
+        }
+    }
+
+    if matched.is_empty() {
+        anyhow::bail!(
+            "No matching rows in the master sheet for {school_name} between {} and {}. \
+             Scanned {} rows total — {} wrong school, {} out of period, {} missing coach/hours/date.",
+            p.period_start,
+            p.period_end,
+            rows.len(),
+            skipped_school,
+            skipped_period,
+            skipped_incomplete
+        );
+    }
+
+    // 4. Upsert into coach_hours. Dedup by (coach, school, date).
+    let mut inserted = 0i64;
+    let mut updated = 0i64;
+    for (coach_name, date, hours, notes) in &matched {
+        let (coach_id, _) = resolve_or_create_coach(pool, workspace_id, coach_name).await?;
+
+        let existing_id: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM coach_hours
+             WHERE coach_id = ?1 AND school_id = ?2 AND session_date = ?3
+             LIMIT 1",
+        )
+        .bind(coach_id)
+        .bind(school_id)
+        .bind(date)
+        .fetch_optional(pool)
+        .await?;
+
+        if let Some(id) = existing_id {
+            sqlx::query(
+                "UPDATE coach_hours
+                 SET hours = ?1, description = ?2, engagement_id = ?3,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ?4",
+            )
+            .bind(hours)
+            .bind(notes.as_deref())
+            .bind(p.engagement_id)
+            .bind(id)
+            .execute(pool)
+            .await?;
+            updated += 1;
+        } else {
+            sqlx::query(
+                "INSERT INTO coach_hours
+                    (coach_id, school_id, session_date, hours, description, engagement_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )
+            .bind(coach_id)
+            .bind(school_id)
+            .bind(date)
+            .bind(hours)
+            .bind(notes.as_deref())
+            .bind(p.engagement_id)
+            .execute(pool)
+            .await?;
+            inserted += 1;
+        }
+    }
+
+    // 5. Render the sign-in sheet PDF.
+    let downloads = app
+        .path()
+        .download_dir()
+        .or_else(|_| app.path().app_data_dir())
+        .map_err(|e| anyhow::anyhow!("resolve downloads dir: {e}"))?;
+    std::fs::create_dir_all(&downloads)
+        .map_err(|e| anyhow::anyhow!("create downloads dir: {e}"))?;
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let dest = downloads.join(format!(
+        "lte-signin-eng{}-{}.pdf",
+        p.engagement_id, stamp
+    ));
+
+    let saved = super::pdf::render_sign_in_sheet(
+        pool,
+        p.engagement_id,
+        &p.period_start,
+        &p.period_end,
+        &dest,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("render sign-in sheet: {e}"))?;
+
+    // 6. Register the generated PDF as a document so it round-trips.
+    let state = app.state::<crate::AppState>();
+    let generated_doc_id = match crate::documents::cmd::register_generated_document(
+        app,
+        state.inner(),
+        &saved,
+        "signed_sheet",
+        Some(&format!(
+            "Sign-in Sheet · {} · {} to {} (derived from doc#{})",
+            engagement_name, p.period_start, p.period_end, p.source_document_id
+        )),
+        None,
+        None,
+    )
+    .await
+    {
+        Ok(d) => Some(d.id),
+        Err(e) => {
+            tracing::warn!("could not register derived sign-in PDF: {e}");
+            None
+        }
+    };
+
+    let matched_count = matched.len();
+    let dropped = skipped_school + skipped_period + skipped_incomplete;
+
+    Ok(Applied {
+        message: format!(
+            "Derived sign-in sheet for \"{engagement_name}\" at {school_name}, \
+             {} to {} — {matched_count} matching row{} from the master sheet \
+             ({} new, {} updated, {} skipped). PDF saved to {}.",
+            p.period_start,
+            p.period_end,
+            if matched_count == 1 { "" } else { "s" },
+            inserted,
+            updated,
+            dropped,
+            saved.display(),
+        ),
+        json: serde_json::json!({
+            "engagementId": p.engagement_id,
+            "schoolId": school_id,
+            "sourceDocumentId": p.source_document_id,
+            "generatedDocumentId": generated_doc_id,
+            "matchedRows": matched_count,
+            "insertedRows": inserted,
+            "updatedRows": updated,
+            "skippedRows": dropped,
+            "periodStart": p.period_start,
+            "periodEnd": p.period_end,
+            "outputPath": saved.to_string_lossy(),
+        })
+        .to_string(),
+    })
+}

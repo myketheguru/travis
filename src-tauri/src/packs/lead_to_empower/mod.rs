@@ -77,6 +77,7 @@ impl PackHandle for LeadToEmpowerPack {
             "lte_record_coach_hours",
             "lte_create_work_order",
             "lte_create_purchase_order",
+            "lte_derive_sign_in_sheet",
         ]
     }
 
@@ -88,6 +89,7 @@ impl PackHandle for LeadToEmpowerPack {
         registry.register(Box::new(actions::RecordCoachHoursHandler));
         registry.register(Box::new(actions::CreateWorkOrderHandler));
         registry.register(Box::new(actions::CreatePurchaseOrderHandler));
+        registry.register(Box::new(actions::DeriveSignInSheetHandler));
     }
 
     fn register_tools(&self, registry: &mut crate::tools::ToolRegistry) {

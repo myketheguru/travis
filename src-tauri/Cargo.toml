@@ -1,6 +1,6 @@
 [package]
 name = "travis"
-version = "0.12.0"
+version = "0.12.1"
 description = "Travis — local-first AI operations assistant"
 authors = ["myketheguru"]
 edition = "2021"
@@ -51,3 +51,5 @@ lettre = { version = "0.11", default-features = false, features = ["tokio1", "to
 base64 = "0.22"
 sha2 = "0.10"
 pdf-extract = "0.7"
+calamine = "0.26"
+csv = "1"

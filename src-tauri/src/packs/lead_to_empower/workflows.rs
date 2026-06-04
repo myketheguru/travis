@@ -88,7 +88,59 @@ pub const GENERATE_INVOICE: WorkflowDef = WorkflowDef {
     finalize_action: "propose_invoice_draft",
 };
 
+/// Derive a sign-in sheet for a single school+coach engagement from
+/// Taylor's master coach-hours spreadsheet (Google Sheet exported as
+/// CSV or XLSX). The master sheet pools entries across every school
+/// LTE is contracted with; Travis filters it down to just the rows
+/// for one engagement during a specific period, upserts those rows
+/// into `coach_hours`, and renders the printable sheet for principal
+/// signature.
+///
+/// Trigger phrasing: "make me a sign-in sheet for math at PS498 for
+/// February", "derive a sign-in sheet from the hours sheet", "print
+/// the Jan sign-in sheet for Karen's math engagement".
+pub const DERIVE_SIGN_IN_SHEET: WorkflowDef = WorkflowDef {
+    name: "lte_derive_sign_in_sheet",
+    display_name: "Derive sign-in sheet",
+    description:
+        "Filter a master coach-hours spreadsheet (Google Sheet export, CSV or XLSX) \
+         down to one engagement over a period, upsert the rows into coach_hours, \
+         and render the printable sign-in sheet PDF for principal signature.",
+    slots: &[
+        Slot {
+            name: "source_spreadsheet",
+            label: "Master hours spreadsheet",
+            required: true,
+            kind: SlotKind::Document { kind: "coach_hours_master" },
+            ask_hint:
+                "Drop the Google Sheet export (CSV or XLSX). If Taylor already \
+                 dropped it earlier in the conversation, surface that document \
+                 instead of asking again. After ingest, call set_document_kind \
+                 with kind:'coach_hours_master' if it isn't already labelled.",
+        },
+        Slot {
+            name: "engagement",
+            label: "Engagement",
+            required: true,
+            kind: SlotKind::Entity { kind: "engagement" },
+            ask_hint:
+                "Which engagement should the sheet cover? Surface active \
+                 engagements at the named school as selection chips.",
+        },
+        Slot {
+            name: "period",
+            label: "Period",
+            required: true,
+            kind: SlotKind::DateRange,
+            ask_hint:
+                "Which date range should the sheet cover? Usually a month \
+                 (\"January\", \"Jan-Feb\"). Normalise to two ISO dates.",
+        },
+    ],
+    finalize_action: "lte_derive_sign_in_sheet",
+};
+
 /// Every workflow this pack contributes. Wired in by the
 /// [`crate::packs::lead_to_empower::LeadToEmpowerPack::workflows`]
 /// implementation.
-pub const WORKFLOWS: &[WorkflowDef] = &[GENERATE_INVOICE];
+pub const WORKFLOWS: &[WorkflowDef] = &[GENERATE_INVOICE, DERIVE_SIGN_IN_SHEET];

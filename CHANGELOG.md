@@ -1,5 +1,61 @@
 # Travis Changelog
 
+## v0.12.1 — Derive a sign-in sheet from the master Google-Sheet export (2026-06-04)
+
+Taylor's workflow: a Google Form fills a master Google Sheet with every
+coach-hours entry across every school LTE serves. To get a sign-in sheet
+for one principal to sign, she manually filters down to one engagement
+and reformats. That filter-and-reformat step is now Travis's job.
+
+### What ships
+
+- **CSV + XLSX ingestion.** Drop a `.csv`, `.xlsx`, `.xls`, `.xlsm`,
+  `.xlsb`, or `.ods` file into the chat overlay; Travis stores it via
+  the existing document substrate. New `calamine` and `csv` crates
+  handle the read.
+- **`coach_hours_master` extraction prompt.** The LLM reads the
+  spreadsheet text, infers column mappings (`Coach Name` / `Site` /
+  `Date` / `Hours` / `Notes` — variants welcome), normalises dates to
+  ISO, returns every row as structured JSON. No filtering at extract
+  time — the workflow does that.
+- **New workflow recipe `lte_derive_sign_in_sheet`.** Slots: master
+  spreadsheet (Document), engagement (Entity), period (DateRange).
+- **New action handler `DeriveSignInSheetHandler`.** Loads the
+  extracted rows, filters by school name (fuzzy match against the
+  engagement's school) AND date in period AND has-coach/hours,
+  upserts the matched rows into `coach_hours` (dedup by coach + school
+  + date), renders the printable PDF via the existing
+  `render_sign_in_sheet`, registers the result as a Travis-generated
+  document for round-trip.
+- **Skip report.** The confirmation message says how many rows
+  matched, how many were dropped for wrong school / out of period /
+  missing fields — so Taylor catches data-quality issues at the
+  master-sheet level.
+
+### Example flow
+
+```
+Taylor: derive a sign-in sheet for math at PS498 for January
+
+Travis: [asks for the master sheet if not already attached]
+Taylor: [drops Hours_Master.xlsx]
+Travis: read 437 rows. Engagement = math team coaching at PS 498?
+Taylor: yes
+
+Travis: 18 matching rows for math at PS 498 between 2026-01-01 and
+        2026-01-31 (3 new, 15 already on file, 419 skipped — wrong
+        school or out of period). PDF saved to Downloads. Want to
+        open it?
+```
+
+### What's next (Path B, not in this release)
+
+Native Google Sheets integration — Drive `.readonly` OAuth scope, thin
+Sheets client, configurable sheet-id/tab/column mapping per workspace.
+Removes the manual-export step. Tracked alongside WORKFLOWS_BACKLOG.md.
+
+---
+
 ## v0.12.0 — Docs-first workflows: ingest, extract, reconcile, preview (2026-06-04)
 
 Travis now meets Taylor where she actually works — documents (POs, work
