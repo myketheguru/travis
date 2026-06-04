@@ -8,12 +8,17 @@ use crate::db::Db;
 use crate::llm::ToolDef;
 
 pub mod clipboard;
+pub mod find_documents;
 pub mod graph_neighbors;
 pub mod list_open_tasks;
 pub mod open_url;
 pub mod pack_introspect;
 pub mod pack_query;
+pub mod preview_document;
+pub mod read_document;
+pub mod reconcile_documents;
 pub mod search_memory;
+pub mod update_document;
 pub mod web_fetch;
 
 /// Per-call shared services available to tool implementations.
@@ -88,6 +93,11 @@ pub fn read_only_registry(packs: &[&dyn crate::packs::PackHandle]) -> ToolRegist
     reg.register(Box::new(pack_introspect::PackIntrospectTool));
     reg.register(Box::new(pack_query::PackQueryTool));
     reg.register(Box::new(graph_neighbors::GraphNeighborsTool));
+    reg.register(Box::new(read_document::ReadDocumentTool));
+    reg.register(Box::new(find_documents::FindDocumentsTool));
+    reg.register(Box::new(reconcile_documents::ReconcileDocumentsTool));
+    reg.register(Box::new(update_document::UpdateDocumentFieldTool));
+    reg.register(Box::new(preview_document::PreviewDocumentTool));
     for pack in packs {
         pack.register_tools(&mut reg);
     }

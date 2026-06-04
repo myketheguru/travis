@@ -9,6 +9,7 @@ mod conversation_cmd;
 mod data_export;
 mod data_export_cmd;
 mod db;
+mod documents;
 mod domain;
 mod identity_cmd_recall;
 mod initiatives;
@@ -42,6 +43,7 @@ mod task_cmd;
 mod telemetry;
 mod tools;
 mod updater_cmd;
+mod workflows;
 mod workspaces;
 mod workspaces_cmd;
 
@@ -479,6 +481,16 @@ pub fn run() {
             summary_cmd::generate_weekly_summary,
             data_export_cmd::export_data,
             data_export_cmd::reveal_export,
+            documents::cmd::ingest_document,
+            documents::cmd::list_documents,
+            documents::cmd::get_document,
+            documents::cmd::get_document_path,
+            documents::cmd::link_document,
+            documents::cmd::set_document_kind,
+            documents::cmd::delete_document,
+            documents::cmd::extract_document,
+            documents::cmd::update_document_extraction,
+            documents::cmd::preview_document,
             identity_cmd::list_entities,
             identity_cmd_recall::recall_entity,
             identity_cmd::get_profile_blurb,

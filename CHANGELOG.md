@@ -1,5 +1,104 @@
 # Travis Changelog
 
+## v0.12.0 — Docs-first workflows: ingest, extract, reconcile, preview (2026-06-04)
+
+Travis now meets Taylor where she actually works — documents (POs, work
+orders, signed sheets, contracts) as first-class inputs and outputs. She
+states intent ("invoice PS498 for Jan-Feb"); Travis drives the workflow,
+asks for the inputs it needs (drop the PO, drop the signed sheet, or
+reuse what's linked), extracts structured data, reconciles across docs,
+and proposes the draft. The same engine generalises to any pack's
+workflow shape — [WORKFLOWS_BACKLOG.md](./WORKFLOWS_BACKLOG.md) enumerates
+the capabilities core needs for full horizontal scale.
+
+### Slice 1 — Workflow recipes + dialogue manager
+
+- New `workflows` module: `WorkflowDef` / `Slot` / `SlotKind` types, per-
+  conversation `workflow_state` table, dialogue manager that renders
+  "what's filled · what's missing · what to ask next" into the LLM prompt.
+- LLM drives transitions via a new `workflowOps` field on the journal
+  extraction schema — `start` / `fillSlot` / `complete` / `abandon`.
+- Migration `0028_workflows.sql`.
+- `PackHandle::workflows()` lets each pack contribute recipes (mirrors
+  `register_actions` / `register_tools`). Framework in core, recipes in
+  packs.
+- LTE pack ships its first recipe: `lte_generate_invoice` (slots: school,
+  engagement, period, PO, signed sheet, optional WO).
+
+### Slice 2 — Document substrate
+
+- New `documents` module: `document` + `document_link` tables.
+- Content-addressed file storage at
+  `<app_data>/documents/<hash_prefix>/<hash><ext>` — duplicate drops
+  dedup automatically.
+- Tauri commands: `ingest_document`, `list_documents`, `get_document`,
+  `get_document_path`, `link_document`, `set_document_kind`,
+  `delete_document`.
+- Drag-and-drop affordance in the chat overlay — Taylor drops a PDF, it
+  hashes, copies, and surfaces as a chip above the input.
+- Migration `0029_documents.sql`.
+
+### Slice 3 — Read & digest
+
+- PDF text-layer extraction via `pdf-extract` crate (pure Rust, no
+  native deps).
+- Kind-specific extraction prompts for PO / WO / signed sheet / invoice /
+  contract — LLM in JSON mode produces structured fields.
+- Fire-and-forget background extraction on ingest; `extract_document`
+  Tauri command for manual / forced re-extraction.
+- New LLM tools: `read_document`, `find_documents`.
+- Vision fallback for scanned PDFs is scoped out for this release —
+  tracked in WORKFLOWS_BACKLOG.md. Scanned docs ingest cleanly but
+  flag `extraction_error: text layer empty; vision not yet wired`.
+
+### Slice 4 — Doc-entity round-trip wiring
+
+- Every Travis-generated PDF (invoice, work order, sign-in sheet) now
+  registers as a `document` row with `source = generated_by_travis`.
+- Round-trip: the PDF Travis emits is the same shape it can ingest later.
+- `register_generated_document` helper in `documents::cmd` — packs call
+  it after writing their PDFs.
+
+### Slice 5 — Multi-doc reconciliation
+
+- New `reconcile_documents` LLM tool: walks N documents' extracted JSON,
+  flags PO-number mismatches, school-name mismatches, period-window
+  inconsistencies, PO-vs-invoice total mismatches.
+- Travis uses this when multiple document slots are filled on the active
+  workflow, *before* proposing the finalize action — so inconsistencies
+  surface in chat rather than in the rendered invoice.
+
+### Slice 6 — Modify / regenerate
+
+- `update_document_extraction` Tauri command for full-overwrite
+  corrections to extracted JSON.
+- `update_document_field` LLM tool for surgical edits ("change line 2
+  unit price to $5031.30") via dot-path. Source PDF never modified —
+  only the structured layer Travis reasons over.
+- Generated PDFs round-trip via Slice 4: re-emitting after a data
+  correction re-registers the new PDF automatically.
+
+### Preview
+
+- `preview_document` Tauri command + LLM tool open any stored document
+  with the OS default viewer (Preview / Acrobat / browser / Excel) via
+  the existing `tauri-plugin-opener`. Taylor says "show me that invoice",
+  Travis opens the PDF.
+
+### Backlog
+
+- [WORKFLOWS_BACKLOG.md](./WORKFLOWS_BACKLOG.md) — exhaustive list of
+  workflow framework capabilities core needs to scale horizontally
+  beyond LTE-shape (slot kinds, branching, loops, sub-workflows,
+  external-action finalisers, multi-actor approval, audit trails).
+
+### Dependencies
+
+- `sha2 = "0.10"` — file-content hashing for documents.
+- `pdf-extract = "0.7"` — text-layer extraction.
+
+---
+
 ## v0.11.0 — BRAIN.md capabilities #2-#7 complete (2026-05-21)
 
 Travis goes from "graph-aware operations assistant" to "partner

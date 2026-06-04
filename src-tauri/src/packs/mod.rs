@@ -125,6 +125,14 @@ pub trait PackHandle: Send + Sync {
     fn alerts(&self) -> &'static [AlertDef] {
         &[]
     }
+
+    /// Workflow recipes this pack contributes. Each recipe declares
+    /// the slots Travis needs to gather (typed: text, dates, entities,
+    /// documents) and the action handler to dispatch when complete.
+    /// See [`crate::workflows::recipe::WorkflowDef`].
+    fn workflows(&self) -> &'static [crate::workflows::recipe::WorkflowDef] {
+        &[]
+    }
 }
 
 // ---------------------------------------------------------------------------

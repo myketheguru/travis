@@ -32,6 +32,7 @@ import {
   listProposedActions,
   type ProposedAction,
 } from "../lib/actions";
+import { ingestDocument, formatBytes, type Document } from "../lib/documents";
 
 type Tab = "open" | "done";
 
@@ -54,6 +55,12 @@ export default function Overlay() {
   /// each capture and replaced when the response arrives.
   const [mentionChips, setMentionChips] = useState<MentionChip[]>([]);
   const qReplyRef = useRef<HTMLInputElement>(null);
+  /// Documents Taylor dropped into this overlay session. The chat
+  /// surface shows them as small chips above the input so she sees
+  /// what Travis is reading; the next capture appends a reference to
+  /// these for the LLM to see.
+  const [attachedDocs, setAttachedDocs] = useState<Document[]>([]);
+  const [dropHovering, setDropHovering] = useState(false);
 
   const refreshActions = useCallback(async (cid: number | null) => {
     if (!cid) {
@@ -161,6 +168,80 @@ export default function Overlay() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Tauri drag-drop wiring ([[feedback-docs-first]]). When Taylor drops
+  // a file onto the overlay, ingest it through the documents pipeline
+  // and surface a small chip above the input. The LLM will see the
+  // attachment in the next capture via the workflow state.
+  useEffect(() => {
+    let unlistenEnter: (() => void) | null = null;
+    let unlistenDrop: (() => void) | null = null;
+    let unlistenLeave: (() => void) | null = null;
+    let cancelled = false;
+    (async () => {
+      try {
+        const win = getCurrentWindow();
+        unlistenEnter = await win.listen<unknown>(
+          "tauri://drag-enter",
+          () => {
+            if (!cancelled) setDropHovering(true);
+          },
+        );
+        unlistenLeave = await win.listen<unknown>(
+          "tauri://drag-leave",
+          () => {
+            if (!cancelled) setDropHovering(false);
+          },
+        );
+        unlistenDrop = await win.listen<{ paths?: string[] }>(
+          "tauri://drag-drop",
+          async (event) => {
+            if (cancelled) return;
+            setDropHovering(false);
+            const paths = event?.payload?.paths ?? [];
+            if (paths.length === 0) return;
+            for (const filePath of paths) {
+              try {
+                const doc = await ingestDocument({
+                  filePath,
+                  conversationId: conversationId,
+                });
+                setAttachedDocs((prev) => {
+                  if (prev.find((d) => d.id === doc.id)) return prev;
+                  return [...prev, doc];
+                });
+                setToast(`Attached ${doc.displayName}`);
+              } catch (e) {
+                setErrorToast(
+                  `Couldn't attach ${filePath.split(/[\\/]/).pop()}: ${(e as Error).message ?? e}`,
+                );
+              }
+            }
+          },
+        );
+      } catch {
+        // Drag-drop unsupported on this platform — degrade silently.
+      }
+    })();
+    return () => {
+      cancelled = true;
+      try {
+        unlistenEnter?.();
+      } catch {
+        /* ignore */
+      }
+      try {
+        unlistenDrop?.();
+      } catch {
+        /* ignore */
+      }
+      try {
+        unlistenLeave?.();
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [conversationId]);
+
   useEffect(() => {
     if (!toast && !errorToast) return;
     const id = setTimeout(() => {
@@ -213,8 +294,24 @@ export default function Overlay() {
     // stay visible across the round-trip and replace its content only when
     // the new response arrives — keeps the conversation card stable.
     setProgress("Saved · thinking…");
+    // Append attached-document references to the captured text so the LLM
+    // sees them. The substrate stores the file; Slice 3 will extract its
+    // contents and feed them into the workflow state. For Slice 2, this
+    // hint is enough for Travis to acknowledge the drop.
+    const docHint =
+      attachedDocs.length > 0
+        ? "\n\n[Attached: " +
+          attachedDocs
+            .map((d) => `${d.displayName} (${d.kind}, doc#${d.id})`)
+            .join(", ") +
+          "]"
+        : "";
+    const submitPayload = trimmed + docHint;
+    // Clear attached docs from the per-turn UI; they're persisted on the
+    // server and referenceable via doc#N going forward.
+    setAttachedDocs([]);
     try {
-      const r = await journalIngest(trimmed, conversationId ?? undefined);
+      const r = await journalIngest(submitPayload, conversationId ?? undefined);
       setProgress(null);
       await refresh(tab);
       setConversationId(r.conversationId);
@@ -332,8 +429,50 @@ export default function Overlay() {
 
         <div
           className="px-7 pt-3 pb-3 relative sticky top-0 z-10"
-          style={{ background: "rgba(10, 8, 18, 0.97)" }}
+          style={{
+            background: dropHovering
+              ? "rgba(124, 92, 255, 0.10)"
+              : "rgba(10, 8, 18, 0.97)",
+            transition: "background 200ms ease-out",
+            outline: dropHovering ? "1px dashed rgba(124, 92, 255, 0.45)" : "none",
+            outlineOffset: -1,
+          }}
         >
+          {attachedDocs.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 pb-2">
+              {attachedDocs.map((d) => (
+                <div
+                  key={d.id}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-pulse/12 border border-pulse/25 px-2 py-1 text-[11px] text-bone-2 font-mono"
+                  title={`${d.originalFilename} · ${formatBytes(d.sizeBytes)}`}
+                >
+                  <span className="text-pulse">◈</span>
+                  <span className="truncate max-w-[180px]">{d.displayName}</span>
+                  <span className="text-bone-3">{formatBytes(d.sizeBytes)}</span>
+                  <button
+                    onClick={() =>
+                      setAttachedDocs((prev) => prev.filter((x) => x.id !== d.id))
+                    }
+                    className="text-bone-3 hover:text-bone-2 ml-0.5"
+                    title="Remove from this turn"
+                    data-no-drag
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              {dropHovering && (
+                <div className="text-[11px] text-pulse-2/80 font-mono self-center">
+                  drop to attach…
+                </div>
+              )}
+            </div>
+          )}
+          {attachedDocs.length === 0 && dropHovering && (
+            <div className="text-[11px] text-pulse-2 font-mono pb-2">
+              drop file to attach to this turn
+            </div>
+          )}
           <input
             autoFocus
             value={input}
@@ -347,7 +486,13 @@ export default function Overlay() {
                 submit();
               }
             }}
-            placeholder={busy ? "Thinking…" : "What are you thinking?"}
+            placeholder={
+              busy
+                ? "Thinking…"
+                : attachedDocs.length > 0
+                  ? "Tell Travis what to do with the file…"
+                  : "What are you thinking?"
+            }
             disabled={busy}
             className="w-full bg-transparent text-bone text-2xl font-light placeholder:text-bone-3/50 focus:outline-none pr-16 disabled:text-bone-2/70"
           />

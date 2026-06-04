@@ -19,8 +19,10 @@ pub mod pdf_cmd;
 pub mod pricing;
 mod tables;
 mod tools;
+mod workflows;
 
 use crate::packs::{AlertDef, AlertSeverity, PackHandle, PackMigration, TableDef};
+use crate::workflows::recipe::WorkflowDef;
 
 const SLUG: &str = "lead-to-empower";
 
@@ -103,6 +105,10 @@ impl PackHandle for LeadToEmpowerPack {
 
     fn alerts(&self) -> &'static [AlertDef] {
         ALERTS
+    }
+
+    fn workflows(&self) -> &'static [WorkflowDef] {
+        workflows::WORKFLOWS
     }
 }
 

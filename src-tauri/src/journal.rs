@@ -288,6 +288,11 @@ pub struct Extraction {
     /// Null when the note is pure ops with no emotional register.
     #[serde(default)]
     pub affect_signals: Option<ExtractedAffect>,
+    /// Workflow transitions the LLM wants applied to the active
+    /// workflow on this conversation. Empty when no workflow activity.
+    /// See [`crate::workflows`] and [[feedback-workflow-led]].
+    #[serde(default)]
+    pub workflow_ops: Vec<ExtractedWorkflowOp>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -305,6 +310,37 @@ pub struct ExtractedHypothesis {
     pub note: String,
     #[serde(default)]
     pub confidence: Option<String>,
+}
+
+/// One LLM-emitted workflow transition. The dialogue manager applies
+/// these in order after extraction, updating the persisted workflow
+/// state. See [`crate::workflows`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ExtractedWorkflowOp {
+    /// Begin a new workflow on this conversation. Abandons any active
+    /// one first — Taylor's new intent supersedes whatever was running.
+    Start {
+        recipe: String,
+        #[serde(default)]
+        intent: Option<String>,
+    },
+    /// Fill a single slot on the active workflow. `value` is JSON of
+    /// any shape the slot expects.
+    FillSlot {
+        slot_name: String,
+        value: serde_json::Value,
+        #[serde(default)]
+        source: Option<String>,
+    },
+    /// All required slots are filled and the finalize action has been
+    /// proposed. Marks the workflow completed so it stops surfacing.
+    Complete,
+    /// User changed subject; abandon the active workflow.
+    Abandon {
+        #[serde(default)]
+        reason: Option<String>,
+    },
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -589,6 +625,23 @@ fn build_extraction_tool(action_kinds: &[&str], entity_kinds: &[&str]) -> ToolDe
                             "confidence": { "type": "string", "enum": ["high", "medium", "low"], "description": "high = explicitly stated, medium = strongly implied, low = single weak signal." }
                         },
                         "required": ["entity", "predicate", "value"]
+                    }
+                },
+                "workflowOps": {
+                    "type": "array",
+                    "description": "Workflow state transitions for the dialogue manager. Use these to drive multi-turn outputs (invoice generation, sign-in sheet curation, contract drafting). When the user states intent that matches an available recipe (see the WORKFLOW catalog block — or ACTIVE WORKFLOW if one is in flight), emit {kind:'start', recipe:'<recipe_name>', intent:'<user's words>'}. When the user supplies a piece of info that fills a slot on the active workflow, emit {kind:'fillSlot', slotName:'<slot>', value:<any JSON>, source:'user_typed'|'graph_resolved'|'extracted'|'user_dropped'}. When all required slots are filled and you've proposed the finalize action, emit {kind:'complete'}. When the user changes subject mid-workflow, emit {kind:'abandon', reason:'<one line>'}. Only emit ops that match the current ACTIVE WORKFLOW state.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": { "type": "string", "enum": ["start", "fillSlot", "complete", "abandon"] },
+                            "recipe": { "type": ["string", "null"], "description": "Required for kind=start; name of the recipe." },
+                            "slotName": { "type": ["string", "null"], "description": "Required for kind=fillSlot; the slot's stable name from the recipe." },
+                            "value": { "description": "Required for kind=fillSlot; any JSON shape the slot expects (entity {id,name}, document {id,kind}, date string, money cents int, etc)." },
+                            "source": { "type": ["string", "null"], "enum": ["user_typed", "graph_resolved", "extracted", "user_dropped", null] },
+                            "intent": { "type": ["string", "null"], "description": "Optional for kind=start; one-line intent in user's words." },
+                            "reason": { "type": ["string", "null"], "description": "Optional for kind=abandon; one-line why." }
+                        },
+                        "required": ["kind"]
                     }
                 }
             },
@@ -1355,6 +1408,36 @@ pub async fn journal_ingest(
     .await;
     let initiatives_block = crate::initiatives::format_for_prompt(&active_initiatives);
 
+    // Workflow dialogue state ([[feedback-workflow-led]]). If a
+    // workflow is in flight for this conversation, Travis sees what's
+    // filled / what's still missing / what to ask next. The catalog
+    // tells the LLM which recipes exist so it can emit a {start, ...}
+    // op when the user states intent.
+    let active_workflow = crate::workflows::state::get_active(
+        &state.db.pool,
+        conv_id,
+    )
+    .await;
+    let workflow_block = crate::workflows::dialogue::format_for_prompt(active_workflow.as_ref());
+    let workflow_catalog_block = if active_workflow.is_none() {
+        // Only show the catalog when nothing's running — otherwise the
+        // active block is the relevant context.
+        let all = crate::workflows::registry::all_recipes();
+        if all.is_empty() {
+            String::new()
+        } else {
+            let mut s = String::from(
+                "WORKFLOW CATALOG (emit workflowOps with kind:\"start\" + recipe name when user states matching intent):\n",
+            );
+            for r in all {
+                s.push_str(&format!("- {} ({}): {}\n", r.display_name, r.name, r.description));
+            }
+            s
+        }
+    } else {
+        String::new()
+    };
+
     let workspace_block = crate::workspaces::prompt_context_block(
         &state.db.pool,
         ws_snapshot.active_id,
@@ -1392,7 +1475,7 @@ pub async fn journal_ingest(
     };
 
     let user_msg = format!(
-        "Today is {today}.\n\nOPEN TASKS (id · title):\n{open}\n\nRELEVANT MEMORY:\n{mem}\n\n{graph}{working}{initiatives}{ws}New turn:\n{raw}",
+        "Today is {today}.\n\nOPEN TASKS (id · title):\n{open}\n\nRELEVANT MEMORY:\n{mem}\n\n{graph}{working}{initiatives}{workflow}{catalog}{ws}New turn:\n{raw}",
         today = today_local(),
         open = format_open_tasks(&open_tasks),
         mem = format_memory(&mem_hits),
@@ -1410,6 +1493,16 @@ pub async fn journal_ingest(
             String::new()
         } else {
             format!("{initiatives_block}\n")
+        },
+        workflow = if workflow_block.is_empty() {
+            String::new()
+        } else {
+            format!("{workflow_block}\n")
+        },
+        catalog = if workflow_catalog_block.is_empty() {
+            String::new()
+        } else {
+            format!("{workflow_catalog_block}\n")
         },
         ws = if workspace_options_block.is_empty() {
             String::new()
@@ -2132,6 +2225,95 @@ pub async fn journal_ingest(
             {
                 Ok(row) => persisted_actions.push(row),
                 Err(e) => tracing::warn!("failed to record proposed action: {e}"),
+            }
+        }
+    }
+
+    // Apply workflow ops in order ([[feedback-workflow-led]]). The LLM
+    // emits a `Start` then any number of `FillSlot`s; later turns might
+    // add more fills, then a `Complete` once finalization is proposed.
+    // Track the current active workflow id locally so multiple ops in
+    // one turn compose.
+    if !extraction.workflow_ops.is_empty() {
+        use crate::workflows::state::{self as wstate, SlotSource};
+        let mut current_id: Option<i64> = wstate::get_active(&state.db.pool, conv_id)
+            .await
+            .map(|w| w.id);
+        for op in &extraction.workflow_ops {
+            match op {
+                ExtractedWorkflowOp::Start { recipe, intent } => {
+                    // Validate the recipe exists; ignore if not.
+                    if crate::workflows::registry::find_recipe(recipe).is_none() {
+                        tracing::warn!("workflow start ignored — unknown recipe: {recipe}");
+                        continue;
+                    }
+                    match wstate::start(
+                        &state.db.pool,
+                        conv_id,
+                        recipe,
+                        intent.as_deref(),
+                    )
+                    .await
+                    {
+                        Ok(w) => {
+                            tracing::info!("workflow started: {} (id {})", recipe, w.id);
+                            current_id = Some(w.id);
+                        }
+                        Err(e) => tracing::warn!("workflow start failed ({recipe}): {e}"),
+                    }
+                }
+                ExtractedWorkflowOp::FillSlot {
+                    slot_name,
+                    value,
+                    source,
+                } => {
+                    let Some(id) = current_id else {
+                        tracing::warn!(
+                            "workflow fillSlot ignored — no active workflow for conv {conv_id}"
+                        );
+                        continue;
+                    };
+                    let src = match source.as_deref() {
+                        Some("user_typed") => SlotSource::UserTyped,
+                        Some("extracted") => SlotSource::Extracted,
+                        Some("user_dropped") => SlotSource::UserDropped,
+                        Some("graph_resolved") => SlotSource::GraphResolved,
+                        _ => SlotSource::UserTyped,
+                    };
+                    if let Err(e) = wstate::fill_slot(
+                        &state.db.pool,
+                        id,
+                        slot_name,
+                        value.clone(),
+                        src,
+                    )
+                    .await
+                    {
+                        tracing::warn!("workflow fillSlot failed ({slot_name}): {e}");
+                    }
+                }
+                ExtractedWorkflowOp::Complete => {
+                    if let Some(id) = current_id {
+                        if let Err(e) = wstate::mark_completed(&state.db.pool, id).await {
+                            tracing::warn!("workflow complete failed: {e}");
+                        } else {
+                            current_id = None;
+                        }
+                    }
+                }
+                ExtractedWorkflowOp::Abandon { reason } => {
+                    if let Some(id) = current_id {
+                        if let Err(e) = wstate::mark_abandoned(&state.db.pool, id).await {
+                            tracing::warn!("workflow abandon failed: {e}");
+                        } else {
+                            tracing::info!(
+                                "workflow abandoned (id {id}): {}",
+                                reason.as_deref().unwrap_or("no reason")
+                            );
+                            current_id = None;
+                        }
+                    }
+                }
             }
         }
     }

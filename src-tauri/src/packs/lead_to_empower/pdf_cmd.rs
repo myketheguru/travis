@@ -8,6 +8,7 @@ use crate::AppState;
 
 #[tauri::command]
 pub async fn export_invoice_pdf(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     invoice_id: i64,
     dest_path: String,
@@ -30,6 +31,23 @@ pub async fn export_invoice_pdf(
     let saved = super::pdf::export_invoice(&state.db.pool, invoice_id, &dest, &profile)
         .await
         .map_err(|e| format!("export invoice {invoice_id}: {e}"))?;
+
+    // Round-trip ([[feedback-docs-first]]): register the generated PDF
+    // as a document so it's re-ingestible later. Failures here log but
+    // don't break the export — the file is on disk regardless.
+    if let Err(e) = crate::documents::cmd::register_generated_document(
+        &app,
+        state.inner(),
+        &saved,
+        "invoice",
+        Some(&format!("Invoice #{invoice_id}")),
+        None,
+        None,
+    )
+    .await
+    {
+        tracing::warn!("could not register generated invoice PDF: {e}");
+    }
 
     Ok(saved.to_string_lossy().into_owned())
 }
@@ -90,6 +108,21 @@ pub async fn export_work_order_pdf(
     let saved = super::pdf::render_work_order(&state.db.pool, work_order_id, &dest)
         .await
         .map_err(|e| format!("render work order {work_order_id}: {e}"))?;
+
+    if let Err(e) = crate::documents::cmd::register_generated_document(
+        &app,
+        state.inner(),
+        &saved,
+        "wo",
+        Some(&format!("Work Order #{work_order_id}")),
+        None,
+        None,
+    )
+    .await
+    {
+        tracing::warn!("could not register generated WO PDF: {e}");
+    }
+
     Ok(saved.to_string_lossy().into_owned())
 }
 
@@ -124,5 +157,22 @@ pub async fn export_sign_in_sheet_pdf(
     )
     .await
     .map_err(|e| format!("render sign-in sheet for engagement {engagement_id}: {e}"))?;
+
+    if let Err(e) = crate::documents::cmd::register_generated_document(
+        &app,
+        state.inner(),
+        &saved,
+        "signed_sheet",
+        Some(&format!(
+            "Sign-in Sheet · eng#{engagement_id} · {period_start}..{period_end}"
+        )),
+        None,
+        None,
+    )
+    .await
+    {
+        tracing::warn!("could not register generated sign-in sheet PDF: {e}");
+    }
+
     Ok(saved.to_string_lossy().into_owned())
 }
