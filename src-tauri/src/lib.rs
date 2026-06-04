@@ -411,6 +411,52 @@ pub fn run() {
                 }
             });
 
+            // Auto-update poll. Tauri's updater plugin doesn't poll by
+            // default — without this loop the only path that ever
+            // checks the endpoint is Settings → "Check for updates".
+            // First check fires ~60s after startup (give the app room
+            // to settle), then every 4 hours. When a new version is
+            // detected we emit `update-available` for the frontend AND
+            // fire a system notification (once per version per session
+            // so we don't spam between polls).
+            {
+                let handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    use tauri::Emitter;
+                    use tauri_plugin_notification::NotificationExt;
+                    let mut last_notified: Option<String> = None;
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    loop {
+                        match crate::updater_cmd::silent_check(&handle).await {
+                            Ok(Some(info)) => {
+                                tracing::info!(
+                                    "update available: {} (current {})",
+                                    info.version,
+                                    env!("CARGO_PKG_VERSION"),
+                                );
+                                let _ = handle.emit("update-available", &info);
+                                // Native notification, once per session per version.
+                                if last_notified.as_deref() != Some(info.version.as_str()) {
+                                    let _ = handle
+                                        .notification()
+                                        .builder()
+                                        .title("Travis update available")
+                                        .body(format!(
+                                            "Version {} is ready. Open Settings to install.",
+                                            info.version
+                                        ))
+                                        .show();
+                                    last_notified = Some(info.version.clone());
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(e) => tracing::warn!("auto-update check failed: {e}"),
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(4 * 60 * 60)).await;
+                    }
+                });
+            }
+
             // Emit app_start telemetry — metadata only.
             let pool2 = db_arc.pool.clone();
             tauri::async_runtime::spawn(async move {

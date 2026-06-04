@@ -1,5 +1,20 @@
 # Travis Changelog
 
+## v0.12.2 — Auto-update polls in the background (2026-06-04)
+
+Travis no longer requires Taylor to remember to check Settings for
+updates. A background poll runs every 4 hours: when a newer version is
+published in the release feed, Travis emits an `update-available` event
+the frontend can listen for AND fires a one-shot system notification.
+First check happens ~60 seconds after launch (gives the app room to
+settle into its other startup tasks). Once-per-version dedup so back-
+to-back polls don't re-notify the same version twice in a session.
+
+The existing Settings "Check for updates" button still works as the
+manual path; the new poll just removes the need to remember it.
+
+---
+
 ## v0.12.1 — Derive a sign-in sheet from the master Google-Sheet export (2026-06-04)
 
 Taylor's workflow: a Google Form fills a master Google Sheet with every
