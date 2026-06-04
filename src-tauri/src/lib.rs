@@ -103,6 +103,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
@@ -537,6 +538,7 @@ pub fn run() {
             documents::cmd::extract_document,
             documents::cmd::update_document_extraction,
             documents::cmd::preview_document,
+            workflows::cmd::get_active_workflow,
             identity_cmd::list_entities,
             identity_cmd_recall::recall_entity,
             identity_cmd::get_profile_blurb,

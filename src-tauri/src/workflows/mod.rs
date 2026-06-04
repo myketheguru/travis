@@ -17,6 +17,7 @@
 //! See [[feedback-workflow-led]] and [[feedback-docs-first]] for the
 //! design context.
 
+pub mod cmd;
 pub mod dialogue;
 pub mod recipe;
 pub mod registry;

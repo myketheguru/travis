@@ -1,11 +1,20 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { journalIngest } from "../../lib/journal";
 import {
   activeConversation,
   getThread,
   type ConversationMessage,
 } from "../../lib/conversation";
+import {
+  ingestDocument,
+  formatBytes,
+  type Document,
+} from "../../lib/documents";
+import { ActiveWorkflowPill } from "../../components/ActiveWorkflowPill";
+import { DocumentExtractCard } from "../../overlay/DocumentExtractCard";
 import { useAppStore } from "../../stores/app";
 
 export default function AskTab() {
@@ -14,6 +23,9 @@ export default function AskTab() {
   const [conversationId, setConversationId] = useState<number | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [attachedDocs, setAttachedDocs] = useState<Document[]>([]);
+  const [expandedDocs, setExpandedDocs] = useState<Set<number>>(new Set());
+  const [dropHovering, setDropHovering] = useState(false);
   const setActivity = useAppStore((s) => s.setActivity);
   const pulse = useAppStore((s) => s.pulse);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -36,24 +48,40 @@ export default function AskTab() {
 
   const submit = async () => {
     const text = q.trim();
-    if (!text || busy) return;
+    if (!text && attachedDocs.length === 0) return;
+    if (busy) return;
     setBusy(true);
     setError(null);
     setActivity("thinking");
+
+    const docHint =
+      attachedDocs.length > 0
+        ? "\n\n[Attached: " +
+          attachedDocs
+            .map((d) => `${d.displayName} (${d.kind}, doc#${d.id})`)
+            .join(", ") +
+          "]"
+        : "";
+    const submitPayload = (text || "(attached files for review)") + docHint;
 
     const optimistic: ConversationMessage = {
       id: -Date.now(),
       conversationId: conversationId ?? -1,
       role: "user",
-      content: text,
+      content: submitPayload,
       payloadJson: null,
       createdAt: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, optimistic]);
     setQ("");
+    setAttachedDocs([]);
+    setExpandedDocs(new Set());
 
     try {
-      const r = await journalIngest(text, conversationId ?? undefined);
+      const r = await journalIngest(
+        submitPayload,
+        conversationId ?? undefined,
+      );
       setConversationId(r.conversationId);
       setMessages(r.thread.messages);
     } catch (e) {
@@ -64,6 +92,102 @@ export default function AskTab() {
       setBusy(false);
     }
   };
+
+  const ingestFile = useCallback(
+    async (filePath: string) => {
+      try {
+        const doc = await ingestDocument({
+          filePath,
+          conversationId: conversationId,
+        });
+        setAttachedDocs((prev) =>
+          prev.find((d) => d.id === doc.id) ? prev : [...prev, doc],
+        );
+      } catch (e) {
+        setError(`Couldn't attach ${filePath.split(/[\\/]/).pop()}: ${(e as Error).message ?? e}`);
+      }
+    },
+    [conversationId],
+  );
+
+  const handlePickFile = useCallback(async () => {
+    try {
+      const selected = await openFileDialog({
+        multiple: true,
+        title: "Attach to Travis",
+        filters: [
+          {
+            name: "Documents",
+            extensions: ["pdf", "csv", "xlsx", "xls", "xlsm", "xlsb", "ods", "png", "jpg", "jpeg", "webp"],
+          },
+        ],
+      });
+      if (!selected) return;
+      const paths = Array.isArray(selected) ? selected : [selected];
+      for (const p of paths) {
+        await ingestFile(p);
+      }
+    } catch (e) {
+      setError((e as Error).message ?? String(e));
+    }
+  }, [ingestFile]);
+
+  // Drag-drop listener on the main window. Mirrors the overlay's
+  // wiring so Taylor can drop a file anywhere on the Ask surface.
+  useEffect(() => {
+    let unlistenEnter: (() => void) | null = null;
+    let unlistenDrop: (() => void) | null = null;
+    let unlistenLeave: (() => void) | null = null;
+    let cancelled = false;
+    (async () => {
+      try {
+        const win = getCurrentWindow();
+        unlistenEnter = await win.listen<unknown>(
+          "tauri://drag-enter",
+          () => {
+            if (!cancelled) setDropHovering(true);
+          },
+        );
+        unlistenLeave = await win.listen<unknown>(
+          "tauri://drag-leave",
+          () => {
+            if (!cancelled) setDropHovering(false);
+          },
+        );
+        unlistenDrop = await win.listen<{ paths?: string[] }>(
+          "tauri://drag-drop",
+          async (event) => {
+            if (cancelled) return;
+            setDropHovering(false);
+            const paths = event?.payload?.paths ?? [];
+            for (const p of paths) {
+              await ingestFile(p);
+            }
+          },
+        );
+      } catch {
+        /* drag-drop unsupported; degrade silently */
+      }
+    })();
+    return () => {
+      cancelled = true;
+      try {
+        unlistenEnter?.();
+      } catch {
+        /* ignore */
+      }
+      try {
+        unlistenDrop?.();
+      } catch {
+        /* ignore */
+      }
+      try {
+        unlistenLeave?.();
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [ingestFile]);
 
   const reset = async () => {
     setConversationId(null);
@@ -146,24 +270,147 @@ export default function AskTab() {
         )}
       </div>
 
-      <div className="pt-3 mt-3 border-t border-white/[0.04] flex flex-col gap-1">
-        <input
-          autoFocus
-          value={q}
-          onChange={(e) => {
-            pulse();
-            setQ(e.target.value);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              submit();
+      <div
+        className="pt-3 mt-3 border-t border-white/[0.04] flex flex-col gap-1"
+        style={{
+          background: dropHovering ? "rgba(124, 92, 255, 0.08)" : "transparent",
+          transition: "background 200ms ease-out",
+          borderRadius: dropHovering ? 8 : 0,
+          outline: dropHovering ? "1px dashed rgba(124, 92, 255, 0.45)" : "none",
+          outlineOffset: -1,
+        }}
+      >
+        <ActiveWorkflowPill conversationId={conversationId} />
+
+        {attachedDocs.length > 0 && (
+          <>
+            <div className="flex flex-wrap gap-1.5 pb-1.5">
+              {attachedDocs.map((d) => {
+                const expanded = expandedDocs.has(d.id);
+                return (
+                  <button
+                    key={d.id}
+                    onClick={() =>
+                      setExpandedDocs((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(d.id)) next.delete(d.id);
+                        else next.add(d.id);
+                        return next;
+                      })
+                    }
+                    className={
+                      "inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-mono transition-colors " +
+                      (expanded
+                        ? "bg-pulse/25 border border-pulse/50 text-bone"
+                        : "bg-pulse/12 border border-pulse/25 text-bone-2 hover:bg-pulse/18")
+                    }
+                    title={`${d.originalFilename} · ${formatBytes(d.sizeBytes)} · click to ${
+                      expanded ? "collapse" : "view extracted fields"
+                    }`}
+                  >
+                    <span className="text-pulse">◈</span>
+                    <span className="truncate max-w-[200px]">{d.displayName}</span>
+                    <span className="text-bone-3">{formatBytes(d.sizeBytes)}</span>
+                    <span
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setAttachedDocs((prev) =>
+                          prev.filter((x) => x.id !== d.id),
+                        );
+                        setExpandedDocs((prev) => {
+                          const next = new Set(prev);
+                          next.delete(d.id);
+                          return next;
+                        });
+                      }}
+                      className="text-bone-3 hover:text-bone-2 ml-0.5 cursor-pointer"
+                      title="Remove from this turn"
+                    >
+                      ×
+                    </span>
+                  </button>
+                );
+              })}
+              {dropHovering && (
+                <div className="text-[11px] text-pulse-2/80 font-mono self-center">
+                  drop to attach…
+                </div>
+              )}
+            </div>
+            <AnimatePresence>
+              {attachedDocs
+                .filter((d) => expandedDocs.has(d.id))
+                .map((d) => (
+                  <div key={`card-${d.id}`} className="pb-2">
+                    <DocumentExtractCard
+                      documentId={d.id}
+                      onClose={() => {
+                        setExpandedDocs((prev) => {
+                          const next = new Set(prev);
+                          next.delete(d.id);
+                          return next;
+                        });
+                      }}
+                    />
+                  </div>
+                ))}
+            </AnimatePresence>
+          </>
+        )}
+
+        {attachedDocs.length === 0 && dropHovering && (
+          <div className="text-[11px] text-pulse-2 font-mono pb-1">
+            drop file to attach
+          </div>
+        )}
+
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handlePickFile}
+            disabled={busy}
+            title="Attach file"
+            className="shrink-0 h-8 w-8 flex items-center justify-center rounded-full text-bone-3 hover:text-bone-2 hover:bg-white/[0.04] disabled:opacity-50 transition-colors"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="16"
+              height="16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+            </svg>
+          </button>
+          <input
+            autoFocus
+            value={q}
+            onChange={(e) => {
+              pulse();
+              setQ(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                submit();
+              }
+            }}
+            placeholder={
+              empty
+                ? attachedDocs.length > 0
+                  ? "Tell Travis what to do with the file(s)…"
+                  : "Type anything…"
+                : attachedDocs.length > 0
+                  ? "Add a note for the attachment(s)…"
+                  : "Continue…"
             }
-          }}
-          placeholder={empty ? "Type anything…" : "Continue…"}
-          disabled={busy}
-          className="w-full bg-transparent px-1 py-2 text-bone text-base font-light placeholder:text-bone-3/50 focus:outline-none disabled:text-bone-2/70"
-        />
+            disabled={busy}
+            className="w-full bg-transparent px-1 py-2 text-bone text-base font-light placeholder:text-bone-3/50 focus:outline-none disabled:text-bone-2/70"
+          />
+        </div>
         {error && <p className="text-warn text-xs">{error}</p>}
       </div>
     </div>

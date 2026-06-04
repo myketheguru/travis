@@ -34,6 +34,7 @@ import {
 } from "../lib/actions";
 import { ingestDocument, formatBytes, type Document } from "../lib/documents";
 import { DocumentExtractCard } from "./DocumentExtractCard";
+import { ActiveWorkflowPill } from "../components/ActiveWorkflowPill";
 
 type Tab = "open" | "done";
 
@@ -442,6 +443,8 @@ export default function Overlay() {
             outlineOffset: -1,
           }}
         >
+          <ActiveWorkflowPill conversationId={conversationId} compact />
+
           {attachedDocs.length > 0 && (
             <>
               <div className="flex flex-wrap gap-1.5 pb-2">

@@ -1,5 +1,93 @@
 # Travis Changelog
 
+## v0.13.0 — Five-piece response to Taylor's first real test (2026-06-04)
+
+Taylor's feedback after using v0.12.3 against her real workflow:
+1. "Engagement and contract is too broad — might mean the same thing"
+2. "We don't always invoice the full amount at once. A contract can
+   have many invoices until the amount is complete"
+3. "Upload the PO (or WO) and Travis can create a contract from it"
+4. "There's no way from the UI/Ask/chat interface where files can be
+   uploaded"
+5. "The UI should show that files have been uploaded and the workflow
+   drive should always be running/active"
+
+All five land in this release.
+
+### Collapsed contract + engagement into one record (LTE pack v0.7.0)
+
+The two-table distinction was an abstraction I added that didn't match
+her real work. Migration `0005_collapse_contract_engagement` extends
+the `engagement` table with every contract-shape field (`ref`,
+`ceiling_cents`, `term_start`, `term_end`, `signed_at`,
+`parent_solicitation`, `pdf_path`, `counterparty`, `contract_status`),
+backfills data from any standalone `contract` rows, and synthesises
+engagement rows for orphan contracts so no data is lost. The standalone
+`contract` table stays for backward compat but is hidden from the
+sidebar — engagement IS the contract now.
+
+UI / chat / extraction prompts say "Contract" everywhere. The SQL
+table stays named `engagement` for code stability — only labels change.
+Pack prompt fragment has an explicit "in this app, contract and
+engagement refer to the same record" note at the top so the LLM
+doesn't drift back to the old vocabulary.
+
+### Many invoices per contract — draw-down tracking
+
+`propose_program_invoice_draft`'s reply now includes a draw-down line:
+"Draw-down: $5,500 invoiced of $7,064 total · $1,564 remaining". If
+the new invoice would push past the contract ceiling, the reply warns
+"⚠ over ceiling by $X". `lte_find_contract` already surfaced
+invoiced/remaining/burn percent; that surface now queries the
+engagement table directly.
+
+### PO/WO → contract
+
+New workflow recipe `lte_create_contract_from_doc` (slots: source
+document, kind = `po` or `wo`). New action handler
+`CreateContractFromDocHandler` extracts vendor, school, period, total
+from the document's extracted JSON, resolves/creates the school,
+inserts the contract (engagement row) with all fields pre-populated,
+and links the source document via `document_link`. The same workflow
+takes PO or WO — both represent a contract per Taylor.
+
+### File upload in AskTab (main app chat)
+
+The Ask tab in Manage was a chat surface with no file affordance.
+Now mirrors the overlay's wiring:
+- Drag-drop listener on the main window
+- Paperclip button → `tauri-plugin-dialog`'s native file picker
+  (added new dependency `tauri-plugin-dialog` + capability)
+- Chip strip showing attached documents
+- Each chip expands to the same `DocumentExtractCard` from the
+  overlay
+- Submit appends `[Attached: name (kind, doc#N)]` to the chat payload
+  so the LLM sees the attachment, then clears the strip
+
+### Active workflow indicator (always-visible status)
+
+New `ActiveWorkflowPill` React component, rendered above the input
+in both AskTab and the overlay. Shows what Travis is currently
+working on, how many slots are filled, what's still missing, and
+what the next ask is. Refreshes via a new `workflow-state-changed`
+event the backend emits after processing workflow ops, so it stays
+in sync without polling. Tappable to expand into the full slot
+breakdown.
+
+### Backend changes
+
+- New `tauri-plugin-dialog` plugin registered, `dialog:default` and
+  `dialog:allow-open` capabilities added.
+- New Tauri command `get_active_workflow(conversationId)` →
+  `WorkflowSurface` (recipe info + per-slot filled state + next ask).
+- New `workflows::cmd` module.
+- New action `lte_create_contract_from_doc` registered with the
+  action registry.
+- `lte_find_contract` tool rewritten to query `engagement` (with
+  the new contract fields) instead of the legacy `contract` table.
+
+---
+
 ## v0.12.3 — In-app update banner (2026-06-04)
 
 The v0.12.2 background poll already fires a native OS notification

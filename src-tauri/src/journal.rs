@@ -2316,6 +2316,11 @@ pub async fn journal_ingest(
                 }
             }
         }
+
+        // Tell the UI to refresh its workflow indicator. The frontend
+        // re-fetches via get_active_workflow on this event so the pill
+        // stays in sync with state changes from the LLM's ops.
+        let _ = app.emit("workflow-state-changed", conv_id);
     }
 
     // Prefer the LLM's own free-form reply (always populated under the new

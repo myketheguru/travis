@@ -1,12 +1,18 @@
 //! `lte_find_contract` — chat-first contract resolution.
 //!
 //! Read-only. Returns ranked contract matches with ceiling burn,
-//! engagement count, last activity. The LLM uses this BEFORE proposing
-//! `create_contract` (an action that needs confirmation — contracts
-//! commit to a relationship).
+//! last activity. The LLM uses this BEFORE proposing `create_contract`
+//! (an action that needs confirmation — contracts commit to a
+//! relationship).
 //!
-//! Ranking: active > expiring soon > expired > terminated; within each
-//! status, by recency of activity DESC then by ceiling-remaining DESC.
+//! As of pack v0.7.0 (contract+engagement collapse), this queries the
+//! `engagement` table directly — engagement IS the contract record
+//! now. Falls back to also include rows in the legacy `contract`
+//! table that don't yet have a corresponding engagement (those get
+//! synthesised by migration 0005, but defensive in case any slipped).
+//!
+//! Ranking: active > draft > expired > terminated; within each status,
+//! by recency of activity DESC then by ceiling-remaining DESC.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -66,43 +72,49 @@ impl Tool for FindContractTool {
         #[derive(sqlx::FromRow)]
         struct Row {
             id: i64,
-            ref_: String,
-            name: Option<String>,
+            ref_: Option<String>,
+            name: String,
+            school_name: Option<String>,
             counterparty: Option<String>,
             parent_solicitation: Option<String>,
             status: String,
             term_end: Option<String>,
             ceiling_cents: i64,
             invoiced_cents: i64,
-            engagement_count: i64,
             last_activity: Option<String>,
         }
 
         let rows: Vec<Row> = sqlx::query_as(
-            "SELECT c.id, c.ref AS ref_, c.name, c.counterparty, c.parent_solicitation,
-                    c.status, c.term_end, c.ceiling_cents,
+            "SELECT e.id, e.ref AS ref_, e.name,
+                    (SELECT s.name FROM school s WHERE s.id = e.school_id) AS school_name,
+                    e.counterparty, e.parent_solicitation,
+                    e.contract_status AS status, e.term_end, e.ceiling_cents,
                     COALESCE((SELECT SUM(i.amount_cents) FROM invoice i
-                                JOIN engagement e ON e.id = i.engagement_id
-                                WHERE e.contract_id = c.id AND i.status != 'void'), 0) AS invoiced_cents,
-                    (SELECT COUNT(*) FROM engagement e WHERE e.contract_id = c.id) AS engagement_count,
-                    (SELECT MAX(updated_at) FROM engagement e WHERE e.contract_id = c.id) AS last_activity
-             FROM contract c
-             WHERE c.workspace_id = ?1
-               AND (?2 = '' OR LOWER(c.ref) LIKE ?3 OR LOWER(COALESCE(c.counterparty,'')) LIKE ?3 OR LOWER(COALESCE(c.parent_solicitation,'')) LIKE ?3 OR LOWER(COALESCE(c.name,'')) LIKE ?3)
-               AND (?4 IS NULL OR c.status = ?4)
+                                WHERE i.engagement_id = e.id AND i.status != 'void'), 0)
+                        AS invoiced_cents,
+                    e.updated_at AS last_activity
+             FROM engagement e
+             WHERE e.workspace_id = ?1
+               AND (?2 = ''
+                    OR LOWER(COALESCE(e.ref,'')) LIKE ?3
+                    OR LOWER(COALESCE(e.counterparty,'')) LIKE ?3
+                    OR LOWER(COALESCE(e.parent_solicitation,'')) LIKE ?3
+                    OR LOWER(e.name) LIKE ?3
+                    OR LOWER(COALESCE(
+                        (SELECT s.name FROM school s WHERE s.id = e.school_id), '')) LIKE ?3)
+               AND (?4 IS NULL OR e.contract_status = ?4)
              ORDER BY
-               CASE c.status
+               CASE e.contract_status
                  WHEN 'active' THEN 0
                  WHEN 'draft' THEN 1
                  WHEN 'expired' THEN 2
                  WHEN 'terminated' THEN 3
                  ELSE 4
                END,
-               last_activity DESC NULLS LAST,
-               (c.ceiling_cents - COALESCE((SELECT SUM(i.amount_cents) FROM invoice i
-                                              JOIN engagement e ON e.id = i.engagement_id
-                                              WHERE e.contract_id = c.id AND i.status != 'void'), 0)) DESC,
-               c.ref ASC
+               e.updated_at DESC,
+               (e.ceiling_cents - COALESCE((SELECT SUM(i.amount_cents) FROM invoice i
+                                              WHERE i.engagement_id = e.id AND i.status != 'void'), 0)) DESC,
+               e.name ASC
              LIMIT 5",
         )
         .bind(workspace_id)
@@ -125,6 +137,7 @@ impl Tool for FindContractTool {
                     "id": r.id,
                     "ref": r.ref_,
                     "name": r.name,
+                    "schoolName": r.school_name,
                     "counterparty": r.counterparty,
                     "parentSolicitation": r.parent_solicitation,
                     "status": r.status,
@@ -133,7 +146,6 @@ impl Tool for FindContractTool {
                     "invoicedCents": r.invoiced_cents,
                     "remainingCents": remaining,
                     "burnPct": burn_pct,
-                    "engagementCount": r.engagement_count,
                     "lastActivity": r.last_activity,
                 })
             })

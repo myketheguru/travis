@@ -38,11 +38,12 @@ impl PackHandle for LeadToEmpowerPack {
     }
 
     fn version(&self) -> &'static str {
-        // 0.6.0 — chat-first ops: every step in the LTE chain
-        // (school / contract / engagement / coach hours / WO / PO)
-        // is now a callable LLM action or tool with smart resolution
-        // and confirmation logic. Taylor stops clicking through tabs.
-        "0.6.0"
+        // 0.7.0 — collapse engagement+contract into one unified
+        // "Contract" record per Taylor's feedback. Migration 0005
+        // extends engagement with the contract-shape fields; UI/prompt
+        // language now says "contract" everywhere. Adds the PO/WO →
+        // contract workflow and draw-down tracking.
+        "0.7.0"
     }
 
     fn description(&self) -> &'static str {
@@ -78,6 +79,7 @@ impl PackHandle for LeadToEmpowerPack {
             "lte_create_work_order",
             "lte_create_purchase_order",
             "lte_derive_sign_in_sheet",
+            "lte_create_contract_from_doc",
         ]
     }
 
@@ -90,6 +92,7 @@ impl PackHandle for LeadToEmpowerPack {
         registry.register(Box::new(actions::CreateWorkOrderHandler));
         registry.register(Box::new(actions::CreatePurchaseOrderHandler));
         registry.register(Box::new(actions::DeriveSignInSheetHandler));
+        registry.register(Box::new(actions::CreateContractFromDocHandler));
     }
 
     fn register_tools(&self, registry: &mut crate::tools::ToolRegistry) {
@@ -360,6 +363,8 @@ const PROGRAM_DELIVERY_SQL: &str = include_str!("migrations/0001_program_deliver
 const QUOTE_SQL: &str = include_str!("migrations/0002_quote.sql");
 const INVOICING_SQL: &str = include_str!("migrations/0003_invoicing.sql");
 const CONTRACTS_SQL: &str = include_str!("migrations/0004_contracts.sql");
+const COLLAPSE_CONTRACT_SQL: &str =
+    include_str!("migrations/0005_collapse_contract_engagement.sql");
 
 static MIGRATIONS: &[PackMigration] = &[
     PackMigration {
@@ -378,6 +383,10 @@ static MIGRATIONS: &[PackMigration] = &[
         name: "0004_contracts",
         sql: CONTRACTS_SQL,
     },
+    PackMigration {
+        name: "0005_collapse_contract_engagement",
+        sql: COLLAPSE_CONTRACT_SQL,
+    },
 ];
 
 /// System-prompt fragment contributed by the L2E pack. Currently unused
@@ -387,6 +396,17 @@ static MIGRATIONS: &[PackMigration] = &[
 /// the pack will surface.
 const PROMPT_FRAGMENT: &str = "\
 You also help with after-school enrichment program ops:\n\
+\n\
+IMPORTANT vocabulary (as of pack v0.7.0):\n\
+- \"Contract\" and \"engagement\" refer to the SAME record. Internally\n\
+  the table is `engagement` (for code stability); externally you ALWAYS\n\
+  call it a contract in conversation with Taylor. A contract = one\n\
+  piece of work at one school (e.g. \"PS 498 math team coaching\").\n\
+  Multiple contracts per school is normal (math + science + ELA).\n\
+- A contract has a ceiling_cents (total dollar value). Invoices draw\n\
+  down against it — multiple invoices per contract until ceiling is\n\
+  reached.\n\
+\n\
 - Track coaches placed at schools, their hourly rates, and hours worked.\n\
 - Maintain signed timesheets (signing_sheets) — these are how the\n\
   Department of Finance authorizes payment.\n\

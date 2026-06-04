@@ -22,9 +22,9 @@ pub const GENERATE_INVOICE: WorkflowDef = WorkflowDef {
     name: "lte_generate_invoice",
     display_name: "Generate invoice",
     description:
-        "Draft an LTE invoice from a coaching engagement's signed sign-in sheet, \
-         PO, and (optional) work order. Reconciles hours, dates, and line prices \
-         against the catalog before proposing the draft.",
+        "Draft an LTE invoice from a contract's signed sign-in sheet, PO, and \
+         (optional) work order. Reconciles hours, dates, and line prices \
+         against the catalog. Invoices draw down against the contract ceiling.",
     slots: &[
         Slot {
             name: "school",
@@ -37,12 +37,15 @@ pub const GENERATE_INVOICE: WorkflowDef = WorkflowDef {
                  genuine ambiguity (two PS 95s, etc.).",
         },
         Slot {
+            // Internal slot name stays "engagement" because the SQL
+            // table is still `engagement` — but the UI label says
+            // "Contract" per Taylor's vocabulary (pack v0.7.0).
             name: "engagement",
-            label: "Engagement",
+            label: "Contract",
             required: true,
             kind: SlotKind::Entity { kind: "engagement" },
             ask_hint:
-                "Most schools have multiple active engagements (math, science, ELA, \
+                "Most schools have multiple active contracts (math, science, ELA, \
                  staff coaching). Surface them as selection chips: \"⊙ Math team \
                  coaching ⊙ Science team coaching\".",
         },
@@ -104,7 +107,7 @@ pub const DERIVE_SIGN_IN_SHEET: WorkflowDef = WorkflowDef {
     display_name: "Derive sign-in sheet",
     description:
         "Filter a master coach-hours spreadsheet (Google Sheet export, CSV or XLSX) \
-         down to one engagement over a period, upsert the rows into coach_hours, \
+         down to one contract over a period, upsert the rows into coach_hours, \
          and render the printable sign-in sheet PDF for principal signature.",
     slots: &[
         Slot {
@@ -120,12 +123,12 @@ pub const DERIVE_SIGN_IN_SHEET: WorkflowDef = WorkflowDef {
         },
         Slot {
             name: "engagement",
-            label: "Engagement",
+            label: "Contract",
             required: true,
             kind: SlotKind::Entity { kind: "engagement" },
             ask_hint:
-                "Which engagement should the sheet cover? Surface active \
-                 engagements at the named school as selection chips.",
+                "Which contract should the sheet cover? Surface active \
+                 contracts at the named school as selection chips.",
         },
         Slot {
             name: "period",
@@ -140,7 +143,45 @@ pub const DERIVE_SIGN_IN_SHEET: WorkflowDef = WorkflowDef {
     finalize_action: "lte_derive_sign_in_sheet",
 };
 
+/// Create a contract by extracting fields from an uploaded PO or WO
+/// (Taylor's request 2026-06-04: "Upload the purchase order and Travis
+/// can create a contract from it. Also Work Order. Both represent a
+/// contract.").
+///
+/// Trigger phrasing: "create a contract from this PO", "make a contract
+/// from this work order", "set up the contract for PS498 based on this
+/// PDF" — when the user has dropped a document and is asking to turn
+/// it into a tracked contract.
+pub const CREATE_CONTRACT_FROM_DOC: WorkflowDef = WorkflowDef {
+    name: "lte_create_contract_from_doc",
+    display_name: "Create contract from PO/WO",
+    description:
+        "Extract a contract record from an uploaded Purchase Order or Work Order \
+         PDF. Travis reads the document, proposes a contract draft (ref, school, \
+         total amount, period), and on confirmation creates the contract + links \
+         the source PO/WO to it.",
+    slots: &[
+        Slot {
+            name: "source_document",
+            label: "Source PO or WO",
+            required: true,
+            kind: SlotKind::Document { kind: "po" },
+            ask_hint:
+                "The PO or WO PDF Taylor wants to derive the contract from. \
+                 Document kind can be 'po', 'purchase_order', 'wo', or \
+                 'work_order' — Travis treats either as a valid contract source. \
+                 If Taylor's already dropped one in this conversation, surface \
+                 that document instead of asking again.",
+        },
+    ],
+    finalize_action: "lte_create_contract_from_doc",
+};
+
 /// Every workflow this pack contributes. Wired in by the
 /// [`crate::packs::lead_to_empower::LeadToEmpowerPack::workflows`]
 /// implementation.
-pub const WORKFLOWS: &[WorkflowDef] = &[GENERATE_INVOICE, DERIVE_SIGN_IN_SHEET];
+pub const WORKFLOWS: &[WorkflowDef] = &[
+    GENERATE_INVOICE,
+    DERIVE_SIGN_IN_SHEET,
+    CREATE_CONTRACT_FROM_DOC,
+];

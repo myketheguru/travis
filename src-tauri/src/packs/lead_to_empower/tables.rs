@@ -677,12 +677,16 @@ static CONTRACT_FIELDS: &[FieldDef] = &[
 
 static CONTRACT: TableDef = TableDef {
     slug: "contract",
-    display_name: "Contracts",
-    singular_name: "Contract",
+    display_name: "Contracts (legacy)",
+    singular_name: "Contract (legacy)",
     display_field: "ref",
     entity_kind: None,
     fields: CONTRACT_FIELDS,
-    primary: true,
+    // Hidden from the Manage sidebar after Taylor's "engagement and
+    // contract is too broad" feedback (2026-06-04). Engagement is now
+    // the unified "Contract" record — the standalone contract table
+    // stays for backward compat but isn't surfaced.
+    primary: false,
     list_view: ListViewDef {
         columns: &["ref", "name", "counterparty", "status", "term_end", "ceiling_cents"],
         default_sort: Some("term_end"),
@@ -691,22 +695,39 @@ static CONTRACT: TableDef = TableDef {
     },
 };
 
+// engagement IS the contract after migration 0005. UI shows "Contract"
+// everywhere; the SQL table stays named `engagement` for code stability
+// and backwards-compatible refs from PO/WO/invoice/etc.
 static ENGAGEMENT_FIELDS: &[FieldDef] = &[
     FieldDef { slug: "id", label: "ID", field_type: FieldType::Integer, required: false, help: None, default_in_list: false },
-    FieldDef { slug: "name", label: "Name", field_type: FieldType::Text, required: true, help: Some("e.g. \"Roosevelt HS — Algebra I implementation 26-27\"."), default_in_list: true },
+    FieldDef { slug: "name", label: "Name", field_type: FieldType::Text, required: true, help: Some("e.g. \"PS 498 Math team coaching 2026-2027\"."), default_in_list: true },
     FieldDef { slug: "school_id", label: "School", field_type: FieldType::Ref { table: "school" }, required: false, help: None, default_in_list: true },
+    FieldDef { slug: "ref", label: "Contract Ref", field_type: FieldType::Text, required: false, help: Some("Free-text reference from the PO / master agreement — e.g. \"WR260363316\"."), default_in_list: true },
+    FieldDef { slug: "counterparty", label: "Counterparty", field_type: FieldType::Text, required: false, help: Some("Who issued the contract — usually the school or DOE."), default_in_list: false },
+    FieldDef { slug: "ceiling_cents", label: "Total Amount", field_type: FieldType::Currency, required: false, help: Some("Total dollar value of the contract. Invoices draw down against this."), default_in_list: true },
+    FieldDef { slug: "term_start", label: "Term Start", field_type: FieldType::Date, required: false, help: None, default_in_list: true },
+    FieldDef { slug: "term_end", label: "Term End", field_type: FieldType::Date, required: false, help: None, default_in_list: true },
+    FieldDef { slug: "signed_at", label: "Signed", field_type: FieldType::Date, required: false, help: None, default_in_list: false },
     FieldDef {
-        slug: "stage",
-        label: "Stage",
-        field_type: FieldType::Enum { options: &["assessment", "action_planning", "accountable", "closed"] },
+        slug: "contract_status",
+        label: "Status",
+        field_type: FieldType::Enum { options: &["draft", "active", "expired", "terminated", "archived"] },
         required: false,
-        help: Some("The 3 A's. Travis advances this from conversation — confirm, don't hand-edit."),
+        help: None,
         default_in_list: true,
     },
-    FieldDef { slug: "contract_id", label: "Contract", field_type: FieldType::Ref { table: "contract" }, required: false, help: Some("Master agreement this engagement rolls up under. Picks up the contract_ref string at backfill time."), default_in_list: true },
-    FieldDef { slug: "contract_ref", label: "Contract Ref", field_type: FieldType::Text, required: false, help: Some("Free-text display version (legacy). The contract_id FK is the source of truth — set the contract above and this auto-resolves."), default_in_list: false },
+    FieldDef { slug: "parent_solicitation", label: "Parent Solicitation", field_type: FieldType::Text, required: false, help: Some("Master vehicle this contract rides on (e.g. MTAC pool ID)."), default_in_list: false },
+    FieldDef { slug: "pdf_path", label: "PDF Path", field_type: FieldType::Text, required: false, help: Some("Local path to the signed contract PDF."), default_in_list: false },
+    FieldDef {
+        slug: "stage",
+        label: "Delivery Stage",
+        field_type: FieldType::Enum { options: &["assessment", "action_planning", "accountable", "closed"] },
+        required: false,
+        help: Some("The 3 A's lifecycle. Travis advances this from conversation — confirm, don't hand-edit."),
+        default_in_list: false,
+    },
     FieldDef { slug: "school_year", label: "School Year", field_type: FieldType::Text, required: false, help: Some("e.g. \"2026-2027\"."), default_in_list: false },
-    FieldDef { slug: "metrics_agreement_signed", label: "Metrics Agreement Signed", field_type: FieldType::Bool, required: false, help: Some("The gate between Action Planning and delivery."), default_in_list: true },
+    FieldDef { slug: "metrics_agreement_signed", label: "Metrics Signed", field_type: FieldType::Bool, required: false, help: Some("The gate between Action Planning and delivery."), default_in_list: false },
     FieldDef { slug: "metrics_signed_on", label: "Metrics Signed On", field_type: FieldType::Date, required: false, help: None, default_in_list: false },
     FieldDef { slug: "summary", label: "Summary", field_type: FieldType::LongText, required: false, help: None, default_in_list: false },
     FieldDef { slug: "created_at", label: "Created", field_type: FieldType::Timestamp, required: false, help: None, default_in_list: false },
@@ -715,14 +736,14 @@ static ENGAGEMENT_FIELDS: &[FieldDef] = &[
 
 static ENGAGEMENT: TableDef = TableDef {
     slug: "engagement",
-    display_name: "Engagements",
-    singular_name: "Engagement",
+    display_name: "Contracts",
+    singular_name: "Contract",
     display_field: "name",
     entity_kind: Some("engagement"),
     fields: ENGAGEMENT_FIELDS,
     primary: true,
     list_view: ListViewDef {
-        columns: &["name", "school_id", "stage", "metrics_agreement_signed"],
+        columns: &["name", "school_id", "ref", "ceiling_cents", "term_end", "contract_status"],
         default_sort: Some("updated_at"),
         default_sort_dir: SortDir::Desc,
         page_size: 50,

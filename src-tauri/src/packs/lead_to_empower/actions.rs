@@ -504,15 +504,24 @@ async fn apply_program(
         .collect::<Vec<_>>()
         .join("\n");
 
+    // Draw-down tracking ([[feedback]] from Taylor 2026-06-04: "A
+    // contract can have many invoices until the amount for the
+    // contract is complete"). Compute invoiced-so-far (including THIS
+    // new draft) against the contract ceiling. Surface as a tail line
+    // on the message so she sees where she stands; warn if the new
+    // invoice pushes past the ceiling.
+    let drawdown_line = compute_drawdown_line(pool, engagement_id).await;
+
     Ok(Applied {
         message: format!(
-            "Drafted program invoice {} for {} · {} → {} · {}\n{}",
+            "Drafted program invoice {} for {} · {} → {} · {}\n{}{}",
             number,
             engagement_name,
             p.period_start,
             p.period_end,
             fmt_cents(total_cents),
             lines_summary,
+            drawdown_line,
         ),
         json: serde_json::json!({
             "invoiceId": invoice_id,
@@ -524,6 +533,47 @@ async fn apply_program(
         })
         .to_string(),
     })
+}
+
+/// Compute the contract draw-down message for the given engagement
+/// (which IS the contract after pack v0.7.0). Returns a leading-newline
+/// string ready to concat to the action's reply, or empty when the
+/// contract has no ceiling set.
+async fn compute_drawdown_line(pool: &SqlitePool, engagement_id: i64) -> String {
+    let row: Option<(i64,)> =
+        sqlx::query_as("SELECT COALESCE(ceiling_cents, 0) FROM engagement WHERE id = ?1")
+            .bind(engagement_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    let ceiling = row.map(|(c,)| c).unwrap_or(0);
+    if ceiling <= 0 {
+        return String::new();
+    }
+    let invoiced: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(amount_cents), 0) FROM invoice
+         WHERE engagement_id = ?1 AND status != 'void'",
+    )
+    .bind(engagement_id)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+    let remaining = ceiling - invoiced;
+    let warn = if remaining < 0 {
+        format!(
+            " ⚠ over ceiling by {}",
+            fmt_cents(remaining.unsigned_abs() as i64)
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "\n\nDraw-down: {} invoiced of {} total · {} remaining{warn}",
+        fmt_cents(invoiced),
+        fmt_cents(ceiling),
+        fmt_cents(remaining.max(0)),
+    )
 }
 
 async fn resolve_recipient(pool: &SqlitePool, school_id: Option<i64>) -> String {
@@ -1291,6 +1341,211 @@ async fn apply_create_engagement(
             "contractId": contract_id,
             "name": display_name,
             "stage": stage,
+        })
+        .to_string(),
+    })
+}
+
+// ===========================================================================
+// CreateContractFromDoc — extract a contract from an uploaded PO or WO.
+//
+// Taylor's feedback (2026-06-04): "Upload the purchase order and Travis
+// can create a contract from it. Also Work Order. Both represent a
+// contract." The workflow recipe gathers the source document; this
+// handler reads its extracted JSON, resolves/creates the school,
+// proposes a new contract (engagement row) with the PO/WO fields
+// populated, and links the document.
+// ===========================================================================
+
+pub struct CreateContractFromDocHandler;
+
+#[async_trait::async_trait]
+impl ActionHandler for CreateContractFromDocHandler {
+    fn kind(&self) -> &'static str {
+        "lte_create_contract_from_doc"
+    }
+
+    async fn apply(
+        &self,
+        pool: &SqlitePool,
+        app: &AppHandle,
+        params_json: &str,
+    ) -> anyhow::Result<Applied> {
+        let state = app.state::<crate::AppState>();
+        let workspace_id = state.workspace.read().await.active_id;
+        apply_create_contract_from_doc(pool, workspace_id, params_json).await
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateContractFromDocParams {
+    /// Document id of the uploaded PO or WO.
+    source_document_id: i64,
+    /// Optional override for the contract name. Defaults to a sensible
+    /// auto-generated label from the extraction.
+    #[serde(default)]
+    name_override: Option<String>,
+}
+
+async fn apply_create_contract_from_doc(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    params_json: &str,
+) -> anyhow::Result<Applied> {
+    let p: CreateContractFromDocParams = serde_json::from_str(params_json)?;
+
+    let doc = crate::documents::db::get(pool, p.source_document_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("source document {} not found", p.source_document_id))?;
+    if doc.workspace_id != workspace_id {
+        anyhow::bail!("source document {} is in a different workspace", p.source_document_id);
+    }
+    let extracted: serde_json::Value = doc
+        .extracted_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("malformed extracted JSON on source doc: {e}"))?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "source document {} hasn't been extracted yet — re-run extraction with \
+                 kind='po' or 'wo' first",
+                p.source_document_id
+            )
+        })?;
+
+    let kind_lower = doc.kind.to_lowercase();
+    let is_po = matches!(kind_lower.as_str(), "po" | "purchase_order");
+    let is_wo = matches!(kind_lower.as_str(), "wo" | "work_order");
+    if !is_po && !is_wo {
+        anyhow::bail!(
+            "source document kind '{}' is neither a PO nor a WO — set the kind via \
+             set_document_kind first",
+            doc.kind
+        );
+    }
+
+    let ref_value = extracted
+        .get(if is_po { "po_number" } else { "wo_number" })
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let school_name = extracted
+        .get("school_name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let counterparty = extracted
+        .get("vendor_name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let period_start = extracted
+        .get("period_start")
+        .or_else(|| extracted.get("date_issued"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let period_end = extracted
+        .get("period_end")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let ceiling_cents = extracted
+        .get("total_cents")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    // School resolution / create.
+    let (school_id, school_name_resolved) = match school_name.as_deref() {
+        Some(name) => {
+            let (id, name) = resolve_or_create_school(pool, workspace_id, name).await?;
+            (Some(id), Some(name))
+        }
+        None => (None, None),
+    };
+
+    // Name the contract.
+    let display_name = p.name_override.unwrap_or_else(|| {
+        match (&school_name_resolved, &ref_value) {
+            (Some(school), Some(r)) => format!("{school} — {r}"),
+            (Some(school), None) => format!("{school} — contract from doc#{}", doc.id),
+            (None, Some(r)) => format!("Contract {r}"),
+            (None, None) => format!("Contract from doc#{}", doc.id),
+        }
+    });
+
+    // Insert the contract (engagement row).
+    let engagement_id: i64 = sqlx::query_scalar(
+        "INSERT INTO engagement
+            (workspace_id, name, school_id, stage, ref, ceiling_cents,
+             term_start, term_end, counterparty, contract_status, contract_ref)
+         VALUES (?1, ?2, ?3, 'accountable', ?4, ?5, ?6, ?7, ?8, 'active', ?4)
+         RETURNING id",
+    )
+    .bind(workspace_id)
+    .bind(&display_name)
+    .bind(school_id)
+    .bind(ref_value.as_deref())
+    .bind(ceiling_cents)
+    .bind(period_start.as_deref())
+    .bind(period_end.as_deref())
+    .bind(counterparty.as_deref())
+    .fetch_one(pool)
+    .await?;
+
+    // Link the source document to the new contract entity. Use the
+    // spine entity id if present (auto-CRUD upsert sync mirrors
+    // engagement rows into entity).
+    let entity_id: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM entity WHERE kind = 'engagement' AND attributes_json LIKE ?1 LIMIT 1",
+    )
+    .bind(format!("%\"id\":{engagement_id}%"))
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    if let Some(eid) = entity_id {
+        let _ = crate::documents::db::link_to_entity(
+            pool, doc.id, eid, "extracted_from",
+        )
+        .await;
+    }
+
+    let amount_msg = if ceiling_cents > 0 {
+        format!(" · {}", fmt_cents(ceiling_cents))
+    } else {
+        String::new()
+    };
+    let period_msg = match (&period_start, &period_end) {
+        (Some(s), Some(e)) => format!(" · {s} to {e}"),
+        (Some(s), None) => format!(" · starting {s}"),
+        _ => String::new(),
+    };
+
+    Ok(Applied {
+        message: format!(
+            "Created contract \"{display_name}\" (#{engagement_id}){amount_msg}{period_msg} \
+             from {} doc#{}.",
+            if is_po { "PO" } else { "WO" },
+            doc.id
+        ),
+        json: serde_json::json!({
+            "engagementId": engagement_id,
+            "schoolId": school_id,
+            "ref": ref_value,
+            "ceilingCents": ceiling_cents,
+            "termStart": period_start,
+            "termEnd": period_end,
+            "counterparty": counterparty,
+            "sourceDocumentId": doc.id,
+            "sourceKind": if is_po { "po" } else { "wo" },
         })
         .to_string(),
     })
