@@ -1,5 +1,17 @@
 # Travis Changelog
 
+## v0.12.3 — In-app update banner (2026-06-04)
+
+The v0.12.2 background poll already fires a native OS notification
+when a new version is available; this release adds a non-intrusive
+in-app banner so the prompt is visible inside Travis itself even when
+the OS notification has been dismissed or notification permission is
+not granted. Banner appears at the top of the main window, shows the
+new version number, and has Install / Dismiss buttons. Dismissals are
+per-version per-session.
+
+---
+
 ## v0.12.2 — Auto-update polls in the background (2026-06-04)
 
 Travis no longer requires Taylor to remember to check Settings for

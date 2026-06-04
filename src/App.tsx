@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { PresenceOrb } from "./components/PresenceOrb";
 import HealthBanner from "./components/HealthBanner";
 import { WorkspaceSwitcher } from "./components/WorkspaceSwitcher";
@@ -14,6 +15,12 @@ import Manage from "./manage/Manage";
 
 type View = "splash" | "settings" | "manage";
 
+interface UpdateInfo {
+  version: string;
+  notes?: string | null;
+  date?: string | null;
+}
+
 export default function App() {
   const status = useAppStore((s) => s.status);
   const profile = useAppStore((s) => s.profile);
@@ -21,6 +28,9 @@ export default function App() {
   const setProfile = useAppStore((s) => s.setProfile);
   const pulse = useAppStore((s) => s.pulse);
   const [view, setView] = useState<View>("splash");
+  const [pendingUpdate, setPendingUpdate] = useState<UpdateInfo | null>(null);
+  const [updateDismissed, setUpdateDismissed] = useState<string | null>(null);
+  const [updateInstalling, setUpdateInstalling] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -45,6 +55,37 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [pulse]);
 
+  // Listen for the background updater poll (v0.12.2+). When the
+  // backend detects a newer release in the feed, it emits this event;
+  // we surface a non-intrusive banner with an "Install" button.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    listen<UpdateInfo>("update-available", (event) => {
+      setPendingUpdate(event.payload);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  const handleInstallUpdate = useCallback(async () => {
+    setUpdateInstalling(true);
+    try {
+      await invoke("install_update");
+      // The backend restarts the app on success — code below this
+      // line only runs if the install bailed before restart.
+      setUpdateInstalling(false);
+    } catch (e) {
+      setUpdateInstalling(false);
+      console.error("update install failed", e);
+    }
+  }, []);
+
+  const updateBannerVisible =
+    pendingUpdate !== null && updateDismissed !== pendingUpdate.version;
+
   if (!status) {
     return <main className="h-full w-full" />;
   }
@@ -63,10 +104,51 @@ export default function App() {
     );
   }
 
+  const updateBanner = (
+    <AnimatePresence>
+      {updateBannerVisible && pendingUpdate && (
+        <motion.div
+          key={`update-${pendingUpdate.version}`}
+          initial={{ opacity: 0, y: -16 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -16 }}
+          transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+          className="fixed top-3 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-2 rounded-full text-[12px]"
+          style={{
+            background: "rgba(124, 92, 255, 0.14)",
+            border: "1px solid rgba(124, 92, 255, 0.32)",
+            backdropFilter: "blur(20px)",
+            WebkitBackdropFilter: "blur(20px)",
+          }}
+        >
+          <span className="text-pulse">◆</span>
+          <span className="text-bone">
+            Travis v{pendingUpdate.version} is ready
+          </span>
+          <button
+            onClick={handleInstallUpdate}
+            disabled={updateInstalling}
+            className="text-bone font-medium px-2.5 py-0.5 rounded-full bg-pulse/30 hover:bg-pulse/45 disabled:opacity-60 transition-colors"
+          >
+            {updateInstalling ? "installing…" : "install"}
+          </button>
+          <button
+            onClick={() => setUpdateDismissed(pendingUpdate.version)}
+            className="text-bone-3 hover:text-bone-2 px-1"
+            title="Dismiss for this session"
+          >
+            ×
+          </button>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+
   if (view === "settings") {
     return (
       <>
         <HealthBanner />
+        {updateBanner}
         <motion.div
           key="settings"
           className="h-full w-full"
@@ -84,6 +166,7 @@ export default function App() {
     return (
       <>
         <HealthBanner />
+        {updateBanner}
         <motion.div
           key="manage"
           className="h-full w-full"
@@ -100,6 +183,7 @@ export default function App() {
   return (
     <>
       <HealthBanner />
+      {updateBanner}
       <motion.div
         key="splash"
         className="h-full w-full"
