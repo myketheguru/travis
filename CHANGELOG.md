@@ -1,5 +1,16 @@
 # Travis Changelog
 
+## v0.13.1 — Pin @tauri-apps/* npm packages to ~2.10 (2026-06-05)
+
+The v0.13.0 build failed in CI because npm install picked up
+@tauri-apps/api@2.11.0 (latest) while the Rust `tauri` crate is still
+2.10.3 on crates.io. Tauri's preflight check rejects the major/minor
+mismatch. Pinned all four @tauri-apps/* JS packages to `~2.10.x` /
+matching minors so the npm tree stays aligned with the Rust crates
+until tauri 2.11 publishes to crates.io. Code unchanged from v0.13.0.
+
+---
+
 ## v0.13.0 — Five-piece response to Taylor's first real test (2026-06-04)
 
 Taylor's feedback after using v0.12.3 against her real workflow:
