@@ -1,5 +1,20 @@
 # Travis Changelog
 
+## v0.13.3 — Pin @tauri-apps/plugin-opener to 2.5.3 (2026-06-05)
+
+The real root cause of the v0.13.0/.1/.2 CI failures: `@tauri-apps/
+plugin-opener@2.5.4` (released this week) bumped its `@tauri-apps/api`
+peer dependency to `^2.11.0`, while every other Tauri plugin in our
+tree still uses `^2.8.0`. With our generous `~2.5.0` pin, npm hoisted
+the latest matching patch (2.5.4), which triggered the tauri-action
+preflight mismatch — even though the API itself was resolving to
+2.10.1 via overrides, the *declared peer* in node_modules disagreed.
+
+Pinned `plugin-opener` to exactly `2.5.3` until tauri 2.11 is on
+crates.io and we can do a coordinated bump across the entire stack.
+
+---
+
 ## v0.13.2 — npm `overrides` to force `@tauri-apps/api` consistency (2026-06-05)
 
 v0.13.1's `~2.10.0` direct pin on `@tauri-apps/api` wasn't enough — the
