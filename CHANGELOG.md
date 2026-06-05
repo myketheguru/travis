@@ -1,5 +1,17 @@
 # Travis Changelog
 
+## v0.13.2 — npm `overrides` to force `@tauri-apps/api` consistency (2026-06-05)
+
+v0.13.1's `~2.10.0` direct pin on `@tauri-apps/api` wasn't enough — the
+new `@tauri-apps/plugin-dialog` carries `@tauri-apps/api: ^2.8.0` as a
+transitive dependency, and npm hoisted the unbounded latest (2.11.0)
+into the tree even with the lock present. Added an `overrides` block
+that forces every reference in the tree to `~2.10.0`, regenerated the
+lock from scratch. Also pinned `@tauri-apps/cli` to `~2.10.0` so the
+build CLI stays aligned with the runtime crate.
+
+---
+
 ## v0.13.1 — Pin @tauri-apps/* npm packages to ~2.10 (2026-06-05)
 
 The v0.13.0 build failed in CI because npm install picked up
