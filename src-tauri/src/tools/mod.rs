@@ -16,6 +16,7 @@ pub mod list_open_tasks;
 pub mod open_url;
 pub mod pack_introspect;
 pub mod pack_query;
+pub mod pack_templates;
 pub mod preview_document;
 pub mod read_document;
 pub mod reconcile_documents;
@@ -142,6 +143,9 @@ fn human_label_for_tool(tool_name: &str) -> String {
         "note_case" => "Recording case note",
         "close_case" => "Closing case",
         "find_case" => "Finding case",
+        "save_pack_template" => "Saving template for reuse",
+        "find_pack_template" => "Looking up saved templates",
+        "get_pack_template" => "Loading saved template",
         "search_memory" => "Searching memory",
         "list_open_tasks" => "Reading open tasks",
         "web_fetch" => "Fetching web page",
@@ -230,6 +234,9 @@ pub fn read_only_registry(packs: &[&dyn crate::packs::PackHandle]) -> ToolRegist
     reg.register(Box::new(cases::NoteCaseTool));
     reg.register(Box::new(cases::CloseCaseTool));
     reg.register(Box::new(cases::FindCaseTool));
+    reg.register(Box::new(pack_templates::SavePackTemplateTool));
+    reg.register(Box::new(pack_templates::FindPackTemplateTool));
+    reg.register(Box::new(pack_templates::GetPackTemplateTool));
     for pack in packs {
         pack.register_tools(&mut reg);
     }

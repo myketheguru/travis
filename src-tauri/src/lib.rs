@@ -43,6 +43,7 @@ mod startup_error;
 mod summary;
 mod summary_cmd;
 mod task_cmd;
+mod templates;
 mod telemetry;
 mod tools;
 mod updater_cmd;
@@ -608,6 +609,9 @@ pub fn run() {
             cases::cmd::open_case,
             cases::cmd::close_case,
             cases::cmd::list_case_artifacts,
+            templates::cmd::save_pack_template,
+            templates::cmd::list_pack_templates,
+            templates::cmd::delete_pack_template,
             interpreter::cmd::run_python,
             steps::cmd::list_steps,
             workflows::cmd::get_active_workflow,

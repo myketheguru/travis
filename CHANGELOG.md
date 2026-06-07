@@ -1,5 +1,107 @@
 # Travis Changelog
 
+## v0.14.0 — Code execution + Claude-class chat (2026-06-08)
+
+Travis can now do anything a smart user asks of it via in-app Python
+execution, multimodal visual styling analysis, and a chat surface that
+shows its work — without losing its persistent-memory + local-first
+vertical-pack advantages. The end-state of the v0.14 spec
+(`V0_14_0_SPEC.md`).
+
+### What Travis can now do that it couldn't before
+
+1. **Write Python in the moment** to generate any document layout that
+   doesn't fit a hardcoded template. Sample-matching invoices,
+   sign-in sheets matching a customer's template, constraint solving
+   (find quantities that sum to $X exactly), reading .docx files,
+   auditor-style cross-document reconciliation.
+2. **See sample document styling.** Drop a sample PDF; Travis sends
+   it to Claude vision, gets back structured JSON of header colours,
+   fonts, table layout, signature placement. Feeds the JSON to the
+   Python code so generated documents match the sample.
+3. **Show its work step-by-step.** Every tool call, code execution,
+   and reasoning step renders inline in the chat with name +
+   checkmark + duration. Expandable for notes. No more silent
+   "thinking…" spinners.
+4. **Maintain multi-day cases.** A "case" survives across
+   conversations with a rolling summary and decisions log. Resume
+   "the PS 89 reconciliation" 3 days later and Travis picks up
+   exactly where he left off.
+5. **Save successful generations as reusable templates.** After Taylor
+   confirms a custom-generated IS 217 invoice looks right, Travis
+   saves the styling + working Python. Next time she invoices IS 217,
+   the saved code runs instantly — no re-analysis, no fresh code
+   generation.
+
+### Slice-by-slice
+
+**Slice 1 — Code interpreter substrate.**
+- Hidden Tauri webview window hosts Pyodide (CPython compiled to WASM)
+  with preinstalled reportlab/openpyxl/pypdf/pandas/pillow/python-docx
+- New `interpreter` module + `run_python` Tauri command + LLM tool
+- Documents mounted at `/inputs/`, outputs collected from `/outputs/`
+- Outputs auto-register as Documents via the v0.12 substrate
+
+**Slice 2 — Step-streaming backend.**
+- Every tool call wraps in a Step (RAII helper) emitting typed events
+- New `step` table for persistence; chat UI subscribes to live events
+- Human labels ("Reading PO doc" not "read_document")
+- Startup cleanup marks pre-crash 'running' steps as cancelled
+
+**Slice 3 — Chat UI v2 (Claude-class).**
+- Collapsible thinking sections, named steps with checkmarks
+- Syntax-highlighted code blocks (`prism-react-renderer`) with copy
+- Markdown rendering with tables/lists (`react-markdown` + `remark-gfm`)
+- Inline file preview cards with OS default viewer integration
+- Live step streaming during in-progress responses
+
+**Slice 4 — Multimodal visual styling.**
+- `analyze_document_styling` Tauri command + LLM tool
+- Reuses Claude's native PDF input (same v0.12 mechanism, new prompt)
+- Returns structured JSON: colours, fonts, layout, signature, margins
+- Cached on `document.styling_json` for instant reuse
+
+**Slice 5 — Fast/escape path dispatcher.**
+- `WorkflowDef` gains `allow_code_escape` + `code_escape_hint`
+- LTE invoice + sign-in-sheet workflows allow escape with detailed hints
+- System prompt teaches when to use structured action vs `run_python`
+
+**Slice 6 — Long-running cases.**
+- New `travis_case` + `case_artifact` tables
+- `open_case` / `note_case` / `close_case` / `find_case` LLM tools
+- Active cases injected into journal prompt (same shape as initiatives)
+- Frontend Tauri commands for case management surfaces
+
+**Slice 7 — `pack_template` memory.**
+- New `pack_template` table (workspace, pack, kind, label, counterparty)
+- `save_pack_template` / `find_pack_template` / `get_pack_template` tools
+- Saved styling JSON + Python code; counterparty-matched lookups
+- `used_count` + `last_used_at` for "most reused" surfacing
+
+**Slice 8 — Verification + version bump.**
+- Acceptance scope: Taylor's 5 real tasks from the Claude.ai
+  conversation (IS 217 invoice from sample, PS 19-style sign-in sheet,
+  PS 89 reconciliation with smoking-gun mislabel, constraint solving,
+  mid-conversation correction)
+- Version 0.14.0 across package.json + Cargo.toml + tauri.conf.json
+- Pyodide loads from jsdelivr CDN for v0.14 dev cycle; future polish
+  bundles locally for offline use
+
+### New migrations
+
+- `0030_steps.sql` — step events persistence
+- `0031_document_styling.sql` — cached styling JSON
+- `0032_cases.sql` — travis_case + case_artifact
+- `0033_pack_templates.sql` — reusable styling + code per counterparty
+
+### Bundle size
+
+Main JS bundle grew from 284 KB → 537 KB (gzip: 158 KB) from
+markdown + syntax highlighting + chat components. Pyodide loads
+lazily from CDN. Acceptable cost for the capability unlock.
+
+---
+
 ## v0.13.5 — Pin tauri-runtime/wry to ~2.10 (2026-06-07)
 
 v0.13.4 cleared the JS↔Rust version preflight (4m29s — got into the
