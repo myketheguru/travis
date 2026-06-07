@@ -11,6 +11,7 @@ mod data_export_cmd;
 mod db;
 mod documents;
 mod domain;
+mod interpreter;
 mod identity_cmd_recall;
 mod initiatives;
 mod persona;
@@ -76,6 +77,10 @@ pub struct AppState {
     /// In-process working memory — per-conversation hypothesis store
     /// (BRAIN.md Phase 4.5 #6). 30-min TTL; lost on restart by design.
     pub working_memory: memory::working::WorkingMemory,
+    /// v0.14.0 — Pyodide interpreter session manager. Holds the
+    /// channel registry for in-flight `run_python` calls and tracks
+    /// whether the hidden interpreter window is ready.
+    pub interpreter: interpreter::InterpreterState,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -230,6 +235,7 @@ pub fn run() {
             };
             let workspace_arc = Arc::new(tokio::sync::RwLock::new(workspace_state));
 
+            let interpreter_state = interpreter::InterpreterState::new();
             handle.manage(AppState {
                 db: db_arc.clone(),
                 http: http.clone(),
@@ -238,7 +244,47 @@ pub fn run() {
                 enabled_packs,
                 workspace: workspace_arc,
                 working_memory: memory::working::WorkingMemory::new(),
+                interpreter: interpreter_state.clone(),
             });
+
+            // Interpreter wiring: listen for the readiness signal and
+            // for execution results from the hidden interpreter
+            // window. The window initializes Pyodide at app start; we
+            // need its `interpreter-ready` event to flip our ready
+            // flag (used by run_python to know when to send work),
+            // and we need `run-python-result` events routed back to
+            // the awaiting caller via InterpreterState.
+            {
+                use tauri::Listener;
+                let interp_for_ready = interpreter_state.clone();
+                handle.listen("interpreter-ready", move |_event| {
+                    tracing::info!("interpreter window reported ready");
+                    interp_for_ready.set_ready(true);
+                });
+                let interp_for_err = interpreter_state.clone();
+                handle.listen("interpreter-error", move |event| {
+                    tracing::warn!(
+                        "interpreter window error: {}",
+                        event.payload()
+                    );
+                    interp_for_err.set_ready(false);
+                });
+                let interp_for_result = interpreter_state.clone();
+                handle.listen("run-python-result", move |event| {
+                    let payload = event.payload();
+                    match serde_json::from_str::<interpreter::cmd::RunPythonResult>(payload) {
+                        Ok(result) => {
+                            let interp = interp_for_result.clone();
+                            tauri::async_runtime::spawn(async move {
+                                interp.deliver(result).await;
+                            });
+                        }
+                        Err(e) => {
+                            tracing::warn!("invalid run-python-result payload: {e}");
+                        }
+                    }
+                });
+            }
 
             handle.global_shortcut().register(primary_shortcut)?;
 
@@ -538,6 +584,7 @@ pub fn run() {
             documents::cmd::extract_document,
             documents::cmd::update_document_extraction,
             documents::cmd::preview_document,
+            interpreter::cmd::run_python,
             workflows::cmd::get_active_workflow,
             identity_cmd::list_entities,
             identity_cmd_recall::recall_entity,

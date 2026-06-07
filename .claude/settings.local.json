@@ -11,7 +11,9 @@
       "Bash(gh run *)",
       "Bash(gh release *)",
       "Bash(sed -n '1,90p' tools/mod.rs)",
-      "Bash(sed -n '1,80p' tools/web_fetch.rs)"
+      "Bash(sed -n '1,80p' tools/web_fetch.rs)",
+      "Bash([ -s \"C:\\\\\\\\Users\\\\\\\\bethel-babashola\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\C--Users-bethel-babashola-documents-darkmyke-travis\\\\\\\\8ea786ac-c152-440f-bb56-e826effb81d6\\\\\\\\tasks\\\\\\\\bwypr6u3p.output\" ])",
+      "Bash(tail -80 \"C:\\\\\\\\Users\\\\\\\\bethel-babashola\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\C--Users-bethel-babashola-documents-darkmyke-travis\\\\\\\\8ea786ac-c152-440f-bb56-e826effb81d6\\\\\\\\tasks\\\\\\\\bwypr6u3p.output\")"
     ]
   }
 }

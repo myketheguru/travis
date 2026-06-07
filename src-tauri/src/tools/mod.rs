@@ -17,6 +17,7 @@ pub mod pack_query;
 pub mod preview_document;
 pub mod read_document;
 pub mod reconcile_documents;
+pub mod run_python;
 pub mod search_memory;
 pub mod update_document;
 pub mod web_fetch;
@@ -98,6 +99,7 @@ pub fn read_only_registry(packs: &[&dyn crate::packs::PackHandle]) -> ToolRegist
     reg.register(Box::new(reconcile_documents::ReconcileDocumentsTool));
     reg.register(Box::new(update_document::UpdateDocumentFieldTool));
     reg.register(Box::new(preview_document::PreviewDocumentTool));
+    reg.register(Box::new(run_python::RunPythonTool));
     for pack in packs {
         pack.register_tools(&mut reg);
     }

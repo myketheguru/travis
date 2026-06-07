@@ -40,6 +40,21 @@
         "visible": false,
         "focus": false,
         "center": true
+      },
+      {
+        "label": "interpreter",
+        "title": "Travis Interpreter (hidden)",
+        "url": "interpreter.html",
+        "width": 1,
+        "height": 1,
+        "decorations": false,
+        "transparent": false,
+        "skipTaskbar": true,
+        "resizable": false,
+        "visible": false,
+        "focus": false,
+        "x": -10000,
+        "y": -10000
       }
     ],
     "security": {
