@@ -1,5 +1,21 @@
 # Travis Changelog
 
+## v0.13.5 — Pin tauri-runtime/wry to ~2.10 (2026-06-07)
+
+v0.13.4 cleared the JS↔Rust version preflight (4m29s — got into the
+actual Rust compile) but failed deep in `tauri-2.10.3/src/webview/
+mod.rs:707` with a `Fn + Send` vs `Fn + Send + Sync` trait mismatch.
+Root cause: the `tauri` crate is pinned to 2.10.3 but its transitive
+deps `tauri-runtime` and `tauri-runtime-wry` weren't pinned, so cargo
+lifted them to 2.11.2 — the newer runtime traits don't match what
+tauri 2.10's webview implementation expects.
+
+Added explicit `tauri-runtime = "~2.10"` and `tauri-runtime-wry =
+"~2.10"` pins in Cargo.toml so the whole tauri 2.10 family stays
+together.
+
+---
+
 ## v0.13.4 — Pin Rust tauri-plugin-dialog to 2.4.2 (2026-06-05)
 
 `tauri info` locally revealed the real mismatch the CI logs kept
