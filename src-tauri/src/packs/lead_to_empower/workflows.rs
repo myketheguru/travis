@@ -89,6 +89,23 @@ pub const GENERATE_INVOICE: WorkflowDef = WorkflowDef {
         },
     ],
     finalize_action: "propose_invoice_draft",
+    allow_code_escape: true,
+    code_escape_hint: Some(
+        "Use run_python (after analyze_document_styling on the sample if one is \
+         provided) when:\n\
+         - Taylor has dropped a SAMPLE invoice and asked to \"match it\" or \"like \
+           this one\". The hardcoded propose_invoice_draft produces the canonical \
+           LTE letterhead — for any other layout, you must write Python.\n\
+         - The invoice needs to list MORE service dates than billable quantity (e.g. \
+           \"11 dates shown, 10 billed at $1,500 each = $15,000\") — the hardcoded \
+           path doesn't support that split.\n\
+         - You need to solve a constraint (find quantities that close at exactly $X) \
+           — write Python that searches catalog rate combinations.\n\
+         - Cross-document reconciliation against a pricing sheet uncovered a \
+           mislabel/error that affects the invoice — surface and resolve in code.\n\
+         Stick with propose_invoice_draft (fast path) for the standard LTE letterhead \
+         layout when no sample is provided.",
+    ),
 };
 
 /// Derive a sign-in sheet for a single school+coach engagement from
@@ -141,6 +158,16 @@ pub const DERIVE_SIGN_IN_SHEET: WorkflowDef = WorkflowDef {
         },
     ],
     finalize_action: "lte_derive_sign_in_sheet",
+    allow_code_escape: true,
+    code_escape_hint: Some(
+        "Use run_python when Taylor has supplied a sign-in sheet TEMPLATE (e.g. the \
+         PS 19 sample format) and wants the output to match it precisely. Call \
+         analyze_document_styling on the template first to extract its purple header \
+         colour, zebra striping, signature stroke, and column widths, then write \
+         reportlab code that mirrors those features. The hardcoded \
+         lte_derive_sign_in_sheet action produces a fixed format and won't match a \
+         specific sample.",
+    ),
 };
 
 /// Create a contract by extracting fields from an uploaded PO or WO
@@ -175,6 +202,8 @@ pub const CREATE_CONTRACT_FROM_DOC: WorkflowDef = WorkflowDef {
         },
     ],
     finalize_action: "lte_create_contract_from_doc",
+    allow_code_escape: false,
+    code_escape_hint: None,
 };
 
 /// Every workflow this pack contributes. Wired in by the

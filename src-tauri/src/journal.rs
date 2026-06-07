@@ -144,6 +144,33 @@ The `rationale` is shown verbatim to the user as the body of a Confirm/Decline c
 Don't propose actions that weren't asked for. If unsure of a parameter, ask a clarifying question instead. Don't propose `defer_task` unless an existing open-task id is referenced. For `write_clipboard`, only propose when the user has explicitly asked you to draft something they'll use elsewhere. For `run_shell_command`, only propose when the user explicitly asked you to run/check something in their shell, and only the read-only safe categories above.
 
 You also have access to read-only tools you can call autonomously during the conversation: `web_fetch` (fetch a URL's text), `search_memory` (semantic search past notes), `list_open_tasks` (filtered task lookup), `read_clipboard` (read what the user just copied), `open_url` (hand a link to the user's browser). Use them when they unblock a clearer answer.
+
+== CHOOSING YOUR PATH: structured action vs. Python code (v0.14.0) ==
+
+You have two ways to produce document outputs and complex computations:
+
+1. STRUCTURED ACTIONS (`propose_invoice_draft`, `lte_create_contract_from_doc`, `lte_derive_sign_in_sheet`, etc.) — fast, deterministic, produce documents in the canonical LTE format. Prefer these when:
+   - The request matches a known workflow recipe AND
+   - The output target is a known template (canonical LTE letterhead, standard sign-in sheet) AND
+   - No sample document has been supplied to match AND
+   - The data shape fits the recipe's slot definition exactly.
+
+2. `run_python` — full Python interpreter with reportlab/openpyxl/pypdf/pandas/pillow/python-docx. Slower, but unbounded. Use it as the ESCAPE HATCH when:
+   - The user supplied a SAMPLE document and asked Travis to "match it" or "look like this"
+   - The layout/fonts/colours/columns differ from the canonical hardcoded template
+   - The task requires constraint solving (find quantities that sum exactly to $X)
+   - The task needs cross-document reconciliation deeper than `reconcile_documents`
+   - The task requires reading a format Travis doesn't natively ingest (.docx, .pptx, custom CSV layouts)
+   - The user explicitly asks for "code" or "imperative reasoning"
+
+When using `run_python`, ALWAYS:
+- Call `analyze_document_styling(document_id)` first on any sample/template document so you have its colour/font/layout JSON to drive the code
+- Set a clear `purpose` string ("Building IS 217 invoice matching supplied sample with purple #5B3F86 header and zebra rows") — the user sees this as the step name
+- Write defensive code: catch exceptions, validate inputs, fail loudly with meaningful errors
+- Use `/inputs/<filename>` to read attached docs and `/outputs/<filename>` to emit generated files
+- Generated output files automatically become Travis Documents and surface as file cards in the chat — call them with descriptive filenames (`LTE_Invoice_IS217.pdf` not `out.pdf`)
+
+The choice between paths is YOURS to make per turn. When in doubt and the user supplied a sample, choose `run_python`. When the user said something like "the usual LTE invoice" or didn't supply a sample, choose the structured action.
 "#);
 
     // Append vertical-pack guidance — each enabled pack contributes a
@@ -1408,6 +1435,17 @@ pub async fn journal_ingest(
     .await;
     let initiatives_block = crate::initiatives::format_for_prompt(&active_initiatives);
 
+    // v0.14.0 — active cases. Long-running multi-session work units;
+    // injected so Travis can resume coherently if the user references
+    // one by name.
+    let active_cases = crate::cases::db::list_open(
+        &state.db.pool,
+        &ws_snapshot.visible_ids,
+        5,
+    )
+    .await;
+    let cases_block = crate::cases::db::format_for_prompt(&active_cases);
+
     // Workflow dialogue state ([[feedback-workflow-led]]). If a
     // workflow is in flight for this conversation, Travis sees what's
     // filled / what's still missing / what to ask next. The catalog
@@ -1475,7 +1513,7 @@ pub async fn journal_ingest(
     };
 
     let user_msg = format!(
-        "Today is {today}.\n\nOPEN TASKS (id · title):\n{open}\n\nRELEVANT MEMORY:\n{mem}\n\n{graph}{working}{initiatives}{workflow}{catalog}{ws}New turn:\n{raw}",
+        "Today is {today}.\n\nOPEN TASKS (id · title):\n{open}\n\nRELEVANT MEMORY:\n{mem}\n\n{graph}{working}{initiatives}{cases}{workflow}{catalog}{ws}New turn:\n{raw}",
         today = today_local(),
         open = format_open_tasks(&open_tasks),
         mem = format_memory(&mem_hits),
@@ -1493,6 +1531,11 @@ pub async fn journal_ingest(
             String::new()
         } else {
             format!("{initiatives_block}\n")
+        },
+        cases = if cases_block.is_empty() {
+            String::new()
+        } else {
+            format!("{cases_block}\n")
         },
         workflow = if workflow_block.is_empty() {
             String::new()

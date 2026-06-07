@@ -7,6 +7,8 @@ use tauri::AppHandle;
 use crate::db::Db;
 use crate::llm::ToolDef;
 
+pub mod analyze_document_styling;
+pub mod cases;
 pub mod clipboard;
 pub mod find_documents;
 pub mod graph_neighbors;
@@ -135,6 +137,11 @@ fn human_label_for_tool(tool_name: &str) -> String {
         "update_document_field" => "Updating extracted field",
         "preview_document" => "Opening document",
         "run_python" => "Running Python",
+        "analyze_document_styling" => "Analyzing document styling",
+        "open_case" => "Opening case",
+        "note_case" => "Recording case note",
+        "close_case" => "Closing case",
+        "find_case" => "Finding case",
         "search_memory" => "Searching memory",
         "list_open_tasks" => "Reading open tasks",
         "web_fetch" => "Fetching web page",
@@ -218,6 +225,11 @@ pub fn read_only_registry(packs: &[&dyn crate::packs::PackHandle]) -> ToolRegist
     reg.register(Box::new(update_document::UpdateDocumentFieldTool));
     reg.register(Box::new(preview_document::PreviewDocumentTool));
     reg.register(Box::new(run_python::RunPythonTool));
+    reg.register(Box::new(analyze_document_styling::AnalyzeDocumentStylingTool));
+    reg.register(Box::new(cases::OpenCaseTool));
+    reg.register(Box::new(cases::NoteCaseTool));
+    reg.register(Box::new(cases::CloseCaseTool));
+    reg.register(Box::new(cases::FindCaseTool));
     for pack in packs {
         pack.register_tools(&mut reg);
     }

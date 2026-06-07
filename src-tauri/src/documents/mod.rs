@@ -15,5 +15,6 @@ pub mod cmd;
 pub mod db;
 pub mod extract;
 pub mod storage;
+pub mod styling;
 
 pub use db::{Document, DocumentLink, IngestStatus, Source};

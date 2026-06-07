@@ -293,6 +293,36 @@ pub async fn set_document_kind(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AnalyzeStylingParams {
+    pub document_id: i64,
+    /// If true, re-analyze even if styling_json is already cached.
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// Analyze a document's visual styling features (colours, fonts,
+/// layout, signature placement) via Claude vision. Result is cached
+/// on the document row for reuse by subsequent code generations.
+#[tauri::command]
+pub async fn analyze_document_styling(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    params: AnalyzeStylingParams,
+) -> Result<serde_json::Value, String> {
+    let storage_root = resolve_storage_root(&app)?;
+    super::styling::analyze_styling(
+        &state.db.pool,
+        state.http.clone(),
+        &storage_root,
+        params.document_id,
+        params.force,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateExtractionParams {
     pub document_id: i64,
     /// Full JSON to overwrite the document's extracted_json. The

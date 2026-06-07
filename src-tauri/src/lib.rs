@@ -3,6 +3,7 @@ mod behavioral;
 mod behavioral_cmd;
 mod calendar;
 mod calendar_cmd;
+mod cases;
 mod commands;
 mod conversation;
 mod conversation_cmd;
@@ -602,6 +603,11 @@ pub fn run() {
             documents::cmd::extract_document,
             documents::cmd::update_document_extraction,
             documents::cmd::preview_document,
+            documents::cmd::analyze_document_styling,
+            cases::cmd::list_open_cases,
+            cases::cmd::open_case,
+            cases::cmd::close_case,
+            cases::cmd::list_case_artifacts,
             interpreter::cmd::run_python,
             steps::cmd::list_steps,
             workflows::cmd::get_active_workflow,

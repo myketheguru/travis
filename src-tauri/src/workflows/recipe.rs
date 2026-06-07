@@ -28,6 +28,17 @@ pub struct WorkflowDef {
     /// slots are filled. The action handler receives the slot values
     /// as its params.
     pub finalize_action: &'static str,
+
+    /// v0.14.0 — whether the LLM may bypass the hardcoded finalize
+    /// action and instead generate the output via `run_python`.
+    /// Useful when a customer's sample/layout differs from what the
+    /// hardcoded handler produces.
+    pub allow_code_escape: bool,
+
+    /// v0.14.0 — guidance shown to the LLM when `allow_code_escape`
+    /// is true, telling it when to prefer code over the hardcoded
+    /// action.
+    pub code_escape_hint: Option<&'static str>,
 }
 
 /// One slot in a workflow — a piece of information the recipe needs
