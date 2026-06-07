@@ -23,12 +23,26 @@ import {
 import { ActiveWorkflowPill } from "../../components/ActiveWorkflowPill";
 import { DocumentExtractCard } from "../../overlay/DocumentExtractCard";
 import { ChatTurn } from "../../chat/ChatTurn";
+import { AutoGrowTextarea } from "../../chat/AutoGrowTextarea";
 import { useAppStore } from "../../stores/app";
 
 export default function AskTab() {
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
   const [conversationId, setConversationId] = useState<number | null>(null);
+  const [justReadied, setJustReadied] = useState(false);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Re-focus the input + pulse the border whenever Travis finishes a
+  // response so the user can see clearly that it's their turn.
+  useEffect(() => {
+    if (!busy) {
+      inputRef.current?.focus();
+      setJustReadied(true);
+      const id = setTimeout(() => setJustReadied(false), 1800);
+      return () => clearTimeout(id);
+    }
+  }, [busy]);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [steps, setSteps] = useState<ParsedStep[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -271,9 +285,10 @@ export default function AskTab() {
       <div
         ref={scrollRef}
         className={
-          "flex-1 overflow-y-auto flex flex-col gap-3 " +
+          "flex-1 min-h-0 overflow-y-auto flex flex-col gap-3 pr-2 -mr-2 " +
           (empty ? "items-center justify-center" : "")
         }
+        style={{ scrollBehavior: "smooth" }}
       >
         {empty ? (
           <p className="text-bone-3 text-sm text-center max-w-md leading-relaxed">
@@ -295,15 +310,29 @@ export default function AskTab() {
       </div>
 
       <div
-        className="pt-3 mt-3 border-t border-white/[0.04] flex flex-col gap-1"
+        className="pt-3 mt-3 border-t border-white/[0.04] flex flex-col gap-1 transition-all"
         style={{
-          background: dropHovering ? "rgba(124, 92, 255, 0.08)" : "transparent",
-          transition: "background 200ms ease-out",
-          borderRadius: dropHovering ? 8 : 0,
-          outline: dropHovering ? "1px dashed rgba(124, 92, 255, 0.45)" : "none",
+          background: dropHovering
+            ? "rgba(124, 92, 255, 0.08)"
+            : justReadied
+              ? "rgba(74, 214, 255, 0.04)"
+              : "transparent",
+          transition: "background 400ms ease-out, outline 400ms ease-out",
+          borderRadius: dropHovering || justReadied ? 8 : 0,
+          outline: dropHovering
+            ? "1px dashed rgba(124, 92, 255, 0.45)"
+            : justReadied
+              ? "1px solid rgba(74, 214, 255, 0.30)"
+              : "none",
           outlineOffset: -1,
         }}
       >
+        {!empty && !busy && messages.length > 0 && messages[messages.length - 1].role === "assistant" && (
+          <div className="text-[10px] text-bone-3 font-mono tracking-wider mb-1 flex items-center gap-1.5">
+            <span className="inline-block h-1 w-1 rounded-full bg-pulse-2" />
+            <span>your turn</span>
+          </div>
+        )}
         <ActiveWorkflowPill conversationId={conversationId} />
 
         {attachedDocs.length > 0 && (
@@ -388,12 +417,12 @@ export default function AskTab() {
           </div>
         )}
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-end gap-2">
           <button
             onClick={handlePickFile}
             disabled={busy}
             title="Attach file"
-            className="shrink-0 h-8 w-8 flex items-center justify-center rounded-full text-bone-3 hover:text-bone-2 hover:bg-white/[0.04] disabled:opacity-50 transition-colors"
+            className="shrink-0 h-9 w-9 flex items-center justify-center rounded-full text-bone-3 hover:text-bone-2 hover:bg-white/[0.04] disabled:opacity-50 transition-colors"
           >
             <svg
               viewBox="0 0 24 24"
@@ -409,19 +438,14 @@ export default function AskTab() {
               <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
             </svg>
           </button>
-          <input
-            autoFocus
+          <AutoGrowTextarea
+            ref={inputRef}
             value={q}
-            onChange={(e) => {
+            onChange={(value) => {
               pulse();
-              setQ(e.target.value);
+              setQ(value);
             }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                submit();
-              }
-            }}
+            onSubmit={submit}
             placeholder={
               empty
                 ? attachedDocs.length > 0
@@ -432,10 +456,43 @@ export default function AskTab() {
                   : "Continue…"
             }
             disabled={busy}
-            className="w-full bg-transparent px-1 py-2 text-bone text-base font-light placeholder:text-bone-3/50 focus:outline-none disabled:text-bone-2/70"
+            maxRows={8}
           />
+          <button
+            onClick={() => void submit()}
+            disabled={busy || (!q.trim() && attachedDocs.length === 0)}
+            title="Send (Enter)"
+            className="shrink-0 h-9 px-3 flex items-center justify-center rounded-full text-[12px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            style={{
+              background: "rgba(124, 92, 255, 0.25)",
+              color: "rgb(236, 236, 241)",
+              border: "1px solid rgba(124, 92, 255, 0.45)",
+            }}
+          >
+            {busy ? (
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-pulse-2 animate-pulse" />
+            ) : (
+              <>
+                <span>send</span>
+                <svg
+                  viewBox="0 0 24 24"
+                  width="13"
+                  height="13"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="ml-1.5"
+                  aria-hidden
+                >
+                  <path d="M5 12h14M13 6l6 6-6 6" />
+                </svg>
+              </>
+            )}
+          </button>
         </div>
-        {error && <p className="text-warn text-xs">{error}</p>}
+        {error && <p className="text-warn text-xs mt-1">{error}</p>}
       </div>
     </div>
   );
@@ -491,31 +548,46 @@ function applyStepEvent(
 
 /// Group steps with the message they belong to (the next assistant
 /// message after the step started). Returns React nodes.
+///
+/// IMPORTANT: timestamp comparison uses Date.parse() — SQLite's
+/// CURRENT_TIMESTAMP returns "2026-06-08 12:34:56" (space delimiter)
+/// while chrono RFC3339 returns "2026-06-08T12:34:56.789Z" (T delim,
+/// fractional). String comparison fails (space 0x20 < T 0x54) and
+/// puts every step "after" every message. Date.parse normalizes both.
+function tsMs(s: string | null | undefined): number {
+  if (!s) return 0;
+  // SQLite "YYYY-MM-DD HH:MM:SS" → make ISO by replacing space and appending Z
+  const isoish = s.includes("T") ? s : s.replace(" ", "T") + "Z";
+  const parsed = Date.parse(isoish);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function renderTurns(
   messages: ConversationMessage[],
   steps: ParsedStep[],
   busy: boolean,
 ) {
-  const sortedSteps = [...steps].sort((a, b) =>
-    a.startedAt.localeCompare(b.startedAt),
+  const sortedSteps = [...steps].sort(
+    (a, b) => tsMs(a.startedAt) - tsMs(b.startedAt),
   );
   // For each assistant message, take steps that started after the
-  // previous message's createdAt and before this assistant's
-  // createdAt.
+  // previous message's createdAt and at-or-before this message's
+  // createdAt. Tolerance: steps fired within 5s AFTER an assistant
+  // message also belong to it (clock skew + write ordering).
+  const SKEW_MS = 5_000;
   const nodes: React.ReactNode[] = [];
-  let prevTs: string | null = null;
-  let consumedStepIds = new Set<string>();
+  let prevTs: number = 0;
+  const consumedStepIds = new Set<string>();
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i];
-    const lower = prevTs ?? "";
-    const upper = m.createdAt;
+    const upper = tsMs(m.createdAt) + SKEW_MS;
     const isAssistant = m.role === "assistant";
     const turnSteps = isAssistant
       ? sortedSteps.filter(
           (s) =>
             !consumedStepIds.has(s.id) &&
-            s.startedAt > lower &&
-            s.startedAt <= upper,
+            tsMs(s.startedAt) > prevTs &&
+            tsMs(s.startedAt) <= upper,
         )
       : [];
     turnSteps.forEach((s) => consumedStepIds.add(s.id));
@@ -528,7 +600,7 @@ function renderTurns(
         generatedDocumentIds={generatedIds}
       />,
     );
-    prevTs = m.createdAt;
+    prevTs = tsMs(m.createdAt);
   }
   // Live (in-progress) steps for the response we're still waiting on
   const liveSteps = sortedSteps.filter((s) => !consumedStepIds.has(s.id));

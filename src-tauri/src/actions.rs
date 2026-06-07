@@ -688,8 +688,97 @@ impl ActionRegistry {
             .handlers
             .get(action.kind.as_str())
             .ok_or_else(|| anyhow::anyhow!("unsupported action kind: {}", action.kind))?;
-        h.apply(pool, app, &action.params_json).await
+
+        // v0.14.0 step-streaming. Wraps every action handler so the
+        // chat UI surfaces a named substep with checkmark + duration,
+        // alongside tool calls. Matches Claude.ai's flow.
+        let step_name = human_action_label(&action.kind);
+        let detail = summarize_action_params(&action.params_json);
+        let step = match crate::steps::Step::start(
+            app,
+            pool,
+            action.conversation_id,
+            crate::steps::StepKind::Action,
+            step_name,
+            detail,
+            None,
+        )
+        .await
+        {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::warn!("could not start step for action {}: {e}", action.kind);
+                None
+            }
+        };
+
+        let result = h.apply(pool, app, &action.params_json).await;
+        if let Some(step) = step {
+            match &result {
+                Ok(applied) => {
+                    let summary = applied.message.lines().next().map(|s| s.to_string());
+                    let _ = step.complete_ok(app, pool, summary).await;
+                }
+                Err(e) => {
+                    let _ = step.complete_err(app, pool, e.to_string()).await;
+                }
+            }
+        }
+        result
     }
+}
+
+/// Map an action kind to a user-friendly step label.
+fn human_action_label(kind: &str) -> String {
+    match kind {
+        "defer_task" => "Deferring task",
+        "set_reminder" => "Setting reminder",
+        "write_clipboard" => "Writing to clipboard",
+        "run_shell_command" => "Running shell command",
+        "send_email" => "Sending email",
+        "update_profile_context" => "Updating profile",
+        "create_initiative" => "Opening initiative",
+        "close_initiative" => "Closing initiative",
+        "propose_invoice_draft" => "Drafting invoice",
+        "propose_program_invoice_draft" => "Drafting program invoice",
+        "lte_create_contract" => "Creating contract",
+        "lte_create_engagement" => "Creating contract",
+        "lte_record_coach_hours" => "Recording coach hours",
+        "lte_create_work_order" => "Creating work order",
+        "lte_create_purchase_order" => "Creating purchase order",
+        "lte_derive_sign_in_sheet" => "Deriving sign-in sheet",
+        "lte_create_contract_from_doc" => "Creating contract from doc",
+        _ => return format!("Applying {kind}"),
+    }
+    .to_string()
+}
+
+/// Pull a brief identifier out of an action's params_json — coach name,
+/// school name, etc. — to render as the step's detail line.
+fn summarize_action_params(params_json: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(params_json).ok()?;
+    let obj = v.as_object()?;
+    for key in [
+        "coachName",
+        "schoolName",
+        "engagementId",
+        "contractId",
+        "name",
+        "title",
+        "taskId",
+        "to",
+    ] {
+        if let Some(val) = obj.get(key) {
+            let s = match val {
+                serde_json::Value::String(s) if s.len() > 60 => format!("{}…", &s[..60]),
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                _ => continue,
+            };
+            return Some(format!("{key}={s}"));
+        }
+    }
+    None
 }
 
 impl Default for ActionRegistry {

@@ -1,5 +1,55 @@
 # Travis Changelog
 
+## v0.14.1 — Chat-loop and offline polish (2026-06-07)
+
+First feedback batch after v0.14.0. Travis stopped "hanging up" mid-workflow,
+the chat panel now actually behaves like a chat, and the Pyodide runtime ships
+in the bundle instead of being fetched from a CDN on first run.
+
+### Chat UX
+
+- **Steps land with the message they belong to.** Pre-fix the SQLite step
+  timestamps were string-compared against RFC3339 conversation timestamps;
+  the encoding difference pushed every step block to the bottom of the
+  transcript. Now both are normalised through `Date.parse` with a 5 s
+  tolerance, so a "Reading document" or "Run Python" group renders directly
+  under the Travis reply that triggered it.
+- **Auto-growing textarea + send button.** Replaces the single-line input;
+  wraps text up to 8 rows before scrolling, Enter to send, Shift+Enter for
+  a newline, explicit click target for touch users.
+- **Attached files show up in the user bubble.** PDFs and docs as a
+  clickable card, images as an inline preview. Click to open in the
+  document viewer.
+- **"Your turn" cue.** When the last message is Travis and `busy === false`,
+  the input border glows + caret auto-focuses so it's obvious he's done.
+- **Scroll history is preserved.** The flex container was missing
+  `min-h-0`, which silently capped the transcript at the viewport. Now
+  the full conversation scrolls.
+
+### Reasoning + step streaming
+
+- **`thinking` field** on extractions. The LLM emits a short
+  one-sentence narration of what it's about to do; the chat surface
+  renders it under the assistant bubble as muted text.
+- **Action handlers stream steps** like tools do — `ActionRegistry::dispatch`
+  now wraps every handler call in a `Step` with a human-readable label
+  ("Saving invoice", "Logging activity") instead of the internal kind.
+
+### Workflow continuation prompt
+
+- **No more "captured 1 new" mid-workflow.** The system prompt now
+  has a dedicated section explaining that when Travis is mid-workflow
+  (he just asked for fields), the user's reply is slot fill, not a
+  fresh capture. Mirrors the Claude.ai pattern where a workflow stays
+  active until the artifact is generated or the user changes topic.
+
+### Pyodide bundle
+
+- **Local Pyodide bundle via `vite-plugin-static-copy`.** `pyodide.asm.wasm`,
+  `pyodide.asm.js`, `pyodide.mjs`, `python_stdlib.zip`, and the lock file
+  are copied into `dist/pyodide/` at build time; `loadPyodide({ indexURL: "/pyodide/" })`
+  picks them up. No CDN call on first launch — works fully offline.
+
 ## v0.14.0 — Code execution + Claude-class chat (2026-06-08)
 
 Travis can now do anything a smart user asks of it via in-app Python

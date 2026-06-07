@@ -1,13 +1,29 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { viteStaticCopy } from "vite-plugin-static-copy";
 import { resolve } from "path";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig(async () => ({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    // Bundle Pyodide assets locally so Travis works offline.
+    // vite-plugin-static-copy v4 preserves the source's leading path
+    // regardless of dest/rename, so files land at
+    // dist/pyodide-bundle/node_modules/pyodide/ — indexURL matches that.
+    viteStaticCopy({
+      targets: [
+        {
+          src: "node_modules/pyodide/*.{wasm,asm.js,zip,json,mjs}",
+          dest: "pyodide-bundle",
+        },
+      ],
+    }),
+  ],
   clearScreen: false,
   optimizeDeps: {
     exclude: ["pyodide"],

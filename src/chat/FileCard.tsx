@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   formatBytes,
   getDocument,
+  getDocumentPath,
   previewDocument,
   type Document,
 } from "../lib/documents";
@@ -11,15 +13,23 @@ interface Props {
 }
 
 /// Inline card for a generated or attached document. Shows icon, name,
-/// size, kind, with quick-open via the OS default viewer. Used in chat
-/// turns to surface generated PDFs / spreadsheets.
+/// size, kind, with quick-open via the OS default viewer. For image
+/// MIME types we render an inline preview at the top of the card.
 export function FileCard({ documentId }: Props) {
   const [doc, setDoc] = useState<Document | null>(null);
+  const [imgSrc, setImgSrc] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
 
   useEffect(() => {
     getDocument(documentId)
-      .then(setDoc)
+      .then((d) => {
+        setDoc(d);
+        if (d && d.mimeType?.startsWith("image/")) {
+          getDocumentPath(documentId)
+            .then((p) => setImgSrc(convertFileSrc(p)))
+            .catch(() => setImgSrc(null));
+        }
+      })
       .catch(() => setDoc(null));
   }, [documentId]);
 
@@ -31,6 +41,8 @@ export function FileCard({ documentId }: Props) {
     );
   }
 
+  const isImage = doc.mimeType?.startsWith("image/");
+
   const kindGlyph = (() => {
     if (doc.kind === "generated_pdf" || doc.mimeType === "application/pdf")
       return "📄";
@@ -40,7 +52,7 @@ export function FileCard({ documentId }: Props) {
       doc.mimeType.includes("spreadsheet")
     )
       return "📊";
-    if (doc.mimeType.startsWith("image/")) return "🖼";
+    if (isImage) return "🖼";
     return "📎";
   })();
 
@@ -54,6 +66,33 @@ export function FileCard({ documentId }: Props) {
       setTimeout(() => setOpening(false), 300);
     }
   };
+
+  if (isImage && imgSrc) {
+    return (
+      <button
+        onClick={handleOpen}
+        disabled={opening}
+        className="my-1.5 flex flex-col gap-1 rounded-md text-left max-w-[280px] overflow-hidden transition-colors hover:bg-pulse/10"
+        style={{
+          background: "rgba(124, 92, 255, 0.06)",
+          border: "1px solid rgba(124, 92, 255, 0.20)",
+        }}
+        title="Click to open full-size"
+      >
+        <img
+          src={imgSrc}
+          alt={doc.displayName}
+          className="max-h-[200px] w-full object-cover"
+        />
+        <div className="px-2.5 py-1.5">
+          <div className="text-bone text-[12px] truncate">{doc.displayName}</div>
+          <div className="text-bone-3 text-[10px] font-mono mt-0.5">
+            {formatBytes(doc.sizeBytes)} · doc#{doc.id}
+          </div>
+        </div>
+      </button>
+    );
+  }
 
   return (
     <button

@@ -28,9 +28,17 @@ export function ChatTurn({ message, steps, generatedDocumentIds }: Props) {
   const payload = parsePayload(message.payloadJson);
   const thinking = payload?.thinking ?? null;
 
-  // Strip [Attached: ...] hint we add to user messages to surface files
+  // Pull attached doc IDs out of the user's message text
+  // ("[Attached: name (kind, doc#N), ...]") so they render as inline
+  // FileCards instead of a parenthetical marker.
+  const attachedIds: number[] = isUser
+    ? Array.from(message.content.matchAll(/doc#(\d+)/g)).map((m) =>
+        Number(m[1]),
+      )
+    : [];
+  // Strip the marker from displayed text — files render below
   const visibleContent = isUser
-    ? message.content.replace(/\n\n\[Attached:[^\]]*\]\s*$/i, "")
+    ? message.content.replace(/\n*\[Attached:[^\]]*\]\s*$/i, "").trim()
     : message.content;
 
   // Build parent → children tree for steps
@@ -48,14 +56,30 @@ export function ChatTurn({ message, steps, generatedDocumentIds }: Props) {
       </span>
 
       {isUser ? (
-        <div
-          className="rounded-2xl px-3.5 py-2 text-[14px] text-bone max-w-[85%] leading-relaxed whitespace-pre-wrap"
-          style={{
-            background: "rgba(124, 92, 255, 0.15)",
-            border: "1px solid rgba(124, 92, 255, 0.30)",
-          }}
-        >
-          {visibleContent}
+        <div className="flex flex-col gap-1.5 max-w-[85%] items-end">
+          {visibleContent && (
+            <div
+              className="rounded-2xl px-3.5 py-2 text-[14px] text-bone leading-relaxed whitespace-pre-wrap"
+              style={{
+                background: "rgba(124, 92, 255, 0.15)",
+                border: "1px solid rgba(124, 92, 255, 0.30)",
+              }}
+            >
+              {visibleContent}
+            </div>
+          )}
+          {attachedIds.length > 0 && (
+            <div className="flex flex-col gap-1 items-end">
+              {attachedIds.map((id) => (
+                <FileCard key={id} documentId={id} />
+              ))}
+            </div>
+          )}
+          {!visibleContent && attachedIds.length === 0 && (
+            <div className="rounded-2xl px-3.5 py-2 text-[14px] text-bone-3 italic">
+              (empty)
+            </div>
+          )}
         </div>
       ) : (
         <div className="w-full max-w-[640px] flex flex-col">

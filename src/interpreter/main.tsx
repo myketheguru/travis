@@ -78,13 +78,14 @@ function InterpreterRoot() {
     let cancelled = false;
     (async () => {
       try {
-        setStatus("downloading Pyodide runtime…");
+        setStatus("loading Pyodide runtime…");
         // Dynamic import so vite doesn't try to bundle the wasm
         const pyodideModule = await import("pyodide");
         const pyodide = await pyodideModule.loadPyodide({
-          // jsdelivr CDN — works without network only on first launch.
-          // Slice 8 polish: bundle these files locally for offline use.
-          indexURL: `https://cdn.jsdelivr.net/pyodide/v${pyodideModule.version}/full/`,
+          // Local bundle — vite-plugin-static-copy puts the wasm,
+          // stdlib zip, and wheel files at /pyodide-bundle/ at build time.
+          // Works fully offline; no network dependency on first launch.
+          indexURL: "/pyodide-bundle/node_modules/pyodide/",
           stdout: () => {
             /* captured per-execution via redirection */
           },
