@@ -82,3 +82,14 @@ pub async fn append_user_message(
         .await
         .map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub async fn delete_message_and_after(
+    state: State<'_, AppState>,
+    conversation_id: i64,
+    message_id: i64,
+) -> Result<u64, String> {
+    conversation::delete_message_and_after(&state.db.pool, conversation_id, message_id)
+        .await
+        .map_err(|e| e.to_string())
+}

@@ -94,6 +94,37 @@ pub async fn append(
     .await
 }
 
+/// Delete a message and every message that came after it in the
+/// thread (id-ordered). Returns the number of rows removed.
+///
+/// Mirrors Claude.ai's "delete this turn" affordance: removing a turn
+/// from the middle of a thread without trimming subsequent turns would
+/// leave dangling references in Travis's later replies. Trimming forward
+/// keeps the transcript coherent.
+///
+/// Orphaned step rows are intentionally left in place — they're keyed on
+/// conversation_id, not message_id, so the cleanup is conversation-wide,
+/// not turn-wide. They become harmless history.
+pub async fn delete_message_and_after(
+    pool: &SqlitePool,
+    conversation_id: i64,
+    message_id: i64,
+) -> Result<u64, sqlx::Error> {
+    let res = sqlx::query(
+        "DELETE FROM conversation_message
+         WHERE conversation_id = ?1 AND id >= ?2",
+    )
+    .bind(conversation_id)
+    .bind(message_id)
+    .execute(pool)
+    .await?;
+    sqlx::query("UPDATE conversation SET updated_at = CURRENT_TIMESTAMP WHERE id = ?1")
+        .bind(conversation_id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
 pub async fn set_status(pool: &SqlitePool, id: i64, status: &str) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE conversation SET status=?1, updated_at=CURRENT_TIMESTAMP WHERE id=?2",

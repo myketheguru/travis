@@ -6,6 +6,7 @@ import { journalIngest } from "../../lib/journal";
 import {
   activeConversation,
   getThread,
+  deleteMessageAndAfter,
   type ConversationMessage,
 } from "../../lib/conversation";
 import {
@@ -24,12 +25,28 @@ import { ActiveWorkflowPill } from "../../components/ActiveWorkflowPill";
 import { DocumentExtractCard } from "../../overlay/DocumentExtractCard";
 import { ChatTurn } from "../../chat/ChatTurn";
 import { AutoGrowTextarea } from "../../chat/AutoGrowTextarea";
+import { useScrollAnchor } from "../../chat/useScrollAnchor";
 import { useAppStore } from "../../stores/app";
+
+/// Attachment in flight: shown immediately, swapped for a real
+/// Document when ingestDocument resolves.
+interface PendingAttachment {
+  tempId: string;
+  filename: string;
+  sizeBytes: number;
+  kind: "pending";
+}
+
+type Attachment = Document | PendingAttachment;
+
+const isPending = (a: Attachment): a is PendingAttachment =>
+  (a as PendingAttachment).kind === "pending";
 
 export default function AskTab() {
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
-  const [conversationId, setConversationId] = useState<number | null>(null);
+  const activeConversationId = useAppStore((s) => s.activeConversationId);
+  const setActiveConversationId = useAppStore((s) => s.setActiveConversationId);
   const [justReadied, setJustReadied] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -46,29 +63,36 @@ export default function AskTab() {
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [steps, setSteps] = useState<ParsedStep[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [attachedDocs, setAttachedDocs] = useState<Document[]>([]);
+  const [attachedDocs, setAttachedDocs] = useState<Attachment[]>([]);
   const [expandedDocs, setExpandedDocs] = useState<Set<number>>(new Set());
   const [dropHovering, setDropHovering] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<number | null>(null);
   const setActivity = useAppStore((s) => s.setActivity);
   const pulse = useAppStore((s) => s.pulse);
-  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  // Smart scroll anchor: jumps to bottom on first paint; auto-tracks
+  // bottom only when the user is already there. If they scroll up, new
+  // content does NOT yank them back.
+  const { ref: scrollRef, atBottom, scrollToBottom } = useScrollAnchor(
+    `${messages.length}:${steps.length}:${busy ? "1" : "0"}`,
+  );
 
   // Subscribe to live step events; refresh persisted history whenever
   // conversation id changes.
   useEffect(() => {
-    if (!conversationId) {
+    if (!activeConversationId) {
       setSteps([]);
       return;
     }
     let cancelled = false;
-    listSteps(conversationId)
+    listSteps(activeConversationId)
       .then((s) => {
         if (!cancelled) setSteps(s);
       })
       .catch(() => {});
     let unlisten: (() => void) | null = null;
     subscribeSteps((event: StepEvent) => {
-      setSteps((prev) => applyStepEvent(prev, event, conversationId));
+      setSteps((prev) => applyStepEvent(prev, event, activeConversationId));
     }).then((fn) => {
       unlisten = fn;
     });
@@ -80,45 +104,68 @@ export default function AskTab() {
         /* ignore */
       }
     };
-  }, [conversationId]);
+  }, [activeConversationId]);
 
-  // Resume any active thread on mount so questions persist across tab switches.
+  // Resume a thread on mount. Prefer the persisted conversation id so
+  // tab-switches always restore the same chat. Fall back to the
+  // backend's "awaiting_user" heuristic only on first run.
   useEffect(() => {
-    activeConversation()
-      .then((thread) => {
-        if (!thread) return;
-        setConversationId(thread.conversation.id);
+    let cancelled = false;
+    (async () => {
+      if (activeConversationId) {
+        try {
+          const t = await getThread(activeConversationId);
+          if (!cancelled) setMessages(t.messages);
+          return;
+        } catch {
+          // Conversation no longer exists — drop the stale id and
+          // try the awaiting_user fallback.
+          if (!cancelled) setActiveConversationId(null);
+        }
+      }
+      try {
+        const thread = await activeConversation();
+        if (cancelled || !thread) return;
+        setActiveConversationId(thread.conversation.id);
         setMessages(thread.messages);
-      })
-      .catch(() => {});
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, busy]);
 
   const submit = async () => {
     const text = q.trim();
-    if (!text && attachedDocs.length === 0) return;
+    // Strip pending attachments — they aren't ingested yet and can't be
+    // referenced by doc#N. The user must wait for the spinner to finish.
+    const ingested = attachedDocs.filter((a): a is Document => !isPending(a));
+    if (!text && ingested.length === 0) return;
     if (busy) return;
     setBusy(true);
     setError(null);
     setActivity("thinking");
 
     const docHint =
-      attachedDocs.length > 0
+      ingested.length > 0
         ? "\n\n[Attached: " +
-          attachedDocs
+          ingested
             .map((d) => `${d.displayName} (${d.kind}, doc#${d.id})`)
             .join(", ") +
           "]"
         : "";
     const submitPayload = (text || "(attached files for review)") + docHint;
 
+    // Optimistic echo: same stable id used as the React key. When the
+    // server thread comes back, we *merge* — keeping this row mounted
+    // so AnimatePresence doesn't unmount + remount the user bubble.
+    const optimisticId = -Date.now();
     const optimistic: ConversationMessage = {
-      id: -Date.now(),
-      conversationId: conversationId ?? -1,
+      id: optimisticId,
+      conversationId: activeConversationId ?? -1,
       role: "user",
       content: submitPayload,
       payloadJson: null,
@@ -132,12 +179,14 @@ export default function AskTab() {
     try {
       const r = await journalIngest(
         submitPayload,
-        conversationId ?? undefined,
+        activeConversationId ?? undefined,
       );
-      setConversationId(r.conversationId);
-      setMessages(r.thread.messages);
+      setActiveConversationId(r.conversationId);
+      // Merge: replace the optimistic row by content match, keep
+      // every earlier row intact, append anything new from the server.
+      setMessages((prev) => mergeServerThread(prev, optimisticId, r.thread.messages));
     } catch (e) {
-      setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
+      setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setActivity("idle");
@@ -147,19 +196,37 @@ export default function AskTab() {
 
   const ingestFile = useCallback(
     async (filePath: string) => {
+      const filename = filePath.split(/[\\/]/).pop() ?? filePath;
+      const tempId = `pending-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+      // 1. Push placeholder synchronously so the input shows immediate
+      //    feedback (no multi-second wait).
+      setAttachedDocs((prev) => [
+        ...prev,
+        { tempId, filename, sizeBytes: 0, kind: "pending" },
+      ]);
       try {
         const doc = await ingestDocument({
           filePath,
-          conversationId: conversationId,
+          conversationId: activeConversationId,
         });
-        setAttachedDocs((prev) =>
-          prev.find((d) => d.id === doc.id) ? prev : [...prev, doc],
-        );
+        // 2. Swap placeholder for real doc.
+        setAttachedDocs((prev) => {
+          const exists = prev.find(
+            (a) => !isPending(a) && (a as Document).id === doc.id,
+          );
+          if (exists) return prev.filter((a) => !isPending(a) || a.tempId !== tempId);
+          return prev.map((a) =>
+            isPending(a) && a.tempId === tempId ? doc : a,
+          );
+        });
       } catch (e) {
-        setError(`Couldn't attach ${filePath.split(/[\\/]/).pop()}: ${(e as Error).message ?? e}`);
+        setAttachedDocs((prev) =>
+          prev.filter((a) => !isPending(a) || a.tempId !== tempId),
+        );
+        setError(`Couldn't attach ${filename}: ${(e as Error).message ?? e}`);
       }
     },
-    [conversationId],
+    [activeConversationId],
   );
 
   const handlePickFile = useCallback(async () => {
@@ -242,37 +309,62 @@ export default function AskTab() {
   }, [ingestFile]);
 
   const reset = async () => {
-    setConversationId(null);
+    setActiveConversationId(null);
     setMessages([]);
     setError(null);
     setQ("");
   };
 
   const reload = async () => {
-    if (!conversationId) return;
+    if (!activeConversationId) return;
     try {
-      const t = await getThread(conversationId);
+      const t = await getThread(activeConversationId);
       setMessages(t.messages);
     } catch {
       /* ignore */
     }
   };
 
+  const handleDeleteRequest = useCallback((messageId: number) => {
+    setPendingDelete(messageId);
+  }, []);
+
+  const handleDeleteConfirm = useCallback(async () => {
+    if (pendingDelete == null || !activeConversationId) return;
+    const id = pendingDelete;
+    setPendingDelete(null);
+    try {
+      await deleteMessageAndAfter(activeConversationId, id);
+      // Optimistic local trim — server already removed.
+      setMessages((prev) => prev.filter((m) => m.id < id));
+    } catch (e) {
+      setError(`Could not delete message: ${(e as Error).message ?? e}`);
+    }
+  }, [pendingDelete, activeConversationId]);
+
+  const handleDeleteCancel = useCallback(() => {
+    setPendingDelete(null);
+  }, []);
+
   // Refresh thread when a different surface (overlay) appends a turn to the same conversation.
   useEffect(() => {
-    if (!conversationId) return;
+    if (!activeConversationId) return;
     const id = setInterval(reload, 8000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId]);
+  }, [activeConversationId]);
 
   const empty = messages.length === 0;
+  const deleteCount =
+    pendingDelete != null
+      ? messages.filter((m) => m.id >= pendingDelete).length
+      : 0;
 
   return (
     <div className="px-10 pt-4 pb-6 max-w-2xl mx-auto flex flex-col h-full">
       {!empty && (
         <div className="flex items-center justify-between text-bone-3 text-[10px] tracking-[0.18em] uppercase font-mono mb-2">
-          <span>thread #{conversationId} · {messages.length} message{messages.length === 1 ? "" : "s"}</span>
+          <span>thread #{activeConversationId} · {messages.length} message{messages.length === 1 ? "" : "s"}</span>
           <button
             onClick={reset}
             className="hover:text-bone-2 normal-case tracking-wider underline-offset-4 hover:underline"
@@ -282,30 +374,59 @@ export default function AskTab() {
         </div>
       )}
 
-      <div
-        ref={scrollRef}
-        className={
-          "flex-1 min-h-0 overflow-y-auto flex flex-col gap-3 pr-2 -mr-2 " +
-          (empty ? "items-center justify-center" : "")
-        }
-        style={{ scrollBehavior: "smooth" }}
-      >
-        {empty ? (
-          <p className="text-bone-3 text-sm text-center max-w-md leading-relaxed">
-            Ask Travis anything, capture an op, or just think out loud. Travis
-            will pull from your past notes, open tasks, and what it knows about
-            you.
-            <br />
-            <span className="text-bone-3/70 text-xs">
-              Same surface as Cmd+J — works for questions, captures, and follow-ups.
-            </span>
-          </p>
-        ) : (
-          <>
-            <AnimatePresence initial={false}>
-              {renderTurns(messages, steps, busy)}
-            </AnimatePresence>
-          </>
+      <div className="relative flex-1 min-h-0 flex flex-col">
+        <div
+          ref={scrollRef}
+          className={
+            "flex-1 min-h-0 overflow-y-auto flex flex-col gap-3 pr-2 -mr-2 " +
+            (empty ? "items-center justify-center" : "")
+          }
+        >
+          {empty ? (
+            <p className="text-bone-3 text-sm text-center max-w-md leading-relaxed">
+              Ask Travis anything, capture an op, or just think out loud. Travis
+              will pull from your past notes, open tasks, and what it knows about
+              you.
+              <br />
+              <span className="text-bone-3/70 text-xs">
+                Same surface as Cmd+J — works for questions, captures, and follow-ups.
+              </span>
+            </p>
+          ) : (
+            <>
+              <AnimatePresence initial={false}>
+                {renderTurns(
+                  messages,
+                  steps,
+                  busy,
+                  pendingDelete,
+                  handleDeleteRequest,
+                  handleDeleteConfirm,
+                  handleDeleteCancel,
+                  deleteCount,
+                )}
+              </AnimatePresence>
+            </>
+          )}
+        </div>
+
+        {!atBottom && !empty && (
+          <button
+            onClick={() => scrollToBottom("smooth")}
+            className="absolute left-1/2 -translate-x-1/2 bottom-2 px-3 py-1.5 rounded-full text-[11px] font-mono tracking-wide shadow-lg flex items-center gap-1.5 transition-opacity"
+            style={{
+              background: "rgba(20, 22, 30, 0.92)",
+              border: "1px solid rgba(124, 92, 255, 0.45)",
+              color: "rgb(236, 236, 241)",
+              backdropFilter: "blur(8px)",
+            }}
+            title="Scroll to latest"
+          >
+            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M12 5v14M19 12l-7 7-7-7" />
+            </svg>
+            <span>{busy ? "travis is working…" : "jump to latest"}</span>
+          </button>
         )}
       </div>
 
@@ -333,12 +454,29 @@ export default function AskTab() {
             <span>your turn</span>
           </div>
         )}
-        <ActiveWorkflowPill conversationId={conversationId} />
+        <ActiveWorkflowPill conversationId={activeConversationId} />
 
         {attachedDocs.length > 0 && (
           <>
             <div className="flex flex-wrap gap-1.5 pb-1.5">
-              {attachedDocs.map((d) => {
+              {attachedDocs.map((a) => {
+                if (isPending(a)) {
+                  return (
+                    <div
+                      key={a.tempId}
+                      className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-mono bg-pulse/10 border border-pulse/20 text-bone-3"
+                      title={`Reading ${a.filename}…`}
+                    >
+                      <span className="relative inline-flex h-1.5 w-1.5">
+                        <span className="absolute inset-0 rounded-full bg-pulse-2 animate-ping opacity-70" />
+                        <span className="relative rounded-full bg-pulse-2 h-1.5 w-1.5" />
+                      </span>
+                      <span className="truncate max-w-[200px]">{a.filename}</span>
+                      <span className="opacity-60">reading…</span>
+                    </div>
+                  );
+                }
+                const d = a;
                 const expanded = expandedDocs.has(d.id);
                 return (
                   <button
@@ -368,7 +506,9 @@ export default function AskTab() {
                       onClick={(e) => {
                         e.stopPropagation();
                         setAttachedDocs((prev) =>
-                          prev.filter((x) => x.id !== d.id),
+                          prev.filter(
+                            (x) => isPending(x) || (x as Document).id !== d.id,
+                          ),
                         );
                         setExpandedDocs((prev) => {
                           const next = new Set(prev);
@@ -392,7 +532,7 @@ export default function AskTab() {
             </div>
             <AnimatePresence>
               {attachedDocs
-                .filter((d) => expandedDocs.has(d.id))
+                .filter((a): a is Document => !isPending(a) && expandedDocs.has((a as Document).id))
                 .map((d) => (
                   <div key={`card-${d.id}`} className="pb-2">
                     <DocumentExtractCard
@@ -460,7 +600,7 @@ export default function AskTab() {
           />
           <button
             onClick={() => void submit()}
-            disabled={busy || (!q.trim() && attachedDocs.length === 0)}
+            disabled={busy || (!q.trim() && attachedDocs.filter((a) => !isPending(a)).length === 0)}
             title="Send (Enter)"
             className="shrink-0 h-9 px-3 flex items-center justify-center rounded-full text-[12px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             style={{
@@ -496,6 +636,54 @@ export default function AskTab() {
       </div>
     </div>
   );
+}
+
+/// Merge server thread response into existing optimistic state.
+///
+/// The server returns the canonical message list AFTER the user turn +
+/// the assistant reply. We want to:
+///   1. keep every row earlier than the optimistic intact (avoids
+///      AnimatePresence churning on stable rows)
+///   2. replace the optimistic row with its server-side counterpart
+///      (same id-key behaviour as it had as optimistic — we just
+///      stamp the optimistic id onto the server's row so React still
+///      sees the SAME key, preventing the visible flash)
+///   3. append every message the server has that we don't (the
+///      assistant reply, any subsequent system rows)
+function mergeServerThread(
+  prev: ConversationMessage[],
+  optimisticId: number,
+  serverMessages: ConversationMessage[],
+): ConversationMessage[] {
+  const optimisticIdx = prev.findIndex((m) => m.id === optimisticId);
+  // If we somehow lost the optimistic, just take the server canon.
+  if (optimisticIdx === -1) return serverMessages;
+  const preOpt = prev.slice(0, optimisticIdx);
+  // Find the corresponding user turn in the server response — it's the
+  // last user message with matching content. We then map subsequent
+  // messages over from that index.
+  const optimisticContent = prev[optimisticIdx].content;
+  const matchedIdx = serverMessages
+    .map((m, i) => ({ m, i }))
+    .reverse()
+    .find(({ m }) => m.role === "user" && m.content === optimisticContent)?.i;
+  if (matchedIdx === undefined) {
+    // Couldn't match — fall back to server canon to avoid divergence.
+    return serverMessages;
+  }
+  // Stamp the server row with the optimistic id so React's keyed render
+  // sees no unmount. The real db id lives in payloadJson if anyone
+  // needs it, but we don't expose it — only delete() uses the id and
+  // it works on optimistic rows because the next reload pulls the
+  // canonical id anyway. Keep both ids: server row replaces optimistic
+  // content but the optimistic id stays.
+  const userRowServer = serverMessages[matchedIdx];
+  const stampedUser: ConversationMessage = {
+    ...userRowServer,
+    id: optimisticId, // Preserve key
+  };
+  const tail = serverMessages.slice(matchedIdx + 1);
+  return [...preOpt, stampedUser, ...tail];
 }
 
 /// Apply a streaming step event to local state immutably.
@@ -566,6 +754,11 @@ function renderTurns(
   messages: ConversationMessage[],
   steps: ParsedStep[],
   busy: boolean,
+  pendingDelete: number | null,
+  onDeleteRequest: (id: number) => void,
+  onDeleteConfirm: () => void,
+  onDeleteCancel: () => void,
+  deleteCount: number,
 ) {
   const sortedSteps = [...steps].sort(
     (a, b) => tsMs(a.startedAt) - tsMs(b.startedAt),
@@ -598,6 +791,11 @@ function renderTurns(
         message={m}
         steps={turnSteps}
         generatedDocumentIds={generatedIds}
+        onDelete={() => onDeleteRequest(m.id)}
+        pendingDelete={pendingDelete === m.id}
+        deleteCount={pendingDelete === m.id ? deleteCount : 0}
+        onConfirmDelete={onDeleteConfirm}
+        onCancelDelete={onDeleteCancel}
       />,
     );
     prevTs = tsMs(m.createdAt);

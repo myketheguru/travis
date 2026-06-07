@@ -43,3 +43,6 @@ export const resolveConversation = (id: number) =>
 
 export const appendUserMessage = (conversationId: number, content: string) =>
   invoke<ConversationMessage>("append_user_message", { conversationId, content });
+
+export const deleteMessageAndAfter = (conversationId: number, messageId: number) =>
+  invoke<number>("delete_message_and_after", { conversationId, messageId });

@@ -18,16 +18,19 @@ type AppState = {
   status: AppStatus | null;
   profile: UserProfile | null;
   showDiagnostics: boolean;
+  activeConversationId: number | null;
   setActivity: (a: Activity) => void;
   setStatus: (s: AppStatus) => void;
   setProfile: (p: UserProfile | null) => void;
   setShowDiagnostics: (v: boolean) => void;
+  setActiveConversationId: (id: number | null) => void;
   pulse: () => void;
 };
 
 let pulseTimer: ReturnType<typeof setTimeout> | null = null;
 
 const DIAG_KEY = "travis.showDiagnostics";
+const ACTIVE_CONV_KEY = "travis.activeConversationId";
 
 const readDiag = (): boolean => {
   try {
@@ -47,17 +50,44 @@ const writeDiag = (v: boolean) => {
   }
 };
 
+const readActiveConv = (): number | null => {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    const raw = localStorage.getItem(ACTIVE_CONV_KEY);
+    if (!raw) return null;
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+};
+
+const writeActiveConv = (id: number | null) => {
+  try {
+    if (typeof localStorage === "undefined") return;
+    if (id == null) localStorage.removeItem(ACTIVE_CONV_KEY);
+    else localStorage.setItem(ACTIVE_CONV_KEY, String(id));
+  } catch {
+    /* ignore */
+  }
+};
+
 export const useAppStore = create<AppState>((set, get) => ({
   activity: "idle",
   status: null,
   profile: null,
   showDiagnostics: readDiag(),
+  activeConversationId: readActiveConv(),
   setActivity: (activity) => set({ activity }),
   setStatus: (status) => set({ status }),
   setProfile: (profile) => set({ profile }),
   setShowDiagnostics: (v) => {
     writeDiag(v);
     set({ showDiagnostics: v });
+  },
+  setActiveConversationId: (id) => {
+    writeActiveConv(id);
+    set({ activeConversationId: id });
   },
   pulse: () => {
     if (get().activity === "thinking" || get().activity === "listening") return;

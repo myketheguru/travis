@@ -590,8 +590,9 @@ fn build_extraction_tool(action_kinds: &[&str], entity_kinds: &[&str]) -> ToolDe
                     "description": "operational if the turn produces structured output (tasks/reminders/entities/proposedActions); conversational if it's pure chat or a pure question."
                 },
                 "response": {
-                    "type": ["string", "null"],
-                    "description": "Your brief conversational reply (1-3 sentences). Always populate this — it's what the user sees in chat."
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "REQUIRED. Your reply to the user — what shows in the chat. NEVER return null, empty, or only whitespace. If you're mid-workflow and reading documents, say so ('Reading the PO and WO now — coming back with what I found'). If the user uploaded files in answer to a question you asked, summarize what you extracted and what's still open. NEVER respond with just 'captured' or 'noted' — write a substantive reply that advances the work."
                 },
                 "tasks": {
                     "type": "array",
@@ -1775,6 +1776,38 @@ pub async fn journal_ingest(
 
     let is_conversational = extraction.intent.eq_ignore_ascii_case("conversational");
 
+    // Workflow-continuation detection.
+    //
+    // If the user's message references attached documents (`doc#N`
+    // markers from the chat surface) AND there's an active workflow on
+    // this thread, treat the turn as continuation work, not a fresh
+    // capture. Without this guard, mid-workflow doc uploads cause the
+    // LLM to populate `tasks`, and the synthesis fallback surfaces it
+    // to the user as "captured 1 new" — the most common failure mode
+    // Taylor and Michael hit in the v0.14 rollout.
+    let inbound_doc_ids: Vec<i64> = raw
+        .split("doc#")
+        .skip(1)
+        .filter_map(|s| {
+            let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
+            digits.parse().ok()
+        })
+        .collect();
+    let pre_synth_active_workflow_id =
+        crate::workflows::state::get_active(&state.db.pool, conv_id)
+            .await
+            .map(|w| w.id);
+    let is_workflow_continuation =
+        pre_synth_active_workflow_id.is_some() && !inbound_doc_ids.is_empty();
+    if is_workflow_continuation && !extraction.tasks.is_empty() {
+        tracing::info!(
+            "suppressing {} task(s) — workflow continuation with {} doc(s)",
+            extraction.tasks.len(),
+            inbound_doc_ids.len()
+        );
+        extraction.tasks.clear();
+    }
+
     // Apply workspace routing. The LLM may have nominated a different
     // workspace via `workspaceRouting`; we honour it for high/medium
     // confidence picks that target a non-sensitive, non-archived
@@ -2474,6 +2507,26 @@ pub async fn journal_ingest(
             text
         }
         None => {
+            // Re-check active workflow at synthesis time (workflow ops
+            // run between is_workflow_continuation and here may have
+            // started or completed one).
+            let synth_active_workflow_id =
+                crate::workflows::state::get_active(&state.db.pool, conv_id)
+                    .await
+                    .map(|w| w.id);
+            let active_workflow_now = synth_active_workflow_id.is_some();
+
+            // Workflow-aware fallback: never surface "captured N new"
+            // when there's an active workflow or the user just uploaded
+            // documents — the user is mid-task, not capturing fresh ops.
+            if active_workflow_now || !inbound_doc_ids.is_empty() {
+                if !inbound_doc_ids.is_empty() {
+                    "Got the document(s) — reading them now. I'll come back with what I extracted and any open fields."
+                        .to_string()
+                } else {
+                    "Working on it — give me a moment.".to_string()
+                }
+            } else {
             let mut parts = Vec::new();
             if !completed.is_empty() {
                 parts.push(format!("closed {} task(s)", completed.len()));
@@ -2507,6 +2560,7 @@ pub async fn journal_ingest(
                 ));
             }
             summary
+            }
         }
     };
     let _ = conversation::append(

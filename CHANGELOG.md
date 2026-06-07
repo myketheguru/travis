@@ -1,5 +1,68 @@
 # Travis Changelog
 
+## v0.14.2 — Chat persistence, message actions, workflow continuation (2026-06-07)
+
+Second feedback batch. Three categories of fix:
+
+### Conversation persistence
+
+- **Chat survives tab switches.** Active conversation id lives in
+  `localStorage` (`travis.activeConversationId`) and is the authoritative
+  restore source; the backend's `most_recent_awaiting_user` heuristic is
+  a fallback for first-run only. Switching from Ask to Notes and back
+  no longer wipes the transcript.
+- **"New chat" is the only reset path.** Travis never clears the chat
+  on its own, even when a workflow finishes.
+
+### Per-message actions
+
+- **Copy + delete on every bubble.** Hover (or focus) any message to
+  reveal a small action row. Copy puts the message body on the
+  clipboard.
+- **Delete trims forward.** Deleting a message removes that message
+  and every message after it in the thread (Claude.ai-style), keeping
+  the surviving transcript coherent. A confirmation prompt always
+  shows first; nothing is removed without an explicit click.
+- **`delete_message_and_after` Tauri command.** One SQL `DELETE`
+  scoped to the conversation; orphaned step rows stay (they belong to
+  the conversation, not the turn).
+
+### Chat-input UX
+
+- **No more user-bubble flash.** Optimistic messages now keep their
+  React key across the round-trip — the server thread is merged into
+  the existing list instead of replacing it, so `AnimatePresence`
+  sees no unmount.
+- **Instant file-attach feedback.** Dropping or picking a file shows
+  a `reading…` placeholder pill the same frame the path comes in;
+  the placeholder swaps in-place for the real document card when
+  ingest finishes.
+- **Smart scroll.** The transcript jumps to bottom on first load and
+  follows new content only when the user is already at the bottom.
+  Scroll up and Travis stays where you parked. A floating "jump to
+  latest" pill appears when there's new content off-screen — click
+  it to come back down.
+
+### Workflow continuation — the "captured 1 new" bug
+
+Three reinforcing changes:
+
+- **`response` field is now required** in the LLM JSON schema with
+  `minLength: 1` and an explicit prompt directive: "NEVER respond with
+  just 'captured' or 'noted' — write a substantive reply that
+  advances the work."
+- **Workflow-aware fallback.** When the LLM returns an empty
+  response AND there's an active workflow OR the user just uploaded
+  documents, the synthesised reply is "Got the document(s) — reading
+  them now. I'll come back with what I extracted and any open fields"
+  instead of "captured N new".
+- **Task suppression mid-workflow.** When the user's message contains
+  `doc#N` markers AND there's an active workflow on the thread, any
+  tasks the LLM tried to extract are dropped before persistence with a
+  `tracing::info!` line — preventing the chat from ever showing
+  "captured" on a mid-workflow document upload, even if the model
+  hallucinates tasks.
+
 ## v0.14.1 — Chat-loop and offline polish (2026-06-07)
 
 First feedback batch after v0.14.0. Travis stopped "hanging up" mid-workflow,

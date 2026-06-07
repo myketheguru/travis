@@ -660,6 +660,7 @@ pub fn run() {
             conversation_cmd::active_conversation,
             conversation_cmd::resolve_conversation,
             conversation_cmd::append_user_message,
+            conversation_cmd::delete_message_and_after,
             actions::list_proposed_actions,
             actions::confirm_action,
             actions::decline_action,
