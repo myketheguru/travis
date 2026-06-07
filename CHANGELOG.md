@@ -1,5 +1,20 @@
 # Travis Changelog
 
+## v0.13.4 — Pin Rust tauri-plugin-dialog to 2.4.2 (2026-06-05)
+
+`tauri info` locally revealed the real mismatch the CI logs kept
+referring to: the **Rust** `tauri-plugin-dialog` crate was 2.7.1 while
+the **JS** `@tauri-apps/plugin-dialog` was 2.4.2 — Tauri's preflight
+requires same major.minor on both sides. I'd been chasing
+`@tauri-apps/api` version issues; the actual culprit was the plugin
+itself. Plugin-dialog 2.5+ depends on tauri 2.11, which isn't in
+our resolved tree.
+
+Pinned `tauri-plugin-dialog = "~2.4"` in Cargo.toml, regenerated
+Cargo.lock — Rust crate now resolves to 2.4.2 matching the JS side.
+
+---
+
 ## v0.13.3 — Pin @tauri-apps/plugin-opener to 2.5.3 (2026-06-05)
 
 The real root cause of the v0.13.0/.1/.2 CI failures: `@tauri-apps/
