@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -171,10 +172,29 @@ export default function AskTab() {
       payloadJson: null,
       createdAt: new Date().toISOString(),
     };
-    setMessages((prev) => [...prev, optimistic]);
-    setQ("");
-    setAttachedDocs([]);
-    setExpandedDocs(new Set());
+    // v0.14.4: flushSync forces a synchronous commit + paint so the
+    // user-bubble lands in the DOM BEFORE the busy=true state churn
+    // adds the "thinking…" live-turn. Without flushSync, React's
+    // batching can coalesce both updates into one render where the
+    // live-turn appears immediately, pushing the optimistic above
+    // the viewport's smart-scroll fold.
+    flushSync(() => {
+      setMessages((prev) => [...prev, optimistic]);
+      setQ("");
+      setAttachedDocs([]);
+      setExpandedDocs(new Set());
+    });
+    // After paint, scroll the new user bubble into view at the top of
+    // the visible area so it's clearly anchored even when the live-turn
+    // and message together exceed one viewport height.
+    requestAnimationFrame(() => {
+      const el = scrollRef.current?.querySelector(
+        `[data-message-id="${optimisticId}"]`,
+      );
+      if (el && "scrollIntoView" in el) {
+        (el as HTMLElement).scrollIntoView({ block: "start", behavior: "auto" });
+      }
+    });
 
     try {
       const r = await journalIngest(

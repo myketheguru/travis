@@ -1729,6 +1729,11 @@ pub async fn journal_ingest(
     // placeholder reply instead of finishing the work.
     const MAX_ITER: usize = 8;
 
+    // Clone the message stack before the agent loop takes ownership,
+    // so the empty-response retry path below can re-run the LLM with
+    // the same context (system prompt is cached, so the second call
+    // shares the prefix and only pays for the forcing-message tail).
+    let messages_for_retry = messages.clone();
     let (mut extraction, ok, err_msg, raw_response) = if let Some(fp) = fast_path_extraction {
         tracing::info!("journal_ingest fast-path hit (intent={})", fp.intent);
         (fp, true, None, "<fast-path>".to_string())
@@ -2521,9 +2526,83 @@ pub async fn journal_ingest(
         let _ = app.emit("workflow-state-changed", conv_id);
     }
 
-    // Prefer the LLM's own free-form reply (always populated under the new
-    // unified prompt). Fall back to a synthesized summary if it's missing
-    // (older models or parse fallbacks).
+    // v0.14.4 retry-on-empty (Approach A). When the primary agent
+    // loop returns no response (either fallback_extraction fired or
+    // the LLM literally produced empty/whitespace), give it ONE more
+    // chance with a forcing prompt before we surface an error. The
+    // system prompt is cached so the retry only pays for the forcing
+    // tail tokens. Logs `err_msg` from the original failure so the
+    // dev console can show why the first attempt died.
+    let initial_response_empty = extraction
+        .response
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .is_empty();
+    if !ok || initial_response_empty {
+        tracing::warn!(
+            "primary pass empty/failed (ok={}, err={:?}); raw_response_len={}; running retry",
+            ok,
+            err_msg,
+            raw_response.len()
+        );
+        let mut retry_msgs = messages_for_retry;
+        retry_msgs.push(Message::user(
+            "Your previous attempt returned no `response` value. Re-read the HOW YOUR TURN ENDS rules at the top of your system prompt — you MUST end your turn with an artifact, a specific question, or a real blocker report. Generic acknowledgements are not acceptable.\n\nIf you needed tools (read_document, run_python, etc.) but couldn't fit them, call them now. If you can't fit the work in the iterations remaining, ask a SPECIFIC question instead — name the field or doc you need.\n\nCall report_extraction now with a substantive `response` value.".to_string(),
+        ));
+        let retry_opts = ChatWithToolsOptions {
+            system: Some(build_system_prompt(
+                &profile,
+                &crate::packs::prompt_fragment(&state.enabled_packs),
+                &workspace_block,
+            )),
+            cache_system: true,
+            temperature: Some(0.3),
+            max_tokens: Some(2000),
+            tools: tool_defs.clone(),
+            tool_choice: Some(ToolChoice::Specific(extraction_name.clone())),
+        };
+        match provider.chat_with_tools(retry_msgs, retry_opts).await {
+            Ok(turn) => {
+                if let Some(call) = turn
+                    .tool_calls
+                    .iter()
+                    .find(|c| c.name == extraction_name)
+                {
+                    if let Ok(retry_ext) =
+                        serde_json::from_value::<Extraction>(call.input.clone())
+                    {
+                        let retry_response_ok = !retry_ext
+                            .response
+                            .as_deref()
+                            .map(str::trim)
+                            .unwrap_or("")
+                            .is_empty();
+                        if retry_response_ok {
+                            tracing::info!(
+                                "retry succeeded with substantive response (len={})",
+                                retry_ext.response.as_deref().map(|s| s.len()).unwrap_or(0)
+                            );
+                            extraction.response = retry_ext.response;
+                        } else {
+                            tracing::warn!("retry also returned empty response");
+                        }
+                    } else {
+                        tracing::warn!("retry tool input parse failed");
+                    }
+                } else {
+                    tracing::warn!("retry returned no report_extraction call");
+                }
+            }
+            Err(e) => {
+                tracing::warn!("retry LLM call errored: {e}");
+            }
+        }
+    }
+
+    // Prefer the LLM's own free-form reply. Synthesis fallback is
+    // reserved for the truly-broken case where even the retry left
+    // response empty.
     let response_text = extraction
         .response
         .as_deref()
@@ -2559,18 +2638,28 @@ pub async fn journal_ingest(
             text
         }
         None => {
-            // v0.14.3: empty-response is a hard failure now, not a
-            // fallback opportunity. The schema marks response as
-            // required (minLength 1); the prompt is explicit that
-            // handoff phrases like "captured", "working on it",
-            // "reading them now" are unacceptable. If we still land
-            // here it means the model truly produced nothing usable
-            // — surface that to the user so we don't ship a
-            // placeholder reply masquerading as progress.
-            tracing::warn!(
-                "primary respond pass returned empty — surfacing as error"
+            // v0.14.4: both primary AND retry produced empty.
+            // Surface a more informative error so the user has
+            // something to act on.
+            tracing::error!(
+                "both primary and retry returned empty (orig_err={:?})",
+                err_msg
             );
-            "Travis didn't produce a reply on that turn — try again or open the dev console for details.".to_string()
+            let hint = match err_msg.as_deref() {
+                Some(e) if e.contains("max iterations") => {
+                    "Travis ran out of tool-call iterations on this turn. Try sending fewer documents at once, or break the request into smaller steps."
+                }
+                Some(e) if e.contains("parse") => {
+                    "Travis's reply couldn't be parsed. This is usually a transient model issue — please try again in a moment."
+                }
+                Some(_) => {
+                    "Travis hit an error while thinking through that turn. Try again, or rephrase the request."
+                }
+                None => {
+                    "Travis didn't produce a reply on that turn. Try again or rephrase the request."
+                }
+            };
+            hint.to_string()
         }
     };
     let _ = conversation::append(

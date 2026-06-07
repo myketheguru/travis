@@ -1,5 +1,51 @@
 # Travis Changelog
 
+## v0.14.4 — Unblock the empty-response dead-end + user-message visibility (2026-06-07)
+
+v0.14.3 enforced the "finish or ask" rule by deleting the synthesis
+fallback, but it traded the polite-placeholder problem for a hard-error
+dead-end: when the LLM agent loop couldn't produce a reply, Travis
+surfaced "Travis didn't produce a reply on that turn" and the user had
+no recovery path. This release fixes that and a couple of related
+chat-UX regressions.
+
+### Empty-response retry
+
+- When the primary agent loop returns no usable response, Travis now
+  runs **one retry** with a forcing prompt ("Your previous attempt
+  returned no `response` value. Re-read the HOW YOUR TURN ENDS rules
+  — call report_extraction now with a substantive `response`
+  value."). `max_tokens` bumped to 2000 for the retry; system prompt
+  is cached so the second call only pays for the forcing tail.
+- If the retry also returns empty, Travis now shows a **specific
+  error** based on what went wrong — "ran out of tool-call
+  iterations, try sending fewer documents at once", "transient
+  parse error, please try again", etc. — instead of the bare "open
+  the dev console" message.
+- `tracing::warn!` lines log `err_msg` + raw-response length on every
+  empty-response path so the dev console can show why each retry
+  fired.
+
+### User-message visibility
+
+- `flushSync` the optimistic-message state update so the user bubble
+  paints to DOM *before* React commits the busy=true / live-turn
+  rendering churn. Without it, React's batching could render both
+  updates in one frame and the live-turn would push the just-sent
+  message above the smart-scroll fold.
+- After the optimistic commit, Travis scrolls the new user bubble
+  into view at the top of the visible area
+  (`scrollIntoView({ block: "start" })`) so it's anchored even when
+  the bubble + live-turn together exceed one viewport height.
+- Each `ChatTurn` now carries a `data-message-id` attr so the
+  scroll-into-view query has a stable target.
+
+### Deferred to v0.14.5
+
+The full background-capture LLM-call split (separate `tokio::spawn`
+extraction pipeline) is held for v0.14.5 — it's a larger refactor and
+the user is blocked *now*. v0.14.4 is the unblock.
+
 ## v0.14.3 — Governing principle: finish or ask, never hand off (2026-06-07)
 
 The "captured 1 new" / "reading them now" / "I'll come back" pattern
