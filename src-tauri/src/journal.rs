@@ -49,17 +49,40 @@ fn build_system_prompt(
 
     let mut prompt = format!(r#"{persona_block}== HOW YOUR TURN ENDS — READ THIS FIRST ==
 
+You drive the process. You own it. The user is not your reviewer or your gatekeeper — they're handing you a task and trusting you to complete it. Act, don't narrate.
+
 Your turn ends ONLY when one of these is true:
 
-1. You delivered an artifact — a file generated, an action completed, a substantive answer pulled from memory, a structured field-by-field enumeration of what you found in a document. Something the user can act on.
+1. **You delivered an artifact** — a file generated, an action completed, a substantive answer pulled from memory, a structured field-by-field enumeration of what you found in a document. Something the user can act on or check.
 
-2. You asked a SPECIFIC question that the user must answer for you to proceed — name the field ("what's the new invoice number?"), name the option ("merge into the March invoice or create a new April one?"), name the doc you need ("do you have the sign-in sheet for IS 217?"). Vague asks ("what would you like next?") don't count.
+2. **You asked a SPECIFIC question** that the user must answer for you to proceed — name the field ("what's the new invoice number?"), name the option ("merge into the March invoice or create a new April one?"), name the doc you need ("do you have the sign-in sheet for IS 217?"). Vague asks ("what would you like next?") don't count.
 
-3. You hit a real blocker — a tool you called returned a hard error, or the user asked for something genuinely outside your capabilities.
+3. **You hit a real blocker** — a tool you called returned a hard error, or the user asked for something genuinely outside your capabilities.
 
-These phrases are NEVER acceptable as a complete reply: "I'll come back with what I found", "reading them now", "give me a moment", "working on it", "captured", "noted", "got it". If you're reading documents, your turn doesn't end until you've finished reading them and have something to report. Use your tool-call iterations to DO the work. The user is not waiting for a conversational acknowledgement — they're waiting for progress.
+== FUTURE TENSE IS BANNED ==
 
-When the user uploads documents mid-workflow, your first move is `read_document` on each (if not already pre-loaded), then `analyze_document_styling` if a sample needs analysis, then `run_python` if you have enough information. Only after those tools have produced results does your turn end — with the artifact OR a numbered list of the specific remaining open fields.
+If your `response` contains any of these patterns, you have FAILED this turn — go back and call the relevant tool(s) BEFORE writing the response:
+
+- "I'll generate…", "I'll create…", "I'll build…", "I'll extract…"
+- "Reading them now", "Let me read…", "Let me check…", "Let me extract…"
+- "Working on it", "Give me a moment", "Coming up", "On it"
+- "I'll come back with…", "I'll be back with…", "Coming back with…"
+- "Captured", "Noted", "Got it" (when used as a complete reply)
+
+These phrases describe work you HAVEN'T done. The user already gave you the input — your job is to do it in THIS turn. If you need to call `read_document`, `analyze_document_styling`, `run_python`, etc., call them. Then in your `response`, report the RESULT in past tense: "Pulled X from the PO", "Generated the invoice — link below", "Extracted 14 service dates from the master sheet".
+
+If you genuinely cannot complete the work in the remaining tool-call iterations, ASK A SPECIFIC QUESTION instead of writing a placeholder. "I need the sign-in sheet for IS 217 to derive the line items — do you have it?" is acceptable. "I'll get back to you" is not.
+
+== HOW TO DRIVE A MULTI-DOC WORKFLOW ==
+
+When the user drops a sample + supporting docs (PO, WO, sign-in sheet, services catalog):
+
+1. ASSUME you have what you need. The user gave you 5 documents — that's not a trial balloon, that's the input set. Use them.
+2. Call the tools in sequence: `read_document` on the master sheet via `run_python` (pandas) for spreadsheets; `analyze_document_styling` on the sample (if not cached); `run_python` to generate the artifact.
+3. Make reasonable assumptions for ambiguous fields (invoice number sequence, defaults from the catalog) — fill them in, flag them at the END of your response.
+4. Return the artifact AS A FILE via run_python's /outputs/ path. Then write your `response` summarising what you did and listing your assumptions for the user to verify.
+
+When the user uploads documents mid-workflow, your first move is to use them. Documents are already pre-extracted and visible in the user message under `== ATTACHED DOCUMENTS ==`. Spreadsheets are also mounted at `/inputs/<filename>` for `run_python` to read with pandas — call it.
 
 == CAPTURE HAPPENS IN THE BACKGROUND ==
 
@@ -526,6 +549,16 @@ pub struct JournalIngestResult {
     pub error: Option<String>,
 }
 
+/// Match the sanitization used by the interpreter window when it
+/// mounts attached files into Pyodide's /inputs/ — keep the two in
+/// lock-step so the LLM's run_python code uses the right paths.
+/// Source: src/interpreter/main.tsx (`safeName = name.replace(/[^A-Za-z0-9._-]/g, "_")`).
+fn sanitize_filename_for_mount(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' { c } else { '_' })
+        .collect()
+}
+
 fn today_local() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -608,7 +641,7 @@ fn build_extraction_tool(action_kinds: &[&str], entity_kinds: &[&str]) -> ToolDe
                 "response": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "REQUIRED. Your reply that shows in the chat — and the ONLY way your turn ends. See the system prompt's 'HOW YOUR TURN ENDS' rules: deliver an artifact, ask a specific question, or report a real blocker. Phrases like 'reading them now', 'I'll come back with what I found', 'captured', 'noted', 'working on it', 'got it' are NOT acceptable as a complete reply. If you need to read documents, finish reading them with tool calls BEFORE you write this field, then summarize what you found here."
+                    "description": "REQUIRED. Your reply to the user. PAST TENSE ONLY: report what you DID, not what you're going to do. BANNED phrases: 'I'll generate', 'I'll create', 'I'll extract', 'reading them now', 'let me check', 'working on it', 'give me a moment', 'I'll come back', 'captured', 'noted', 'got it'. If you find yourself writing one of those, STOP — go call the tool you were about to describe, then come back and report the RESULT. Examples of acceptable replies: 'Generated invoice 2026217002 — total $15,000 over 10 days (link below). I assumed the IS 217 default rate of $1,500/day from the services catalog; let me know if that needs adjustment.' / 'Pulled 14 service dates from the master sheet for IS 217 in the 03/23-06/25 window. Need the unit price to finish the line items — is it the catalog default ($1,500/day) or something else?' / 'I'd send this email but Gmail isn't connected — should I draft to clipboard?'"
                 },
                 "tasks": {
                     "type": "array",
@@ -1365,27 +1398,22 @@ pub async fn journal_ingest(
         api_key.is_some()
     );
 
-    // Tier the model by intent. Capture-style turns (no question, no
-    // memory lookup) get the cheaper Claude Haiku — extraction is
-    // structural and Haiku handles it well at ~3-4× lower cost. The
-    // user's explicit `profile.model` overrides this; we only swap
-    // the implicit default. Non-Claude providers ignore the tier
-    // since they don't have a comparable cheap tier wired up.
+    // v0.14.5: model tiering disabled. Every turn gets the full
+    // default model (Sonnet/Opus for Claude). Capture-style turns
+    // used to drop to Haiku for cost, but that traded model quality
+    // for cents — and the recurring "Travis didn't drive the
+    // process" issues are partly model-quality issues. Use the
+    // strongest model for every turn until we know what we're
+    // willing to trade. We can re-introduce tiering once the
+    // background-capture split lands and capture truly runs
+    // separately.
     let intent = classify_intent(&raw);
-    let chosen_model: Option<String> = if profile.model.is_some() {
-        profile.model.clone()
-    } else if intent == Intent::Capture {
-        llm::cheap_model(&profile.llm_provider).map(|m| m.to_string())
-    } else {
-        None
-    };
-    if chosen_model.is_some() {
-        tracing::debug!(
-            "journal_ingest model tier: intent={:?} model={:?}",
-            intent,
-            chosen_model
-        );
-    }
+    let chosen_model: Option<String> = profile.model.clone();
+    tracing::debug!(
+        "journal_ingest: intent={:?} model={:?} (tiering disabled in v0.14.5)",
+        intent,
+        chosen_model
+    );
     let provider = llm::build(
         &profile.llm_provider,
         api_key.as_deref(),
@@ -1616,29 +1644,99 @@ pub async fn journal_ingest(
     let doc_preload_block: String = if inbound_doc_ids.is_empty() {
         String::new()
     } else {
+        // Wrap doc preload in a Step so the user sees Travis actively
+        // working — without this, the LLM call begins with no visible
+        // activity and the user perceives "thinking…" with nothing
+        // happening.
+        let preload_step = crate::steps::Step::start(
+            &app,
+            &state.db.pool,
+            conv_id,
+            crate::steps::StepKind::Action,
+            "Reading attached documents",
+            Some(format!(
+                "{} doc{}",
+                inbound_doc_ids.len(),
+                if inbound_doc_ids.len() == 1 { "" } else { "s" }
+            )),
+            None,
+        )
+        .await
+        .ok();
+
         let mut block = String::from("== ATTACHED DOCUMENTS (pre-extracted summary) ==\n");
         for id in &inbound_doc_ids {
             if let Ok(Some(doc)) = crate::documents::db::get(&state.db.pool, *id).await {
+                if let Some(step) = preload_step.as_ref() {
+                    step.note(
+                        &app,
+                        &state.db.pool,
+                        format!("doc#{}: {}", id, doc.display_name),
+                    )
+                    .await;
+                }
+                // Spreadsheets get a TIGHT summary (filename + mime + a
+                // sentence telling the LLM to use run_python with pandas).
+                // Dropping a 380KB master sheet into the prompt blew up
+                // the LLM's context in v0.14.4 testing and produced an
+                // error; spreadsheets are meant to be processed in code,
+                // not consumed as text.
+                let is_spreadsheet = matches!(
+                    doc.mime_type.as_str(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        | "application/vnd.ms-excel"
+                        | "text/csv"
+                ) || doc.original_filename.to_lowercase().ends_with(".xlsx")
+                    || doc.original_filename.to_lowercase().ends_with(".xls")
+                    || doc.original_filename.to_lowercase().ends_with(".csv");
+
                 block.push_str(&format!(
                     "\n--- doc#{} · {} ({}) ---\n",
                     id, doc.display_name, doc.kind
                 ));
-                match doc.extracted_json.as_deref() {
-                    Some(ej) if !ej.trim().is_empty() => {
-                        let truncated: String = ej.chars().take(2000).collect();
-                        block.push_str(&truncated);
-                        if ej.chars().count() > 2000 {
-                            block.push_str("\n…(truncated; call read_document with this doc id for the full body)");
+                if is_spreadsheet {
+                    block.push_str(&format!(
+                        "Spreadsheet — mounted at /inputs/{}. Use run_python with pandas (pd.read_excel or pd.read_csv) to read it. DO NOT request the full content here; query it in Python.\n",
+                        sanitize_filename_for_mount(&doc.original_filename)
+                    ));
+                    // Tiny structural preview to help the LLM decide what
+                    // to filter on (sheet names, top-line summary). Cap
+                    // tight — 400 chars max.
+                    if let Some(ej) = doc.extracted_json.as_deref() {
+                        let preview: String = ej.chars().take(400).collect();
+                        if !preview.trim().is_empty() {
+                            block.push_str("Structural preview (first 400 chars of extracted summary):\n");
+                            block.push_str(&preview);
+                            block.push('\n');
                         }
                     }
-                    _ => {
-                        block.push_str("(not yet extracted — call read_document to read it)");
+                } else {
+                    match doc.extracted_json.as_deref() {
+                        Some(ej) if !ej.trim().is_empty() => {
+                            let truncated: String = ej.chars().take(2000).collect();
+                            block.push_str(&truncated);
+                            if ej.chars().count() > 2000 {
+                                block.push_str("\n…(truncated; call read_document with this doc id for the full body)");
+                            }
+                        }
+                        _ => {
+                            block.push_str("(not yet extracted — call read_document to read it)");
+                        }
                     }
+                    block.push('\n');
                 }
-                block.push('\n');
             }
         }
         block.push_str("\nThese files are also mounted at /inputs/ inside the Python interpreter — pass their doc ids to run_python.\n\n");
+        if let Some(step) = preload_step {
+            let _ = step
+                .complete_ok(
+                    &app,
+                    &state.db.pool,
+                    Some(format!("{} doc{} loaded", inbound_doc_ids.len(), if inbound_doc_ids.len() == 1 { "" } else { "s" })),
+                )
+                .await;
+        }
         block
     };
 

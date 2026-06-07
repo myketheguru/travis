@@ -1,5 +1,59 @@
 # Travis Changelog
 
+## v0.14.5 — Drive the process: ban future-tense replies, fix Excel preload, visible doc reading (2026-06-08)
+
+Real-world testing of v0.14.4 surfaced three new behaviours: Travis was
+(1) writing future-tense placeholder replies ("Reading the docs now",
+"I'll generate the invoice with number…") and ending the turn before
+doing the work, (2) erroring out when given Excel master sheets
+(spreadsheet content blew up the doc preload), and (3) showing nothing
+visible during doc preload so the user perceived dead time.
+
+### Future-tense is banned in `response`
+
+- Hard prompt directive: "If your response contains 'I'll generate',
+  'I'll create', 'I'll extract', 'reading them now', 'let me check',
+  'working on it', 'give me a moment', 'I'll come back', etc., you
+  have FAILED this turn. Go call the relevant tool(s) BEFORE writing
+  the response. Then report the result in PAST TENSE."
+- The `response` field description in the JSON schema now spells the
+  same rule with concrete bad/good examples — e.g. *bad*: "I'll
+  generate the invoice with number 2026217002"; *good*: "Generated
+  invoice 2026217002 — total $15,000 over 10 days (link below). I
+  assumed the IS 217 default rate of $1,500/day from the services
+  catalog; let me know if that needs adjustment."
+- New "HOW TO DRIVE A MULTI-DOC WORKFLOW" prompt section: "ASSUME you
+  have what you need. The user gave you 5 documents — that's not a
+  trial balloon, that's the input set. Use them."
+
+### Spreadsheet doc preload — tight summary, not full content
+
+- v0.14.3/.4 preloaded the full extracted_json for every attached doc
+  into the user message. For 380KB master sheets, that exploded the
+  context and the LLM errored. v0.14.5 detects spreadsheets by mime
+  type / extension and replaces the full content with: a 400-char
+  structural preview plus the instruction "Spreadsheet — mounted at
+  /inputs/<file>. Use run_python with pandas (pd.read_excel) to read
+  it. DO NOT request the full content here; query it in Python."
+- Mount filename is sanitised to match the interpreter's path-safety
+  rules (`src/interpreter/main.tsx`'s safeName regex).
+
+### Visible doc reading
+
+- Doc preload now wraps in a `Step` (the same substrate the tools use)
+  so the user sees `Reading attached documents · 3 docs` in the chat
+  with per-doc notes streaming as each one is loaded. No more dead
+  air between sending and Travis's first tool call.
+
+### Full model power on every turn
+
+- The Haiku tier-down for capture-style turns is **disabled**. Every
+  turn now uses the full default model (Sonnet/Opus for Claude). The
+  "Travis didn't drive the process" failures are partly a
+  model-quality story, and we'd rather pay cents than ship a weaker
+  experience. Re-introduces the tier once the background-capture
+  split lands and capture truly runs in its own process.
+
 ## v0.14.4 — Unblock the empty-response dead-end + user-message visibility (2026-06-07)
 
 v0.14.3 enforced the "finish or ask" rule by deleting the synthesis
