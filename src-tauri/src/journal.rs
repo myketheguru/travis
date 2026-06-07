@@ -47,7 +47,29 @@ fn build_system_prompt(
     // used to live here.
     let persona_block = crate::persona::build_prompt_fragment(profile);
 
-    let mut prompt = format!(r#"{persona_block}WHAT YOU CAN DO TODAY (be specific when limits matter):
+    let mut prompt = format!(r#"{persona_block}== HOW YOUR TURN ENDS — READ THIS FIRST ==
+
+Your turn ends ONLY when one of these is true:
+
+1. You delivered an artifact — a file generated, an action completed, a substantive answer pulled from memory, a structured field-by-field enumeration of what you found in a document. Something the user can act on.
+
+2. You asked a SPECIFIC question that the user must answer for you to proceed — name the field ("what's the new invoice number?"), name the option ("merge into the March invoice or create a new April one?"), name the doc you need ("do you have the sign-in sheet for IS 217?"). Vague asks ("what would you like next?") don't count.
+
+3. You hit a real blocker — a tool you called returned a hard error, or the user asked for something genuinely outside your capabilities.
+
+These phrases are NEVER acceptable as a complete reply: "I'll come back with what I found", "reading them now", "give me a moment", "working on it", "captured", "noted", "got it". If you're reading documents, your turn doesn't end until you've finished reading them and have something to report. Use your tool-call iterations to DO the work. The user is not waiting for a conversational acknowledgement — they're waiting for progress.
+
+When the user uploads documents mid-workflow, your first move is `read_document` on each (if not already pre-loaded), then `analyze_document_styling` if a sample needs analysis, then `run_python` if you have enough information. Only after those tools have produced results does your turn end — with the artifact OR a numbered list of the specific remaining open fields.
+
+== CAPTURE HAPPENS IN THE BACKGROUND ==
+
+You DO NOT need to extract tasks, entities, reminders, capability gaps, workspace routing, entity facts, hypotheses, or affect signals. A separate background pipeline handles all of those silently — they never appear in chat, and you don't need to think about them on this turn.
+
+In the structured JSON output: leave `tasks`, `entities`, `reminders`, `capabilityGaps`, `workspaceRouting`, `entityFacts`, `hypotheses`, `affectSignals`, `completedTaskIds`, and `clarifyingQuestions` as empty arrays `[]` (or `null` for `workspaceRouting`). Focus entirely on `response`, `workflowOps`, `proposedActions`, and `thinking`.
+
+Do not narrate captures in your `response`. NEVER say "I captured X" or "I noted Y" — those events are invisible to the user and irrelevant to your reply.
+
+WHAT YOU CAN DO TODAY (be specific when limits matter):
 - Capture notes, create/update/complete tasks, set timed reminders that fire OS notifications, draft text for the clipboard, summarize past activity, search past notes semantically, propose draft invoices, defer tasks, fetch a specific URL, peek at the system clipboard, open URLs in the browser, run safe inspection commands on the user's computer (with their permission, only if they've enabled it).
 - Read Google Calendar events (if connected — ask if helpful).
 
@@ -71,21 +93,15 @@ The user message includes:
 - RELEVANT MEMORY (snippets pulled by semantic search from past journal entries)
 - The new user turn
 
-You always do TWO things in one response:
+Your job on every turn is to produce a `response` — the substantive reply {first} reads in the chat thread. Plus any tool calls and workflow ops needed to actually advance the work before you finalize.
 
-1. ALWAYS write a `response` field — a brief, conversational reply (1–3 sentences). This is what {first} sees in the chat thread. Examples:
-   - For an ops capture: "Got it — captured 'Follow up with Maria' and noted PS 142."
-   - For a question: pull the answer from MEMORY and ANSWER it directly. e.g. "You mentioned Maria's March hours on Tuesday — 24 hours at PS 142, not yet invoiced."
-   - For small talk: "Morning. Anything to capture?"
-   - For a creator/maker question: "That's you — you built me to lighten your own load. What needs attention?"
+Examples of an end-of-turn `response`:
+- After running tools that read a doc: a numbered list of the fields extracted PLUS any specific question that's still open. "Pulled from the PO: school is PS 217, contract QR179CF, period 03/23 to 06/25, rate $1,500/day. The PO doesn't specify total days — do you have the sign-in sheet, or should I assume 10 days?"
+- After generating a file via run_python: present the result + flag assumptions you had to make. "Done — invoice for IS 217 is ready (link below). Three things I assumed: invoice # LTE2026601, billed to the standard L2E ledger, rate held at $2,300/day from the sample. Want me to change any?"
+- For a memory pull: answer directly. "You mentioned Maria's March hours on Tuesday — 24 hours at PS 142, not yet invoiced."
+- For small talk: a real conversational reply. "Morning. What's on for today?"
 
-2. EXTRACT structure when applicable. Always run extraction even on questions — if the user mentions a coach name while asking, that's still a mention worth recording.
-
-Set `intent`:
-- "operational" if any structured output (tasks/reminders/entities/proposedActions) was produced.
-- "conversational" if the turn was pure chat or a pure question with no new ops to capture.
-
-The intent flag mostly affects UI rendering — your `response` always shows up in the chat thread either way.
+Set `intent` to "operational" if you used tools or emitted workflowOps/proposedActions; "conversational" otherwise. The flag is metadata only.
 
 Return ONLY valid JSON (no markdown, no commentary) matching:
 
@@ -592,7 +608,7 @@ fn build_extraction_tool(action_kinds: &[&str], entity_kinds: &[&str]) -> ToolDe
                 "response": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "REQUIRED. Your reply to the user — what shows in the chat. NEVER return null, empty, or only whitespace. If you're mid-workflow and reading documents, say so ('Reading the PO and WO now — coming back with what I found'). If the user uploaded files in answer to a question you asked, summarize what you extracted and what's still open. NEVER respond with just 'captured' or 'noted' — write a substantive reply that advances the work."
+                    "description": "REQUIRED. Your reply that shows in the chat — and the ONLY way your turn ends. See the system prompt's 'HOW YOUR TURN ENDS' rules: deliver an artifact, ask a specific question, or report a real blocker. Phrases like 'reading them now', 'I'll come back with what I found', 'captured', 'noted', 'working on it', 'got it' are NOT acceptable as a complete reply. If you need to read documents, finish reading them with tool calls BEFORE you write this field, then summarize what you found here."
                 },
                 "tasks": {
                     "type": "array",
@@ -1581,8 +1597,53 @@ pub async fn journal_ingest(
         String::new()
     };
 
+    // Doc preload (v0.14.3). When the user attached files (via doc#N
+    // markers), pre-extract their content into the user message so the
+    // LLM has it on iteration 1. This means it doesn't have to spend
+    // a tool-call iteration on read_document just to see what's there;
+    // it can spend that iteration on run_python or styling analysis
+    // instead. The LLM may still call read_document for the full body
+    // if our summary is missing something — this is augmentation, not
+    // replacement.
+    let inbound_doc_ids: Vec<i64> = raw
+        .split("doc#")
+        .skip(1)
+        .filter_map(|s| {
+            let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
+            digits.parse().ok()
+        })
+        .collect();
+    let doc_preload_block: String = if inbound_doc_ids.is_empty() {
+        String::new()
+    } else {
+        let mut block = String::from("== ATTACHED DOCUMENTS (pre-extracted summary) ==\n");
+        for id in &inbound_doc_ids {
+            if let Ok(Some(doc)) = crate::documents::db::get(&state.db.pool, *id).await {
+                block.push_str(&format!(
+                    "\n--- doc#{} · {} ({}) ---\n",
+                    id, doc.display_name, doc.kind
+                ));
+                match doc.extracted_json.as_deref() {
+                    Some(ej) if !ej.trim().is_empty() => {
+                        let truncated: String = ej.chars().take(2000).collect();
+                        block.push_str(&truncated);
+                        if ej.chars().count() > 2000 {
+                            block.push_str("\n…(truncated; call read_document with this doc id for the full body)");
+                        }
+                    }
+                    _ => {
+                        block.push_str("(not yet extracted — call read_document to read it)");
+                    }
+                }
+                block.push('\n');
+            }
+        }
+        block.push_str("\nThese files are also mounted at /inputs/ inside the Python interpreter — pass their doc ids to run_python.\n\n");
+        block
+    };
+
     let user_msg = format!(
-        "Today is {today}.\n\nOPEN TASKS (id · title):\n{open}\n\nRELEVANT MEMORY:\n{mem}\n\n{graph}{working}{initiatives}{cases}{workflow}{catalog}{ws}New turn:\n{raw}",
+        "Today is {today}.\n\nOPEN TASKS (id · title):\n{open}\n\nRELEVANT MEMORY:\n{mem}\n\n{graph}{working}{initiatives}{cases}{workflow}{catalog}{ws}{docs_preload}New turn:\n{raw}",
         today = today_local(),
         open = format_open_tasks(&open_tasks),
         mem = format_memory(&mem_hits),
@@ -1621,6 +1682,7 @@ pub async fn journal_ingest(
         } else {
             format!("{workspace_options_block}\n")
         },
+        docs_preload = doc_preload_block,
         raw = raw
     );
     messages.push(Message::user(user_msg));
@@ -1659,7 +1721,13 @@ pub async fn journal_ingest(
         conversation_id: Some(conv_id),
         parent_step_id: None,
     };
-    const MAX_ITER: usize = 4;
+    // v0.14.3: bumped 4 → 8. With capture extraction off the primary
+    // pass the model has way more room to call tools — read_document,
+    // analyze_document_styling, then one or two run_python passes —
+    // before finalizing. Real loops won't burn the budget; this is
+    // headroom so Travis doesn't run out of turns and dump a
+    // placeholder reply instead of finishing the work.
+    const MAX_ITER: usize = 8;
 
     let (mut extraction, ok, err_msg, raw_response) = if let Some(fp) = fast_path_extraction {
         tracing::info!("journal_ingest fast-path hit (intent={})", fp.intent);
@@ -1777,35 +1845,19 @@ pub async fn journal_ingest(
     let is_conversational = extraction.intent.eq_ignore_ascii_case("conversational");
 
     // Workflow-continuation detection.
-    //
-    // If the user's message references attached documents (`doc#N`
-    // markers from the chat surface) AND there's an active workflow on
-    // this thread, treat the turn as continuation work, not a fresh
-    // capture. Without this guard, mid-workflow doc uploads cause the
-    // LLM to populate `tasks`, and the synthesis fallback surfaces it
-    // to the user as "captured 1 new" — the most common failure mode
-    // Taylor and Michael hit in the v0.14 rollout.
-    let inbound_doc_ids: Vec<i64> = raw
-        .split("doc#")
-        .skip(1)
-        .filter_map(|s| {
-            let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
-            digits.parse().ok()
-        })
-        .collect();
-    let pre_synth_active_workflow_id =
-        crate::workflows::state::get_active(&state.db.pool, conv_id)
-            .await
-            .map(|w| w.id);
-    let is_workflow_continuation =
-        pre_synth_active_workflow_id.is_some() && !inbound_doc_ids.is_empty();
-    if is_workflow_continuation && !extraction.tasks.is_empty() {
+    // v0.14.3: any capture fields the LLM emitted (despite the
+    // "leave empty" prompt directive) are still persisted via the
+    // existing loops below — they just NEVER appear in the chat reply.
+    // The synthesis fallback no longer narrates captures, and the
+    // governing-principle prompt forbids Travis from mentioning them
+    // in `response`. Architectural split to a background LLM call
+    // ships in v0.14.4.
+    if !extraction.tasks.is_empty() || !extraction.reminders.is_empty() {
         tracing::info!(
-            "suppressing {} task(s) — workflow continuation with {} doc(s)",
+            "primary pass produced silent capture ({} tasks, {} reminders) — persisted, not narrated",
             extraction.tasks.len(),
-            inbound_doc_ids.len()
+            extraction.reminders.len()
         );
-        extraction.tasks.clear();
     }
 
     // Apply workspace routing. The LLM may have nominated a different
@@ -2507,60 +2559,18 @@ pub async fn journal_ingest(
             text
         }
         None => {
-            // Re-check active workflow at synthesis time (workflow ops
-            // run between is_workflow_continuation and here may have
-            // started or completed one).
-            let synth_active_workflow_id =
-                crate::workflows::state::get_active(&state.db.pool, conv_id)
-                    .await
-                    .map(|w| w.id);
-            let active_workflow_now = synth_active_workflow_id.is_some();
-
-            // Workflow-aware fallback: never surface "captured N new"
-            // when there's an active workflow or the user just uploaded
-            // documents — the user is mid-task, not capturing fresh ops.
-            if active_workflow_now || !inbound_doc_ids.is_empty() {
-                if !inbound_doc_ids.is_empty() {
-                    "Got the document(s) — reading them now. I'll come back with what I extracted and any open fields."
-                        .to_string()
-                } else {
-                    "Working on it — give me a moment.".to_string()
-                }
-            } else {
-            let mut parts = Vec::new();
-            if !completed.is_empty() {
-                parts.push(format!("closed {} task(s)", completed.len()));
-            }
-            if !created.is_empty() {
-                parts.push(format!("captured {} new", created.len()));
-            }
-            if !extraction.reminders.is_empty() {
-                parts.push(format!("set {} reminder(s)", extraction.reminders.len()));
-            }
-            if !persisted_actions.is_empty() {
-                parts.push(format!(
-                    "{} action(s) waiting on your confirm",
-                    persisted_actions.len()
-                ));
-            }
-            let mut summary = if parts.is_empty() {
-                "Got it.".to_string()
-            } else {
-                parts.join(" · ")
-            };
-            if !extraction.capability_gaps.is_empty() {
-                let first = &extraction.capability_gaps[0].capability;
-                let extra = if extraction.capability_gaps.len() > 1 {
-                    format!(" (+{} more)", extraction.capability_gaps.len() - 1)
-                } else {
-                    String::new()
-                };
-                summary.push_str(&format!(
-                    "\n\nNote: you mentioned '{first}'{extra} — I can't do that yet, but I'm tracking it."
-                ));
-            }
-            summary
-            }
+            // v0.14.3: empty-response is a hard failure now, not a
+            // fallback opportunity. The schema marks response as
+            // required (minLength 1); the prompt is explicit that
+            // handoff phrases like "captured", "working on it",
+            // "reading them now" are unacceptable. If we still land
+            // here it means the model truly produced nothing usable
+            // — surface that to the user so we don't ship a
+            // placeholder reply masquerading as progress.
+            tracing::warn!(
+                "primary respond pass returned empty — surfacing as error"
+            );
+            "Travis didn't produce a reply on that turn — try again or open the dev console for details.".to_string()
         }
     };
     let _ = conversation::append(

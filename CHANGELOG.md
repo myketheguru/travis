@@ -1,5 +1,62 @@
 # Travis Changelog
 
+## v0.14.3 — Governing principle: finish or ask, never hand off (2026-06-07)
+
+The "captured 1 new" / "reading them now" / "I'll come back" pattern
+was breaking the chat: Travis was handing the conversational turn back
+to the user before finishing the work. This release enforces the
+governing principle end-to-end and gets capture out of the chat path.
+
+### The governing principle
+
+A new top-of-prompt section drills the rule:
+
+> Your turn ends ONLY when one of these is true:
+> 1. You delivered an artifact.
+> 2. You asked a SPECIFIC question that the user must answer.
+> 3. You hit a real blocker.
+>
+> "I'll come back with what I found", "reading them now", "give me a
+> moment", "working on it", "captured", "noted", "got it" are NOT
+> acceptable as a complete reply. Use your tool-call iterations to
+> DO the work.
+
+### Capture leaves the chat path
+
+- Primary LLM is told to leave `tasks`, `entities`, `reminders`,
+  `capabilityGaps`, etc. empty. Capture is invisible to the chat.
+- The synthesis fallback that produced "captured N new" / "Working
+  on it" / "Got the document(s) — reading them now" is **deleted**.
+  No more polite placeholders standing in for real work.
+- Captures the LLM does emit anyway are still persisted to the DB
+  silently — the chat just never mentions them. (Architectural
+  split into a separate background LLM call ships in v0.14.4.)
+
+### Tool headroom
+
+- **`MAX_ITER` 4 → 8.** With capture extraction off the primary
+  pass the model has way more room to call tools — read_document,
+  analyze_document_styling, then one or two run_python passes —
+  before finalizing.
+
+### Document preload
+
+- When the user's message references attached documents
+  (`doc#N` markers), Travis now sees the documents' extracted
+  content on iteration 1 — pre-injected into the user message
+  under `== ATTACHED DOCUMENTS (pre-extracted summary) ==`. The
+  LLM doesn't have to spend a tool-call iteration on
+  `read_document` just to see what's there; it can spend that
+  iteration on `analyze_document_styling` or `run_python`
+  instead. Falls back gracefully (the LLM can still call
+  `read_document` for the full body).
+
+### Chat UX
+
+- **Hover jerk fixed.** The copy/delete action row now reserves
+  its space and fades opacity in on hover instead of mounting on
+  demand. No more bubble jump on hover.
+
 ## v0.14.2 — Chat persistence, message actions, workflow continuation (2026-06-07)
 
 Second feedback batch. Three categories of fix:

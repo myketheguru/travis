@@ -76,8 +76,8 @@ export function ChatTurn({
     }
   };
 
-  const showActions =
-    (onDelete || onConfirmDelete) && (hover || pendingDelete);
+  const actionsAvailable = !!(onDelete || onConfirmDelete);
+  const actionsVisible = actionsAvailable && (hover || pendingDelete);
 
   return (
     <motion.div
@@ -142,12 +142,14 @@ export function ChatTurn({
         </div>
       )}
 
-      {showActions && (
+      {actionsAvailable && (
         <div
           className={
-            "flex items-center gap-1 text-[10px] text-bone-3 font-mono transition-opacity " +
-            (isUser ? "self-end" : "self-start")
+            "flex items-center gap-1 text-[10px] text-bone-3 font-mono transition-opacity duration-150 h-5 " +
+            (isUser ? "self-end" : "self-start") +
+            (actionsVisible ? " opacity-100" : " opacity-0 pointer-events-none")
           }
+          aria-hidden={!actionsVisible}
         >
           <button
             onClick={handleCopy}
