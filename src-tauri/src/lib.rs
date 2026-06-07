@@ -12,6 +12,7 @@ mod db;
 mod documents;
 mod domain;
 mod interpreter;
+mod steps;
 mod identity_cmd_recall;
 mod initiatives;
 mod persona;
@@ -458,6 +459,23 @@ pub fn run() {
                 }
             });
 
+            // Step cleanup: any step that was 'running' at app exit
+            // (crashed or force-killed mid-execution) gets marked
+            // 'cancelled' so the chat UI doesn't show eternal spinners.
+            // Runs once at startup, non-blocking.
+            {
+                let pool = db_arc.pool.clone();
+                tauri::async_runtime::spawn(async move {
+                    match crate::steps::cmd::mark_orphans_cancelled(&pool).await {
+                        Ok(n) if n > 0 => {
+                            tracing::info!("step cleanup: marked {n} orphans as cancelled")
+                        }
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!("step cleanup failed: {e}"),
+                    }
+                });
+            }
+
             // Auto-update poll. Tauri's updater plugin doesn't poll by
             // default — without this loop the only path that ever
             // checks the endpoint is Settings → "Check for updates".
@@ -585,6 +603,7 @@ pub fn run() {
             documents::cmd::update_document_extraction,
             documents::cmd::preview_document,
             interpreter::cmd::run_python,
+            steps::cmd::list_steps,
             workflows::cmd::get_active_workflow,
             identity_cmd::list_entities,
             identity_cmd_recall::recall_entity,

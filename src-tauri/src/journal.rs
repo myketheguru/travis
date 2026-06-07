@@ -1544,6 +1544,8 @@ pub async fn journal_ingest(
         http: state.http.clone(),
         app: app.clone(),
         db: state.db.clone(),
+        conversation_id: Some(conv_id),
+        parent_step_id: None,
     };
     const MAX_ITER: usize = 4;
 
