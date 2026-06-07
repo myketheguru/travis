@@ -13,8 +13,16 @@ import {
   formatBytes,
   type Document,
 } from "../../lib/documents";
+import {
+  listSteps,
+  subscribeSteps,
+  parseRow,
+  type ParsedStep,
+  type StepEvent,
+} from "../../lib/steps";
 import { ActiveWorkflowPill } from "../../components/ActiveWorkflowPill";
 import { DocumentExtractCard } from "../../overlay/DocumentExtractCard";
+import { ChatTurn } from "../../chat/ChatTurn";
 import { useAppStore } from "../../stores/app";
 
 export default function AskTab() {
@@ -22,6 +30,7 @@ export default function AskTab() {
   const [busy, setBusy] = useState(false);
   const [conversationId, setConversationId] = useState<number | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  const [steps, setSteps] = useState<ParsedStep[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [attachedDocs, setAttachedDocs] = useState<Document[]>([]);
   const [expandedDocs, setExpandedDocs] = useState<Set<number>>(new Set());
@@ -29,6 +38,35 @@ export default function AskTab() {
   const setActivity = useAppStore((s) => s.setActivity);
   const pulse = useAppStore((s) => s.pulse);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  // Subscribe to live step events; refresh persisted history whenever
+  // conversation id changes.
+  useEffect(() => {
+    if (!conversationId) {
+      setSteps([]);
+      return;
+    }
+    let cancelled = false;
+    listSteps(conversationId)
+      .then((s) => {
+        if (!cancelled) setSteps(s);
+      })
+      .catch(() => {});
+    let unlisten: (() => void) | null = null;
+    subscribeSteps((event: StepEvent) => {
+      setSteps((prev) => applyStepEvent(prev, event, conversationId));
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      try {
+        unlisten?.();
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [conversationId]);
 
   // Resume any active thread on mount so questions persist across tab switches.
   useEffect(() => {
@@ -250,22 +288,8 @@ export default function AskTab() {
         ) : (
           <>
             <AnimatePresence initial={false}>
-              {messages.map((m) => (
-                <MessageBubble key={m.id} message={m} />
-              ))}
+              {renderTurns(messages, steps, busy)}
             </AnimatePresence>
-            {busy && (
-              <motion.div
-                key="thinking"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="self-start text-bone-3 text-xs flex items-center gap-2"
-              >
-                <span className="inline-block h-1.5 w-1.5 rounded-full bg-pulse-2 animate-pulse" />
-                thinking…
-              </motion.div>
-            )}
           </>
         )}
       </div>
@@ -417,62 +441,180 @@ export default function AskTab() {
   );
 }
 
-function MessageBubble({ message }: { message: ConversationMessage }) {
-  const isUser = message.role === "user";
-
-  // Decode any sources stashed in payload_json on assistant messages so we
-  // can show them collapsibly under the bubble.
-  let sources: { kind: string; sourceId: number; text: string; createdAt: string }[] = [];
-  if (!isUser && message.payloadJson) {
-    try {
-      const p = JSON.parse(message.payloadJson);
-      const list = p?.sources ?? p?.extraction?.memorySources;
-      if (Array.isArray(list)) sources = list;
-    } catch {
-      /* ignore */
-    }
+/// Apply a streaming step event to local state immutably.
+function applyStepEvent(
+  prev: ParsedStep[],
+  event: StepEvent,
+  conversationId: number,
+): ParsedStep[] {
+  if (event.event === "started") {
+    if (event.conversationId !== conversationId) return prev;
+    const newRow: ParsedStep = {
+      id: event.stepId,
+      conversationId: event.conversationId,
+      parentStepId: event.parentStepId ?? null,
+      kind: event.kind,
+      name: event.name,
+      detail: event.detail ?? null,
+      status: "running",
+      summary: null,
+      notes: [],
+      startedAt: event.startedAt,
+      completedAt: null,
+      durationMs: null,
+    };
+    if (prev.some((s) => s.id === newRow.id)) return prev;
+    return [...prev, newRow];
   }
+  return prev.map((s) => {
+    if (s.id !== event.stepId) return s;
+    if (event.event === "note") {
+      return { ...s, notes: [...s.notes, event.text] };
+    }
+    if (event.event === "result") {
+      return {
+        ...s,
+        status: event.status,
+        summary: event.error ?? event.summary ?? null,
+      };
+    }
+    if (event.event === "completed") {
+      return {
+        ...s,
+        durationMs: event.durationMs,
+        completedAt: new Date().toISOString(),
+      };
+    }
+    return s;
+  });
+}
 
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.2 }}
-      className={"flex flex-col gap-1 " + (isUser ? "items-end" : "items-start")}
-    >
-      <span className="text-[9px] tracking-[0.2em] uppercase text-bone-3/70">
-        {isUser ? "you" : "travis"}
-      </span>
-      <p
-        className={
-          "text-sm leading-relaxed whitespace-pre-wrap max-w-[85%] " +
-          (isUser ? "text-bone" : "text-bone-2")
-        }
+/// Group steps with the message they belong to (the next assistant
+/// message after the step started). Returns React nodes.
+function renderTurns(
+  messages: ConversationMessage[],
+  steps: ParsedStep[],
+  busy: boolean,
+) {
+  const sortedSteps = [...steps].sort((a, b) =>
+    a.startedAt.localeCompare(b.startedAt),
+  );
+  // For each assistant message, take steps that started after the
+  // previous message's createdAt and before this assistant's
+  // createdAt.
+  const nodes: React.ReactNode[] = [];
+  let prevTs: string | null = null;
+  let consumedStepIds = new Set<string>();
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    const lower = prevTs ?? "";
+    const upper = m.createdAt;
+    const isAssistant = m.role === "assistant";
+    const turnSteps = isAssistant
+      ? sortedSteps.filter(
+          (s) =>
+            !consumedStepIds.has(s.id) &&
+            s.startedAt > lower &&
+            s.startedAt <= upper,
+        )
+      : [];
+    turnSteps.forEach((s) => consumedStepIds.add(s.id));
+    const generatedIds = extractGeneratedDocumentIds(m);
+    nodes.push(
+      <ChatTurn
+        key={m.id}
+        message={m}
+        steps={turnSteps}
+        generatedDocumentIds={generatedIds}
+      />,
+    );
+    prevTs = m.createdAt;
+  }
+  // Live (in-progress) steps for the response we're still waiting on
+  const liveSteps = sortedSteps.filter((s) => !consumedStepIds.has(s.id));
+  if (busy || liveSteps.length > 0) {
+    nodes.push(
+      <motion.div
+        key="live-turn"
+        initial={{ opacity: 0, y: 4 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="flex flex-col gap-2 items-start"
       >
-        {message.content}
-      </p>
-      {sources.length > 0 && (
-        <details className="mt-1">
-          <summary className="cursor-pointer text-pulse-2/70 hover:text-pulse-2 text-[10px] tracking-wider list-none flex items-center gap-1">
-            <span>›</span>
-            <span>{sources.length} source{sources.length === 1 ? "" : "s"}</span>
-          </summary>
-          <div className="mt-1.5 flex flex-col gap-1">
-            {sources.map((s, i) => (
-              <div
-                key={i}
-                className="rounded border border-ink-3/40 bg-ink-2/20 px-2.5 py-1.5"
-              >
-                <div className="flex items-center gap-2 text-[9px] font-mono text-bone-3 mb-0.5">
-                  <span className="text-pulse-2/80">{s.kind}#{s.sourceId}</span>
-                  <span className="ml-auto opacity-60">{s.createdAt?.slice(0, 10)}</span>
-                </div>
-                <p className="text-bone-3 text-[11px] leading-snug line-clamp-3">{s.text}</p>
-              </div>
-            ))}
-          </div>
-        </details>
-      )}
-    </motion.div>
+        <span className="text-[9px] tracking-[0.2em] uppercase text-bone-3/70">
+          travis
+        </span>
+        <div className="w-full max-w-[640px]">
+          {liveSteps.length > 0 ? (
+            <div className="space-y-0.5 mb-2">
+              {/* Inline render — full ChatTurn would expect a message */}
+              {liveSteps.map((s) => (
+                <InlineStep key={s.id} step={s} />
+              ))}
+            </div>
+          ) : (
+            <div className="text-bone-3 text-xs flex items-center gap-2">
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-pulse-2 animate-pulse" />
+              thinking…
+            </div>
+          )}
+        </div>
+      </motion.div>,
+    );
+  }
+  return nodes;
+}
+
+function InlineStep({ step }: { step: ParsedStep }) {
+  const icon = (() => {
+    switch (step.status) {
+      case "ok":
+        return <span className="text-pulse-2">✓</span>;
+      case "failed":
+        return <span className="text-warn">✕</span>;
+      case "running":
+      default:
+        return (
+          <span className="relative inline-flex">
+            <span className="h-1.5 w-1.5 rounded-full bg-pulse-2" />
+            <span className="absolute inset-0 h-1.5 w-1.5 rounded-full bg-pulse-2 animate-ping opacity-60" />
+          </span>
+        );
+    }
+  })();
+  return (
+    <div className="text-[11px] flex items-start gap-2 py-0.5">
+      <span className="shrink-0 w-3 inline-flex items-center justify-center pt-1">
+        {icon}
+      </span>
+      <span className="flex-1 min-w-0">
+        <span className="text-bone-2">{step.name}</span>
+        {step.detail && (
+          <span className="text-bone-3 ml-1.5 font-mono opacity-80">
+            · {step.detail}
+          </span>
+        )}
+      </span>
+    </div>
   );
 }
+
+function extractGeneratedDocumentIds(message: ConversationMessage): number[] {
+  if (!message.payloadJson) return [];
+  try {
+    const p = JSON.parse(message.payloadJson) as Record<string, unknown>;
+    const fromTop = p.generatedDocumentIds;
+    const ext = p.extraction as Record<string, unknown> | undefined;
+    const fromExt = ext?.generatedDocumentIds;
+    const ids = (Array.isArray(fromTop) ? fromTop : fromExt) as unknown;
+    if (Array.isArray(ids)) {
+      return ids.filter((x): x is number => typeof x === "number");
+    }
+  } catch {
+    /* ignore */
+  }
+  return [];
+}
+
+// Stub to ensure parseRow is treated as used (it's the helper for
+// listSteps' return path, which we import directly).
+void parseRow;
