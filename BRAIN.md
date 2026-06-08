@@ -686,6 +686,29 @@ its own design doc; this is the framework, not the spec.
 
 ---
 
+## Engineering discipline — canonical-store-per-entity
+
+When designing schemas: **pick one canonical store per entity, treat
+everything else as a regenerable projection.** Open WebUI's
+`chat.history.messages` JSON-blob + normalised `chat_message` table
+is the cautionary tale — every feature pays a "did I write to both?"
+tax, and they need `backfill_*` / `reconcile_*` helpers to fight
+drift.
+
+Rule of thumb in Travis:
+- One source of truth (a row, a log, a file).
+- All other views (search indexes, list summaries, UI cache, LLM
+  context) regenerate from the source. Stale projections rebuild;
+  they don't bidirectionally sync.
+- A migration that mirrors data into two tables for "convenience"
+  should justify itself with measured query cost. Default is no
+  duplication.
+
+This applies forward: when v0.17.0 lands the event-log substrate
+(#172), `conversation_message` becomes a projection. Search
+indexes regenerate from the log. The graph regenerates from the
+log. The UI reads the log via cached projections it owns.
+
 ## What this isn't
 
 - **Not autonomy without consent.** Travis observes; Travis

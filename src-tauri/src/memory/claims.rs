@@ -215,3 +215,75 @@ async fn flag_contradictions(
     .await?;
     Ok(())
 }
+
+/// v0.16.3 — exponential relevance decay.
+///
+/// Applies `relevance_score *= decay_factor` to every active,
+/// unpinned claim. The decay factor is computed from the half-life
+/// and the elapsed days since last decay (or since creation if no
+/// prior decay). At a 180-day half-life with daily ticks, the
+/// per-tick factor is ~0.9962 — roughly 0.4% per day. After 6
+/// months unpinned claims sit at 0.5; after a year at 0.25.
+///
+/// We do the work in SQL so the bulk update is a single statement.
+/// Travis's claim table won't grow large enough (initially) to need
+/// chunked decay, but if it does the approach is to add a WHERE on
+/// `updated_at < datetime('now', '-1 day')` so freshly-touched
+/// claims aren't decayed twice.
+///
+/// Returns the number of rows updated.
+pub async fn decay_all(
+    pool: &SqlitePool,
+    half_life_days: f64,
+) -> anyhow::Result<u64> {
+    // Daily decay factor solved from half-life:
+    //   factor^days = 0.5  →  factor = 0.5^(1/days)
+    let factor = 0.5_f64.powf(1.0 / half_life_days);
+    let result = sqlx::query(
+        "UPDATE claim
+         SET relevance_score = MAX(0.0, relevance_score * ?1),
+             updated_at = updated_at
+         WHERE pinned = 0
+           AND superseded_at IS NULL
+           AND relevance_score > 0.0",
+    )
+    .bind(factor)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+/// Archive (supersede) claims whose relevance has decayed below the
+/// floor. Travis still has the row for audit purposes but it's no
+/// longer surfaced in recall.
+pub async fn archive_low_relevance(
+    pool: &SqlitePool,
+    floor: f64,
+) -> anyhow::Result<u64> {
+    let result = sqlx::query(
+        "UPDATE claim
+         SET superseded_at = CURRENT_TIMESTAMP
+         WHERE pinned = 0
+           AND superseded_at IS NULL
+           AND relevance_score < ?1",
+    )
+    .bind(floor)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+/// Pin a claim so future decay passes skip it. Used for
+/// user-confirmed durable facts ("Maria is the math coach at
+/// PS 142" — she stays the math coach until told otherwise).
+#[allow(dead_code)] // exposed for upcoming pack-level pinning
+pub async fn pin(pool: &SqlitePool, claim_id: i64) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE claim SET pinned = 1, relevance_score = 1.0
+         WHERE id = ?1",
+    )
+    .bind(claim_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}

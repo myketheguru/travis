@@ -456,6 +456,46 @@ pub fn run() {
                 });
             }
 
+            // v0.16.3 — memory decay tick. Exponentially decays unpinned
+            // claim relevance with a 180-day half-life. Archives claims
+            // below the relevance floor (0.05). Runs daily; one pass at
+            // startup to cover gaps from when the app was closed.
+            {
+                let pool = db_arc.pool.clone();
+                tauri::async_runtime::spawn(async move {
+                    const HALF_LIFE_DAYS: f64 = 180.0;
+                    const ARCHIVE_FLOOR: f64 = 0.05;
+                    // Delay the first pass so it doesn't race startup.
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(86_400));
+                    // Immediate first tick fires; that's our startup pass.
+                    loop {
+                        ticker.tick().await;
+                        match crate::memory::claims::decay_all(&pool, HALF_LIFE_DAYS).await {
+                            Ok(n) => {
+                                if n > 0 {
+                                    tracing::info!("memory decay: updated {n} claim(s)");
+                                }
+                            }
+                            Err(e) => tracing::warn!("memory decay failed: {e}"),
+                        }
+                        match crate::memory::claims::archive_low_relevance(&pool, ARCHIVE_FLOOR)
+                            .await
+                        {
+                            Ok(n) => {
+                                if n > 0 {
+                                    tracing::info!(
+                                        "memory decay: archived {n} claim(s) below {}",
+                                        ARCHIVE_FLOOR
+                                    );
+                                }
+                            }
+                            Err(e) => tracing::warn!("memory archive failed: {e}"),
+                        }
+                    }
+                });
+            }
+
             let pool = db_arc.pool.clone();
             let http_clone = http.clone();
             tauri::async_runtime::spawn(async move {

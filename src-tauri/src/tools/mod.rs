@@ -20,6 +20,7 @@ pub mod pack_templates;
 pub mod preview_document;
 pub mod read_document;
 pub mod reconcile_documents;
+pub mod delegate;
 pub mod edit_python_artifact;
 pub mod run_python;
 pub mod search_memory;
@@ -231,6 +232,7 @@ pub fn read_only_registry(packs: &[&dyn crate::packs::PackHandle]) -> ToolRegist
     reg.register(Box::new(preview_document::PreviewDocumentTool));
     reg.register(Box::new(run_python::RunPythonTool));
     reg.register(Box::new(edit_python_artifact::EditPythonArtifactTool));
+    reg.register(Box::new(delegate::DelegateTool));
     reg.register(Box::new(analyze_document_styling::AnalyzeDocumentStylingTool));
     reg.register(Box::new(cases::OpenCaseTool));
     reg.register(Box::new(cases::NoteCaseTool));

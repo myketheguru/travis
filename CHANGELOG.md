@@ -1,5 +1,47 @@
 # Travis Changelog
 
+## v0.16.3 — Sub-agent tool + memory decay + store discipline (2026-06-08)
+
+Low-risk backlog batch. Three of the queued items land together:
+
+### Memory decay (#178)
+
+Migration 0036 adds `relevance_score REAL DEFAULT 1.0` and
+`pinned INTEGER DEFAULT 0` to the `claim` table. A daily background
+ticker calls `memory::claims::decay_all` (exponential 180-day
+half-life — ~0.4%/day) on every unpinned active claim, then
+`archive_low_relevance` supersedes claims that have fallen below
+the 0.05 floor.
+
+Per the v0.15.x research synthesis, this mitigates AutoMem's known
+"store grows → recall quality degrades" failure mode. Travis ships
+forgetting *on* by default, not off.
+
+`memory::claims::pin(claim_id)` exposes user-confirmed pinning;
+pinned claims skip decay forever. v0.16.4's recall integration
+will use `relevance_score` as a ranking weight; v0.16.3 just lays
+the substrate.
+
+### Sub-agent-as-tool (#179)
+
+New `delegate` LLM tool (OpenHands pattern). Spawn a focused
+sub-agent on a self-contained subtask without burning the parent
+manager loop's iteration budget. One LLM call on the cheap tier
+(Haiku for Claude); no tools inherited; system prompt explicitly
+tells it "you're being asked by Travis, not the user — be terse and
+structured." Returns the response string back to the parent agent.
+
+Use cases: bounded summarisations, fresh-eyes decisions, drafting
+a small piece while the parent works on the bigger plan.
+
+### Canonical-store-per-entity discipline (#180)
+
+New `BRAIN.md` section codifying the rule. Pick one canonical store
+per entity; everything else is a regenerable projection. Avoids
+Open WebUI's dual-write drift pain. Applies forward: when v0.17.0
+lands the event-log substrate (#172), `conversation_message`
+becomes a projection of the log, not a parallel table.
+
 ## v0.16.2 — Stop the Pyodide-warmup loop (2026-06-08)
 
 The v0.15.4 error trace finally surfaced the recurring "Travis ran
