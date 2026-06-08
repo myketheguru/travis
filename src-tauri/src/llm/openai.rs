@@ -282,6 +282,7 @@ impl LlmProvider for OpenAiProvider {
             output_tokens: parsed.usage.as_ref().and_then(|u| u.completion_tokens),
             cache_read_tokens: cache_read,
             stop_reason,
+            thinking_blocks: Vec::new(),
         })
     }
 }

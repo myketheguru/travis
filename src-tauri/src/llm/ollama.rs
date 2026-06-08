@@ -261,6 +261,7 @@ impl LlmProvider for OllamaProvider {
             output_tokens: parsed.eval_count,
             cache_read_tokens: None,
             stop_reason: parsed.done_reason,
+            thinking_blocks: Vec::new(),
         })
     }
 }

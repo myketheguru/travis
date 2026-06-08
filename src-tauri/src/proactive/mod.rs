@@ -615,6 +615,7 @@ async fn tick(
                 max_tokens: Some(400),
                 tools: vec![tool],
                 tool_choice: Some(ToolChoice::Specific(TOOL_NAME.into())),
+                thinking_budget: None,
             },
         )
         .await;

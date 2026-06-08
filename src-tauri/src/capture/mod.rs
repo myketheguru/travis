@@ -1,0 +1,140 @@
+//! Background capture pipeline.
+//!
+//! The user has consistently asked for capture (tasks, reminders,
+//! entity mentions, etc.) to live in a separate non-blocking
+//! pipeline from the chat path — so it can never interfere with
+//! the conversation, never gate or pollute Travis's reply.
+//!
+//! v0.15.2 ships the minimum-viable architectural file-level split:
+//! capture *persistence* for the highest-pain fields (tasks,
+//! reminders) moves into `tauri::async_runtime::spawn` after the
+//! assistant message is appended. The chat path returns
+//! immediately; persistence completes in the background.
+//!
+//! Out of scope for v0.15.2 (queued for v0.15.3 / v0.16):
+//! - A second LLM call dedicated to capture extraction (cost +
+//!   architectural separation but doubles request cost; deferred).
+//! - Moving entity / entity_facts / hypotheses / affect_signals /
+//!   workspace_routing persistence into this module (they touch
+//!   more shared state and are higher refactoring risk; left
+//!   inline for now).
+//!
+//! The shape of this module is intentionally simple: a snapshot
+//! struct that captures everything the persistence code needs from
+//! the LLM extraction, and a single `run_background` function that
+//! does the persistence under a spawned task. Each persistence
+//! call uses the existing journal-side helpers (task::upsert,
+//! reminders::upsert) — no logic duplication.
+
+use sqlx::SqlitePool;
+use tauri::{AppHandle, Emitter};
+
+use crate::journal::{ExtractedReminder, ExtractedTask};
+use crate::workspaces;
+
+/// Snapshot of everything `run_background` needs. Built inside
+/// `journal_ingest` after the LLM call completes, then `move`d
+/// into the spawned task. All fields are owned/cloneable so the
+/// chat command can return without waiting on persistence.
+pub struct CaptureSnapshot {
+    pub pool: SqlitePool,
+    pub app: AppHandle,
+    pub conv_id: i64,
+    pub tasks: Vec<ExtractedTask>,
+    pub reminders: Vec<ExtractedReminder>,
+    pub dest_ws_state: workspaces::State,
+}
+
+/// Run capture persistence for a single chat turn in the background.
+///
+/// Best-effort: errors are logged but never propagated — the chat
+/// command has already returned, so failing here only loses the
+/// capture write. Emits a `capture-applied` Tauri event with
+/// counts when finished so a future UI affordance can surface
+/// "tracked N tasks behind the scenes".
+pub async fn run_background(snap: CaptureSnapshot) {
+    let mut task_count = 0usize;
+    let mut reminder_count = 0usize;
+
+    // Tasks. Use the same upsert path the inline code uses.
+    for t in &snap.tasks {
+        let title = t.title.trim();
+        if title.is_empty() {
+            continue;
+        }
+        let truncated: String = if title.chars().count() > 120 {
+            title.chars().take(120).collect()
+        } else {
+            title.to_string()
+        };
+        match crate::domain::task::upsert(
+            &snap.pool,
+            &snap.dest_ws_state,
+            crate::domain::task::TaskInput {
+                id: None,
+                title: truncated,
+                description: t.notes.clone(),
+                priority: t.priority,
+                due_at: t.due_at.clone(),
+                entity_id: None,
+                link_kind: None,
+                link_id: None,
+                source: Some("journal".into()),
+            },
+        )
+        .await
+        {
+            Ok(_) => task_count += 1,
+            Err(e) => tracing::warn!("background capture: task upsert failed: {e}"),
+        }
+    }
+
+    // Reminders. Same path as inline.
+    for r in &snap.reminders {
+        let text = r.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let remind_at = r.remind_at.as_deref().map(str::trim).unwrap_or("");
+        if remind_at.is_empty() {
+            continue;
+        }
+        match crate::reminders::upsert(
+            &snap.pool,
+            snap.dest_ws_state.active_id,
+            crate::reminders::ReminderInput {
+                id: None,
+                text: text.to_string(),
+                remind_at: Some(remind_at.to_string()),
+                kind: Some("time".into()),
+                source: Some("journal".into()),
+                link_kind: None,
+                link_id: None,
+            },
+        )
+        .await
+        {
+            Ok(_) => reminder_count += 1,
+            Err(e) => tracing::warn!("background capture: reminder upsert failed: {e}"),
+        }
+    }
+
+    // Tell the UI something landed. v0.15.2 doesn't render this
+    // yet; the event is here so a future "tracked N in background"
+    // notification can be wired without backend changes.
+    let _ = snap.app.emit(
+        "capture-applied",
+        serde_json::json!({
+            "conversationId": snap.conv_id,
+            "tasks": task_count,
+            "reminders": reminder_count,
+        }),
+    );
+
+    tracing::info!(
+        "background capture: conv {} → {} task(s), {} reminder(s)",
+        snap.conv_id,
+        task_count,
+        reminder_count
+    );
+}

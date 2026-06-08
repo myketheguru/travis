@@ -85,9 +85,60 @@ If you genuinely cannot complete the work in the remaining tool-call iterations,
 
 == DOCUMENT HANDLING ==
 
-When the user attaches documents (PDFs, spreadsheets, images, .docx), their content is pre-loaded into the user message under `== ATTACHED DOCUMENTS ==`. Spreadsheets show only a structural preview — read them in `run_python` with pandas (`pd.read_excel("/inputs/<filename>")`). Other docs are summarized; call `read_document` if you need the full body.
+Document editing and generation is a universal capability — every professional context needs it (invoices, reports, contracts, briefs, sign-in sheets, decks, spreadsheets, letters). The pattern below applies regardless of domain; any enabled pack will layer its own vocabulary and rules on top.
 
-When the user gives you a sample and asks you to "match this", "make one like this", or "adapt this format": call `analyze_document_styling(document_id)` first so you have the colour/font/layout JSON to drive any generation code, then `run_python` to produce the output. Generated files in `/outputs/<filename>` automatically appear as file cards in the chat.
+**When documents are attached:** their content is pre-loaded into the user message under `== ATTACHED DOCUMENTS ==`. Spreadsheets show only a structural preview — read them in `run_python` with pandas (`pd.read_excel("/inputs/<filename>")` or `pd.read_csv`). Other docs are summarized; call `read_document(documentId)` if you need the full body. Image inputs (PNG/JPG) become Travis-visible automatically via vision.
+
+**When the user gives you a sample + asks to adapt it** ("make one like this", "match this format", "do this for X instead", "edit this for the new Y"):
+1. Call `analyze_document_styling(documentId)` on the sample — returns the colour/font/layout JSON you need to drive generation code.
+2. Optionally `read_document(documentId)` for the full body if the pre-loaded summary doesn't show the fields you need.
+3. Enumerate the fields you found WITH THEIR CURRENT VALUES in your `response` — give the user a numbered list of "here's what's on the current doc → tell me the new value for each". Use generic universal headers: bold field name, code-fenced current value, arrow + question.
+4. Once the user answers (or supplies supporting docs that fill the fields), call `run_python` to generate the new version using the styling JSON. Emit to `/outputs/<descriptive_filename>.pdf` (or `.xlsx`, `.docx` — match the sample's format).
+5. In your `response` after generation: report the result in PAST TENSE + list the assumptions you made + flag any field you defaulted.
+
+**When the user uploads multiple supporting docs** (a sample + PO + WO + reference data, or several invoices + a pricing sheet, etc.):
+1. ASSUME the docs are your input set. Multiple documents arriving together are not a trial balloon — they're the data you need to do the work.
+2. Run `analyze_document_styling` once on the sample (cached).
+3. Use `run_python` with pandas on spreadsheets — never try to enumerate spreadsheet content in your response.
+4. Cross-reference fields across the docs (see CROSS-DOCUMENT RECONCILIATION below).
+5. Generate the artifact with `run_python`. Don't ask for permission first; if you have enough information for a reasonable default, USE IT and flag the assumption at the end.
+
+**Iterative refinement.** After you've generated a document and the user asks for a tweak ("remove the school name from the To: block", "add 7 hours to row 1", "the line needs to come down a tiny bit"): treat it as an EDIT on the existing artifact, not a regeneration from scratch. (v0.15.3 adds a dedicated `edit_python_artifact` tool; until then, re-run `run_python` with the prior script reasoning + the small change applied.)
+
+**Mid-workflow doc uploads.** When the user uploads additional documents mid-workflow (supplementary samples, sign-in sheets, pricing sheets), they're CONTINUATION inputs, not fresh captures. Read them, integrate them into the work, and advance — do NOT respond with "got it, give me a moment" placeholder phrasing.
+
+**When to call `run_python` vs a structured-action tool.** Use `run_python` when:
+- The user supplied a SAMPLE to match (styling/layout differs from any canonical template).
+- The task needs constraint solving (find quantities/values summing to $X exactly, find combinations meeting multiple criteria).
+- Cross-document reconciliation deeper than a single tool.
+- An uncommon format (.docx, .pptx, custom layouts).
+- The user explicitly asks for "code" or imperative reasoning.
+
+Use a structured-action tool when one exists and matches the request shape exactly (canonical template + standard fields + no sample to match). Packs may register such tools; trust their tool descriptions.
+
+== CROSS-DOCUMENT RECONCILIATION ==
+
+When the user attaches multiple documents — a sample + PO + WO, several invoices + a pricing sheet, contract + appendix + service log — automatically compare overlapping fields across them BEFORE you produce output. Specifically check: names + addresses, dollar amounts + unit prices, dates + service periods, reference numbers (PO/WO/invoice/contract), line-item descriptions, total amounts.
+
+If you find a discrepancy, FLAG IT EXPLICITLY in your response. Don't quietly pick one side. Name the authoritative source. Defaults:
+
+- **A PO authorizing payment overrides a sample document** made for a different engagement. The sample shows old-engagement data; the PO is what's authorized to bill now.
+- **A contract or contract appendix overrides a downstream pricing sheet.** If a per-school pricing sheet conflicts with the master service catalog, the catalog rate is authoritative; the pricing sheet likely has a labeling error.
+- **A sign-in sheet (logged data) overrides recollection** ("the CEO said work started 03/20 but the sheet logs 03/17" → go with the sheet, surface the discrepancy).
+- **A more recent document overrides an older one** for the same field, when both are authoritative sources.
+- **An external-facing official document (PO, WO, contract) overrides an internal working doc** (sample, draft, narrative).
+
+When numbers don't reconcile, trace WHERE the divergence enters. The user values knowing "this rate came from the contract; the sample used a different one because it was a previous engagement" — that's defensible. Quietly picking the larger number is not.
+
+== WHEN ASKED FOR A RECOMMENDATION ==
+
+When the user asks "what do you suggest", "what should we do", "which way", "your call", or similar — TAKE A POSITION. Lead with your recommendation, then justify it. Two-line example:
+
+> "My recommendation: don't re-issue invoice #1 — it's correct against the contract rate. The error is in the pricing sheet, not the invoice. Here's why: ..."
+
+Option-listing without a position is a cop-out when the user explicitly asked for a recommendation. If the user's stated instinct points toward the wrong path (e.g., "should I correct invoice #1 to make the math work?"), PUSH BACK with reasoning — "the instinct to correct #1 is the trap because..." Decisions on payment documents, contracts, and money-handling carry legal weight; clean arithmetic isn't worth a wrong number.
+
+Caveat the position only when there's a genuinely open factual question you need answered — "I'd build it this way assuming X; if X is wrong, the answer changes to Y."
 
 == CAPTURE HAPPENS IN THE BACKGROUND ==
 
@@ -1780,10 +1831,20 @@ pub async fn journal_ingest(
                     &workspace_block,
                 )),
                 cache_system: true,
+                // v0.15.2: with extended thinking enabled, temperature
+                // must be unset (or 1). The Claude provider strips it
+                // automatically when `thinking_budget` is set; leaving
+                // it here is harmless but redundant.
                 temperature: Some(0.3),
-                max_tokens: Some(1500),
+                max_tokens: Some(8000),
                 tools: tool_defs.clone(),
                 tool_choice: Some(choice),
+                // v0.15.2: extended thinking. 4000-token budget gives
+                // the model real cognitive headroom for multi-doc
+                // reconciliation, constraint solving, forensic work
+                // — anything the Claude.ai "Thinking" boxes show.
+                // Per-iteration cost ~$0.06; worth the depth.
+                thinking_budget: Some(4000),
             };
             let turn_res = provider.chat_with_tools(current_messages.clone(), opts).await;
             match turn_res {
@@ -1802,10 +1863,26 @@ pub async fn journal_ingest(
                     // was set. Subsequent iterations within this same ingest
                     // hit the no-op path inside Health::clear.
                     state.health.clear(&app);
+
+                    // v0.15.2 — extended-thinking visibility. Each
+                    // `thinking` content block becomes a Note on the
+                    // active manager step, so the user sees the
+                    // worker's reasoning stream into the chat as it
+                    // happens — the same loop-doesn't-quit texture as
+                    // Claude.ai's chat surface.
+                    for thought in &turn.thinking_blocks {
+                        if let Some(s) = mgr_step.as_ref() {
+                            let snippet: String =
+                                thought.chars().take(500).collect();
+                            s.note(&app, &state.db.pool, snippet).await;
+                        }
+                    }
+
                     last_dump = serde_json::json!({
                         "iter": iter,
                         "content": turn.content,
                         "tool_calls": turn.tool_calls,
+                        "thinking_blocks": turn.thinking_blocks.len(),
                     })
                     .to_string();
 
@@ -2030,78 +2107,22 @@ pub async fn journal_ingest(
     // Operational pass — skipped entirely for conversational input so we never
     // manufacture todos from chit-chat.
     if !is_conversational {
-        for t in &extraction.tasks {
-            let title = t.title.trim();
-            if title.is_empty() {
-                continue;
-            }
-            let truncated = if title.chars().count() > 120 {
-                title.chars().take(120).collect()
-            } else {
-                title.to_string()
-            };
-            let task = task::upsert(
-                &state.db.pool,
-                &dest_ws_state,
-                TaskInput {
-                    id: None,
-                    title: truncated,
-                    description: t.notes.clone(),
-                    priority: t.priority,
-                    due_at: t.due_at.clone(),
-                    entity_id: None,
-                    link_kind: None,
-                    link_id: None,
-                    source: Some("journal".into()),
-                },
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-            created.push(task);
-        }
-
-        for tid in &extraction.completed_task_ids {
-            if !open_ids.contains(tid) {
-                tracing::warn!("LLM returned completedTaskId {tid} not in open list — ignoring");
-                continue;
-            }
-            match task::set_status(&state.db.pool, &dest_ws_state, *tid, "done").await {
-                Ok(t) => completed.push(t),
-                Err(e) => tracing::warn!("failed to mark task {tid} done: {e}"),
-            }
-        }
-
-        for r in &extraction.reminders {
-            let text = r.text.trim();
-            if text.is_empty() {
-                continue;
-            }
-            let remind_at = r
-                .remind_at
-                .as_ref()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
-            if remind_at.is_none() {
-                continue;
-            }
-            if let Err(e) = reminders::upsert(
-                &state.db.pool,
-                dest_ws_state.active_id,
-                ReminderInput {
-                    id: None,
-                    text: text.to_string(),
-                    kind: Some("time".into()),
-                    remind_at,
-                    source: Some("journal".into()),
-                    link_kind: None,
-                    link_id: None,
-                },
-            )
-            .await
-            {
-                tracing::warn!("failed to create reminder from journal extraction: {e}");
-            }
-        }
+        // v0.15.2: task + reminder persistence moved to the
+        // background capture module. The spawn happens after the
+        // assistant message is appended (further down this function)
+        // so the chat path returns immediately and capture runs
+        // asynchronously — never blocking or polluting the
+        // conversation.
+        //
+        // Other capture fields (capability_gaps, entities,
+        // entity_facts, hypotheses, affect_signals,
+        // workspace_routing) still run inline for now; they touch
+        // more shared state and are higher refactoring risk.
+        // Queued for the v0.15.3 capture-module expansion.
+        //
+        // `created` / `completed` vectors stay declared but
+        // unfilled — telemetry will show 0/0 until the background
+        // pipeline learns to emit per-turn counts.
 
         for gap in &extraction.capability_gaps {
             let cap = gap.capability.trim();
@@ -2641,9 +2662,12 @@ pub async fn journal_ingest(
             )),
             cache_system: true,
             temperature: Some(0.3),
-            max_tokens: Some(2000),
+            max_tokens: Some(4000),
             tools: tool_defs.clone(),
             tool_choice: Some(ToolChoice::Specific(extraction_name.clone())),
+            // Smaller thinking budget on retry — the model has more
+            // explicit guidance, less open-ended reasoning needed.
+            thinking_budget: Some(2000),
         };
         match provider.chat_with_tools(retry_msgs, retry_opts).await {
             Ok(turn) => {
@@ -2753,6 +2777,24 @@ pub async fn journal_ingest(
         Some(&extraction_record),
     )
     .await;
+
+    // v0.15.2 — background capture. Spawn task + reminder
+    // persistence onto a Tokio worker so the chat command returns
+    // immediately. Best-effort: any failure logs but never blocks
+    // the user-facing reply.
+    if !is_conversational {
+        let snap = crate::capture::CaptureSnapshot {
+            pool: state.db.pool.clone(),
+            app: app.clone(),
+            conv_id,
+            tasks: extraction.tasks.clone(),
+            reminders: extraction.reminders.clone(),
+            dest_ws_state: dest_ws_state.clone(),
+        };
+        tauri::async_runtime::spawn(async move {
+            crate::capture::run_background(snap).await;
+        });
+    }
 
     // Inference-driven clarifying question (BRAIN.md Phase 4.5 #10).
     // When the LLM didn't already produce a question and we have room,

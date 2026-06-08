@@ -1,5 +1,78 @@
 # Travis Changelog
 
+## v0.15.2 — Extended thinking, capture goes background, cross-doc reconciliation, drive-the-process prompts (2026-06-08)
+
+Five bundled architectural + behavioural improvements pulling Travis
+toward Claude.ai parity.
+
+### Extended thinking on the Claude provider
+
+- Added Anthropic's extended-thinking parameter (`thinking: { type:
+  "enabled", budget_tokens: 4000 }`) to every primary agent-loop LLM
+  call. The model now gets dedicated cognitive-budget tokens before
+  it produces tool calls or the final response — the same machinery
+  Claude.ai uses for the visible "Thinking" boxes.
+- Thinking content blocks come back in the response, parsed via a
+  new `Thinking` variant on the `ContentBlock` enum, and surfaced
+  to `ChatTurn.thinking_blocks`.
+- In `journal_ingest`, each thinking block becomes a `Note` on the
+  active manager step, so the worker's reasoning streams into the
+  chat as it happens — same loop-doesn't-quit texture as Claude.ai.
+- Cost: ~$0.06/turn at the 4000-token budget. Worth the depth for
+  multi-doc reconciliation, constraint solving, forensic analysis.
+- Retry path uses a 2000-token budget for the forcing prompt.
+
+### Background capture (architectural split begins)
+
+- New module `src-tauri/src/capture/mod.rs` with `CaptureSnapshot`
+  + `run_background`. Task + reminder persistence (the two most
+  visible "captured N new" pain fields) moves into
+  `tauri::async_runtime::spawn` so the chat command returns
+  immediately and persistence runs in the background.
+- Emits a `capture-applied` Tauri event with counts so a future
+  UI affordance can surface "tracked N in the background"
+  notifications.
+- Other capture fields (capability_gaps, entities, entity_facts,
+  hypotheses, affect_signals, workspace_routing) still run inline
+  for now — they touch more shared state and are higher
+  refactoring risk. Queued for v0.15.3.
+
+### Cross-document reconciliation prompts
+
+- New `CROSS-DOCUMENT RECONCILIATION` section in the core system
+  prompt: "compare overlapping fields across attached docs, flag
+  discrepancies, name the authoritative source. A PO authorising
+  payment overrides a sample from a previous engagement. A contract
+  appendix overrides a downstream pricing sheet. A sign-in sheet
+  overrides recollection."
+
+### Drive-the-process recommendation prompts
+
+- New `WHEN ASKED FOR A RECOMMENDATION` section: "lead with your
+  recommendation, then justify it. Option-listing without a
+  position is a cop-out. Push back on the user's stated instinct
+  when it's wrong."
+
+### Document handling rewritten in the core prompt
+
+- Document editing is universal across professions; the core prompt
+  now carries the generic `sample → analyze_styling → run_python →
+  iterative refinement` pattern, multi-doc workflow guidance,
+  spreadsheet-via-pandas, mid-workflow continuation cues. L2E pack
+  fragment trimmed to just the L2E-specific bits: invoice numbering
+  formula, default rates, the L2E-specific field enumeration,
+  structured-action shortcuts.
+
+### UI polish
+
+- `StepRow` now auto-expands while a step is running (live thinking
+  visible) and auto-collapses on success (clean completed
+  view). Failed steps stay expanded so errors are surfaced.
+- Multi-line `Note` content (thinking blocks especially) renders
+  with `whitespace-pre-wrap` and consistent spacing.
+- Completed steps show their summary as a muted "→ delivered" /
+  "→ asked specific question" trailing line.
+
 ## v0.15.1 — Manager loop: the worker no longer gets to bail (2026-06-08)
 
 Five releases of prompt-level enforcement (banned phrases, governing

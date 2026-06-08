@@ -3,6 +3,7 @@ mod behavioral;
 mod behavioral_cmd;
 mod calendar;
 mod calendar_cmd;
+mod capture;
 mod cases;
 mod commands;
 mod conversation;

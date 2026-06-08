@@ -40,6 +40,12 @@ enum ContentBlock {
     Text { text: String },
     #[serde(rename = "tool_use")]
     ToolUse { id: String, name: String, input: Value },
+    /// v0.15.2 — Anthropic's extended-thinking content block. Returned
+    /// before the final text/tool_use blocks when `thinking` is
+    /// enabled on the request. The redacted variant is captured via
+    /// `Other` (we don't display redactions).
+    #[serde(rename = "thinking")]
+    Thinking { thinking: String },
     #[serde(other)]
     Other,
 }
@@ -306,6 +312,22 @@ impl LlmProvider for ClaudeProvider {
             };
         }
 
+        // v0.15.2 — Extended thinking. When set, Anthropic returns
+        // separate `thinking` content blocks before any text/tool_use,
+        // giving the model a dedicated cognitive budget. Required for
+        // multi-doc reconciliation, constraint solving, forensic
+        // analysis — anything the Claude.ai surface does with the
+        // visible "Thinking" boxes. Temperature must be unset (or 1)
+        // when thinking is enabled; we strip it here to satisfy that
+        // constraint without callers needing to know.
+        if let Some(budget) = opts.thinking_budget {
+            body["thinking"] = json!({
+                "type": "enabled",
+                "budget_tokens": budget,
+            });
+            body.as_object_mut().and_then(|o| o.remove("temperature"));
+        }
+
         let resp = self
             .http
             .post(ENDPOINT)
@@ -329,11 +351,15 @@ impl LlmProvider for ClaudeProvider {
 
         let mut text = String::new();
         let mut calls = Vec::new();
+        let mut thinking_blocks: Vec<String> = Vec::new();
         for block in parsed.content {
             match block {
                 ContentBlock::Text { text: t } => text.push_str(&t),
                 ContentBlock::ToolUse { id, name, input } => {
                     calls.push(ToolCall { id, name, input });
+                }
+                ContentBlock::Thinking { thinking } => {
+                    thinking_blocks.push(thinking);
                 }
                 ContentBlock::Other => {}
             }
@@ -347,6 +373,7 @@ impl LlmProvider for ClaudeProvider {
             output_tokens: parsed.usage.output_tokens,
             cache_read_tokens: parsed.usage.cache_read_input_tokens,
             stop_reason: parsed.stop_reason,
+            thinking_blocks,
         })
     }
 }

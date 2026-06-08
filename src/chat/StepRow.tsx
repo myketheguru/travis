@@ -8,13 +8,23 @@ interface Props {
   children?: ParsedStep[];
 }
 
-/// One Claude-style named substep. Compact by default — name + status +
-/// duration. Tap to expand and see notes and any error detail.
+/// One Claude-style named substep. Live thinking auto-expands so the
+/// user sees the worker's reasoning stream in as it happens. Once
+/// the step completes successfully, it auto-collapses (notes still
+/// reachable via tap). Failed steps stay expanded to surface the
+/// error detail.
 export function StepRow({ step, children = [] }: Props) {
-  const [expanded, setExpanded] = useState(false);
   const hasNotes = step.notes.length > 0;
   const hasChildren = children.length > 0;
   const expandable = hasNotes || hasChildren || step.status === "failed";
+
+  // Default state: expanded if running (live thinking) OR failed.
+  // Once it transitions to ok/cancelled and the user hasn't manually
+  // toggled, collapse — but the user's manual toggle wins.
+  const defaultExpanded =
+    step.status === "running" || step.status === "failed";
+  const [userToggled, setUserToggled] = useState<boolean | null>(null);
+  const expanded = userToggled ?? defaultExpanded;
 
   const icon = (() => {
     switch (step.status) {
@@ -38,7 +48,7 @@ export function StepRow({ step, children = [] }: Props) {
   return (
     <div className="text-[11px]">
       <button
-        onClick={() => expandable && setExpanded((p) => !p)}
+        onClick={() => expandable && setUserToggled(!expanded)}
         disabled={!expandable}
         className={
           "flex items-start gap-2 w-full text-left py-0.5 px-1 -mx-1 rounded transition-colors " +
@@ -68,20 +78,25 @@ export function StepRow({ step, children = [] }: Props) {
             animate={{ opacity: 1, height: "auto" }}
             exit={{ opacity: 0, height: 0 }}
             transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-            className="ml-6 pl-3 border-l border-pulse-2/15 mt-1"
+            className="ml-6 pl-3 border-l border-pulse-2/15 mt-1 space-y-1.5 pb-1"
           >
             {step.notes.map((n, i) => (
               <div
                 key={i}
-                className="text-bone-3 leading-relaxed py-0.5"
+                className="text-bone-3 leading-relaxed whitespace-pre-wrap"
               >
-                <span className="text-bone-3/60 mr-1">›</span>
+                <span className="text-bone-3/60 mr-1.5 select-none">›</span>
                 {n}
               </div>
             ))}
             {step.status === "failed" && step.summary && (
               <div className="text-warn font-mono py-0.5 leading-relaxed">
                 {step.summary}
+              </div>
+            )}
+            {step.status === "ok" && step.summary && (
+              <div className="text-bone-3/70 text-[10px] font-mono uppercase tracking-wider pt-0.5">
+                → {step.summary}
               </div>
             )}
             {hasChildren && (

@@ -132,6 +132,12 @@ pub struct ChatWithToolsOptions {
     pub cache_system: bool,
     pub tools: Vec<ToolDef>,
     pub tool_choice: Option<ToolChoice>,
+    /// v0.15.2 — extended thinking. When set, the Claude provider
+    /// requests `thinking: { type: "enabled", budget_tokens: N }`
+    /// on the messages call. Thinking content blocks come back in
+    /// the response and surface via `ChatTurn.thinking_blocks`.
+    /// Other providers ignore this for now.
+    pub thinking_budget: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -147,6 +153,12 @@ pub struct ChatTurn {
     pub cache_read_tokens: Option<u32>,
     /// Provider-specific stop reason: "end_turn" | "tool_use" | "max_tokens" | etc.
     pub stop_reason: Option<String>,
+    /// v0.15.2 — Anthropic extended-thinking content blocks (text only,
+    /// not the redacted variant). Empty for providers / requests that
+    /// don't use extended thinking. The chat surface can render these
+    /// as inline reasoning under the active manager step.
+    #[serde(default)]
+    pub thinking_blocks: Vec<String>,
 }
 
 #[async_trait]
@@ -211,6 +223,7 @@ pub trait LlmProvider: Send + Sync {
             output_tokens: resp.output_tokens,
             cache_read_tokens: resp.cache_read_tokens,
             stop_reason: None,
+            thinking_blocks: Vec::new(),
         })
     }
 }
