@@ -50,37 +50,80 @@ pub fn store_api_key(provider: &str, key: &str) -> Result<(), keyring::Error> {
     result
 }
 
-pub fn get_api_key(provider: &str) -> Option<String> {
+/// Detailed lookup outcome — used both for ergonomic Option returns
+/// AND for surfacing accurate error messages when the key is missing
+/// so the user can tell whether it's "no key stored" vs "OS keychain
+/// returned an error" vs "key stored but empty".
+#[derive(Debug, Clone)]
+pub enum KeyLookup {
+    /// Cache hit — fast path.
+    FromCache(String),
+    /// Cold cache, keychain returned the key.
+    FromKeychain(String),
+    /// No entry stored. User probably never finished onboarding for
+    /// this provider, or the storage was reset.
+    NoEntry,
+    /// Keychain has an entry but it's empty.
+    EmptyEntry,
+    /// Keychain returned an unexpected error (permissions, encoding,
+    /// platform glitch). The string is the underlying error message
+    /// so we can surface it to the user instead of saying "key not
+    /// found" when really the OS keychain is misbehaving.
+    KeychainError(String),
+}
+
+impl KeyLookup {
+    pub fn as_option(self) -> Option<String> {
+        match self {
+            KeyLookup::FromCache(k) | KeyLookup::FromKeychain(k) => Some(k),
+            KeyLookup::NoEntry | KeyLookup::EmptyEntry | KeyLookup::KeychainError(_) => None,
+        }
+    }
+}
+
+/// Detailed lookup primarily used by error-surfacing call sites
+/// (`llm::build`, the test-provider command). Most callers want the
+/// `Option<String>` convenience wrapper `get_api_key`.
+pub fn lookup_api_key(provider: &str) -> KeyLookup {
     // Fast path: cached in process memory. No OS keychain hit, no
-    // password prompt, no IPC. This is the common case after the
-    // first successful read of the session.
+    // password prompt, no IPC. Common case after the first
+    // successful read of the session.
     if let Ok(g) = cache().lock() {
         if let Some(cached) = g.get(provider) {
-            return Some(cached.clone());
+            return KeyLookup::FromCache(cached.clone());
         }
     }
 
-    // Slow path: cold cache or first call. Hits the keychain (and
-    // on macOS may surface the user-password modal once).
-    let fetched = match entry(provider).and_then(|e| e.get_password()) {
-        Ok(s) if !s.is_empty() => Some(s),
+    // Slow path: cold cache or first call. Hits the keychain.
+    match entry(provider).and_then(|e| e.get_password()) {
+        Ok(s) if !s.is_empty() => {
+            tracing::info!(
+                "secrets: keychain read OK for {provider} ({} chars)",
+                s.len()
+            );
+            if let Ok(mut g) = cache().lock() {
+                g.insert(provider.to_string(), s.clone());
+            }
+            KeyLookup::FromKeychain(s)
+        }
         Ok(_) => {
-            tracing::warn!("keyring entry for {provider} was empty");
-            None
+            tracing::warn!("secrets: keychain entry for {provider} was empty");
+            KeyLookup::EmptyEntry
         }
-        Err(keyring::Error::NoEntry) => None,
+        Err(keyring::Error::NoEntry) => {
+            tracing::info!("secrets: no keychain entry for {provider}");
+            KeyLookup::NoEntry
+        }
         Err(e) => {
-            tracing::warn!("keyring get_password failed for {provider}: {e}");
-            None
-        }
-    };
-
-    if let Some(key) = fetched.as_ref() {
-        if let Ok(mut g) = cache().lock() {
-            g.insert(provider.to_string(), key.clone());
+            let msg = e.to_string();
+            tracing::warn!("secrets: keychain get_password failed for {provider}: {msg}");
+            KeyLookup::KeychainError(msg)
         }
     }
-    fetched
+}
+
+pub fn get_api_key(provider: &str) -> Option<String> {
+    lookup_api_key(provider).as_option()
 }
 
 #[allow(dead_code)]

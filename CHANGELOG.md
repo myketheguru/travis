@@ -1,5 +1,91 @@
 # Travis Changelog
 
+## v0.15.0 — Claude.ai-parity core + L2E moves to the pack (2026-06-08)
+
+Minor-version bump reflects an architectural shift in the prompt
+layering: the core system prompt is now domain-agnostic, and all
+L2E-specific guidance (invoices, POs, sign-in sheets, schools,
+$rates, services catalog) moves to the L2E pack's prompt fragment.
+The chat surface should now feel like Claude.ai for general use,
+with vertical depth layered on per enabled pack.
+
+### Core prompt — generalist baseline
+
+- Opening framing: "You are Travis — a personal AI assistant. You
+  can help with anything Claude.ai can: writing, analysis, code,
+  research, creative work, document handling, scheduling, and
+  ops capture."
+- Tool catalog organized by capability (writing/code/documents/
+  memory/scheduling) instead of a flat alphabetic list.
+- Examples cover non-ops use cases — drafting an email, analysing
+  a spreadsheet in Python, summarising a project plan, pulling
+  details from past memory. No invoice / PO / school references
+  anywhere in the core prompt.
+- Governing principle ("HOW YOUR TURN ENDS"), future-tense ban,
+  and document-handling rules stay — they're universal.
+
+### L2E pack fragment — domain depth
+
+- Extended `src-tauri/src/packs/lead_to_empower/mod.rs::PROMPT_FRAGMENT`
+  with the full invoice-generation workflow guidance previously
+  embedded in the core:
+  - PO + WO + sign-in-sheet → invoice PDF flow.
+  - Invoice numbering rule (year + school code + sequence).
+  - Default-rate references (Leadership Coaching ~$1,500/day
+    school-funded vs $2,300/day DoF-funded).
+  - Sample-→-analyze_styling-→-run_python pattern.
+  - Spreadsheet handling with pandas.
+  - Sample-→-adapt prompt template (the field-by-field
+    enumeration pattern with `Bill to`/`Invoice #`/`Service
+    dates`).
+  - Workflow-continuation cues (mid-invoice doc uploads,
+    numbered answers, constraints).
+  - run_python vs structured action choice.
+
+### Capture leaves the chat — behavioural split
+
+- Primary LLM is told explicitly: "leave `tasks`, `entities`,
+  `reminders`, `capabilityGaps`, `entityFacts`, `hypotheses`,
+  `affectSignals`, `completedTaskIds`, `clarifyingQuestions`,
+  `workspaceRouting`, `genericEntities` EMPTY. Don't narrate
+  captures. A separate pipeline handles them."
+- Inline persistence remains for now — anything the LLM does still
+  emit gets stored silently. v0.15.1 will land the architectural
+  split (separate `capture::run_background` module + `tokio::spawn`
+  + dedicated capture-only LLM call).
+
+### Why the bump
+
+This is the first release where the prompt is no longer pack-locked.
+If someone disables L2E or ships Travis with a different pack
+(tutoring, consulting), the core behaviour stays sensible —
+generalist by default, vertical depth on top.
+
+### Keychain diagnostics
+
+User reported "Claude API key not found in your OS keychain"
+recurring even after re-entering the key. The generic error gave
+no way to tell whether the keychain wasn't being written to, was
+returning an empty entry, or the OS itself was misbehaving.
+
+- `secrets::lookup_api_key` returns a `KeyLookup` enum
+  (`FromCache` / `FromKeychain` / `NoEntry` / `EmptyEntry` /
+  `KeychainError(msg)`).
+- The "key not found" error in `llm::build` now names the actual
+  failure mode:
+  - **NoEntry** → "Open Settings → LLM Provider and enter your key."
+  - **EmptyEntry** → "key in your OS keychain is empty, re-enter."
+  - **KeychainError** → "OS keychain returned an error: {msg}. The
+    key may have been stored under a different OS account, or the
+    keychain access is locked."
+- INFO-level tracing line on every successful keychain read with
+  the character count, so the dev console can confirm what's
+  happening.
+
+A file-based fallback (for users hitting Windows Credential Manager
+issues) is queued for v0.15.1 once we know whether the problem is
+upstream-keyring or environmental.
+
 ## v0.14.5 — Drive the process: ban future-tense replies, fix Excel preload, visible doc reading (2026-06-08)
 
 Real-world testing of v0.14.4 surfaced three new behaviours: Travis was

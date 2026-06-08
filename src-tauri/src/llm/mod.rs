@@ -248,15 +248,11 @@ pub fn build(
     let model = model.unwrap_or_else(|| default_model(provider));
     match provider {
         "claude" => {
-            let key = api_key.ok_or_else(|| {
-                anyhow::anyhow!("Claude API key not found in your OS keychain. Re-enter it below.")
-            })?;
+            let key = api_key.ok_or_else(|| missing_key_error("Claude", "claude"))?;
             Ok(Box::new(claude::ClaudeProvider::new(http, key.to_string(), model.to_string())))
         }
         "openai" => {
-            let key = api_key.ok_or_else(|| {
-                anyhow::anyhow!("OpenAI API key not found in your OS keychain. Re-enter it below.")
-            })?;
+            let key = api_key.ok_or_else(|| missing_key_error("OpenAI", "openai"))?;
             Ok(Box::new(openai::OpenAiProvider::new(http, key.to_string(), model.to_string())))
         }
         "ollama" => {
@@ -264,5 +260,31 @@ pub fn build(
             Ok(Box::new(ollama::OllamaProvider::new(http, url.to_string(), model.to_string())))
         }
         other => Err(anyhow::anyhow!("unknown provider: {other}")),
+    }
+}
+
+/// Build a descriptive error explaining WHY the key is missing — was
+/// it never stored, is the OS keychain returning an empty entry, or
+/// is the OS itself misbehaving. The user sees this verbatim in chat,
+/// so naming the actual failure mode makes self-diagnosis possible
+/// instead of falling into a "I re-entered the key 5 times and it
+/// still doesn't work" loop.
+fn missing_key_error(label: &str, provider: &str) -> anyhow::Error {
+    use crate::secrets::{lookup_api_key, KeyLookup};
+    match lookup_api_key(provider) {
+        KeyLookup::FromCache(_) | KeyLookup::FromKeychain(_) => {
+            anyhow::anyhow!(
+                "{label} API key is set, but the LLM call was made without it — internal wiring bug. Restart Travis and try again."
+            )
+        }
+        KeyLookup::NoEntry => anyhow::anyhow!(
+            "{label} API key not found in your OS keychain. Open Settings → LLM Provider and enter your key."
+        ),
+        KeyLookup::EmptyEntry => anyhow::anyhow!(
+            "{label} API key in your OS keychain is empty. Open Settings → LLM Provider and re-enter the key."
+        ),
+        KeyLookup::KeychainError(msg) => anyhow::anyhow!(
+            "{label} API key — OS keychain returned an error: {msg}. The key may have been stored under a different OS account, or the keychain access is locked. Open Settings → LLM Provider and re-enter the key; if it still fails, this is a Windows/macOS credential-storage issue."
+        ),
     }
 }
