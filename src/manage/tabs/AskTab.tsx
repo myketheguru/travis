@@ -99,12 +99,13 @@ export default function AskTab() {
     let cancelled = false;
     subscribeSteps((event: StepEvent) => {
       // Apply against whichever conversation is currently active. If
-      // the frontend doesn't know the id yet (first-turn race),
-      // accept the event optimistically — the step DB rows are
-      // scoped by conversation_id anyway, so a later listSteps fetch
-      // for the wrong conversation would just replace the in-memory
-      // view with the correct rows.
-      const currentId = activeConvIdRef.current ?? event.conversationId;
+      // the frontend doesn't know the id yet (first-turn race), only
+      // a "started" event carries conversationId — accept it
+      // optimistically. Note / result / completed events match by
+      // step id, so they don't need the filter to find their parent.
+      const fallback =
+        event.event === "started" ? event.conversationId : 0;
+      const currentId = activeConvIdRef.current ?? fallback;
       setSteps((prev) => applyStepEvent(prev, event, currentId));
     })
       .then((fn) => {
