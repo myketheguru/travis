@@ -29,6 +29,7 @@ mod identity;
 mod identity_cmd;
 mod journal;
 mod llm;
+mod manager;
 mod memory;
 mod memory_cmd;
 mod overlay;

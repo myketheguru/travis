@@ -1720,11 +1720,51 @@ pub async fn journal_ingest(
     // the same context (system prompt is cached, so the second call
     // shares the prefix and only pays for the forcing-message tail).
     let messages_for_retry = messages.clone();
-    let (mut extraction, ok, err_msg, raw_response) = if let Some(fp) = fast_path_extraction {
+
+    // v0.15.1 manager loop. Wraps the existing agent loop in an outer
+    // layer that refuses to let the worker bail with a placeholder
+    // reply. Up to 3 manager iterations; each iteration runs the
+    // full agent loop with up to MAX_ITER tool-call rounds. Between
+    // iterations, if the worker handed off without progress, we
+    // append the worker's prior attempt + a continuation directive
+    // and re-run.
+    const MAX_MANAGER_ITER: usize = 3;
+    let mut working_messages = messages;
+    let mut extraction: Extraction = Default::default();
+    let mut ok: bool = false;
+    let mut err_msg: Option<String> = None;
+    let mut raw_response: String = String::new();
+    let mut manager_iter: usize = 0;
+
+    if let Some(fp) = fast_path_extraction {
         tracing::info!("journal_ingest fast-path hit (intent={})", fp.intent);
-        (fp, true, None, "<fast-path>".to_string())
-    } else { 'outer: {
-        let mut current_messages = messages;
+        extraction = fp;
+        ok = true;
+        raw_response = "<fast-path>".to_string();
+    } else { 'manager: loop {
+        // Emit a visible "Thinking" step per manager pass so the
+        // chat shows the same loop-doesn't-quit texture Claude.ai
+        // has. First pass is "Working on it"; re-runs surface that
+        // the manager is forcing progress.
+        let mgr_step_name = if manager_iter == 0 {
+            "Working on it".to_string()
+        } else {
+            format!("Forcing progress (pass {})", manager_iter + 1)
+        };
+        let mgr_step = crate::steps::Step::start(
+            &app,
+            &state.db.pool,
+            conv_id,
+            crate::steps::StepKind::Thinking,
+            mgr_step_name,
+            None,
+            None,
+        )
+        .await
+        .ok();
+
+        let (this_ext, this_ok, this_err, this_raw) = 'outer: {
+        let mut current_messages = working_messages.clone();
         let mut last_dump = String::new();
         for iter in 0..MAX_ITER {
             // Last iteration forces the extraction tool to ensure we always finalize.
@@ -1831,6 +1871,63 @@ pub async fn journal_ingest(
             Some("agent loop exceeded max iterations".into()),
             last_dump,
         )
+        };
+
+        // v0.15.1 manager evaluation. Stash this pass's result then
+        // decide whether to stop (delivered or asked a real question)
+        // or kick the worker again with a forcing directive.
+        extraction = this_ext;
+        ok = this_ok;
+        err_msg = this_err;
+        raw_response = this_raw;
+
+        let progress = crate::manager::evaluate_progress(&extraction, &[], false);
+        let progress_label = match progress {
+            crate::manager::ProgressKind::Delivered => "delivered",
+            crate::manager::ProgressKind::AskedBlocker => "asked specific question",
+            crate::manager::ProgressKind::Handoff => "handoff — re-running",
+        };
+        if let Some(s) = mgr_step {
+            let _ = s
+                .complete_ok(&app, &state.db.pool, Some(progress_label.to_string()))
+                .await;
+        }
+        tracing::info!(
+            "manager pass {}: progress={:?} response_len={}",
+            manager_iter + 1,
+            progress,
+            extraction.response.as_deref().map(|s| s.len()).unwrap_or(0)
+        );
+
+        match progress {
+            crate::manager::ProgressKind::Delivered
+            | crate::manager::ProgressKind::AskedBlocker => {
+                break 'manager;
+            }
+            crate::manager::ProgressKind::Handoff => {
+                if manager_iter + 1 >= MAX_MANAGER_ITER {
+                    tracing::warn!(
+                        "manager: hit cap of {} iterations without progress; surfacing last attempt",
+                        MAX_MANAGER_ITER
+                    );
+                    break 'manager;
+                }
+                // Inject the worker's prior reply + continuation
+                // directive so the next agent-loop pass sees what it
+                // said before and is told to actually progress.
+                let prior_response = extraction.response.clone().unwrap_or_default();
+                working_messages.push(Message {
+                    role: Role::Assistant,
+                    content: prior_response,
+                    tool_calls: vec![],
+                    tool_call_id: None,
+                });
+                working_messages.push(Message::user(
+                    crate::manager::continuation_directive().to_string(),
+                ));
+                manager_iter += 1;
+            }
+        }
     }};
 
     let is_conversational = extraction.intent.eq_ignore_ascii_case("conversational");

@@ -1,5 +1,73 @@
 # Travis Changelog
 
+## v0.15.1 — Manager loop: the worker no longer gets to bail (2026-06-08)
+
+Five releases of prompt-level enforcement (banned phrases, governing
+principle, future-tense prohibitions, drive-the-process directive)
+and the worker LLM kept producing handoff replies anyway — "reading
+them now", "I'll generate", "give me a moment". The fix is
+architectural, not prompt-engineering.
+
+### The manager loop
+
+Following the pattern visible in Claude.ai's chat (multiple
+`Thinking` boxes per user turn — manager-driven sub-passes), Travis
+now wraps the existing agent loop in an **outer manager loop** that
+refuses to return until the worker actually delivered or asked a
+real question.
+
+- New module `src-tauri/src/manager/mod.rs`:
+  - `ProgressKind { Delivered | AskedBlocker | Handoff }`
+  - `evaluate_progress(extraction, generated_doc_ids, tool_calls_made)`
+    — deterministic Rust function. Inspects the worker's output
+    and decides which bucket. Detects placeholder/handoff phrases
+    structurally, not by hoping the prompt holds.
+  - `continuation_directive()` — the user-role forcing message
+    injected between manager iterations to push the worker.
+- `journal_ingest`: agent loop wrapped in `'manager: loop` with cap
+  `MAX_MANAGER_ITER = 3` per user turn (PER request/response, NOT
+  cumulative across the conversation). Each manager pass also gets
+  `MAX_ITER = 8` tool-call rounds in the inner agent loop. Between
+  manager iterations:
+  - The worker's prior reply is appended as an assistant message.
+  - The continuation directive is appended as a new user message.
+  - The agent loop runs fresh with the augmented context.
+- Each manager pass emits a visible `Thinking` step:
+  - Pass 1 → "Working on it"
+  - Pass 2 → "Forcing progress (pass 2)"
+  - Pass 3 → "Forcing progress (pass 3)"
+  Each completes with one of: `delivered` / `asked specific question`
+  / `handoff — re-running` — same loop-doesn't-quit texture
+  Claude.ai's chat has.
+- The worker LLM is unchanged. The manager is just a Rust function
+  watching what comes out.
+
+### Why this matters
+
+Worker LLMs are non-deterministic — Claude's training sometimes
+overrides even very explicit prompt rules. The manager is a
+*deterministic backstop*. If the worker says "reading them now" when
+it should have read the docs, the manager detects the placeholder
+phrase, injects a forcing directive, and runs the worker again. By
+manager pass 2 or 3 the worker has either delivered or named a
+specific blocker.
+
+Cost guard: worst case is 24 LLM calls per user turn (3 manager × 8
+agent). Typical case lands in 1 manager pass; the manager only
+re-runs when the worker actually bailed. The v0.14.4 retry-on-empty
+is now structurally redundant (manager catches empty responses too)
+but kept in place as an extra inner safety net.
+
+### Deferred to v0.15.2+
+
+- File-level capture refactor (separate `capture::run_background`
+  module + `tokio::spawn` second LLM call).
+- Keychain file-fallback (only if your diagnostic info shows
+  Windows Credential Manager is the issue).
+- Opus 4.8 default model A/B against Sonnet 4.6 (only meaningful
+  once the manager loop is proven — otherwise we won't know which
+  fix did the work).
+
 ## v0.15.0 — Claude.ai-parity core + L2E moves to the pack (2026-06-08)
 
 Minor-version bump reflects an architectural shift in the prompt
