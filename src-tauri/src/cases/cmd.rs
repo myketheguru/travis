@@ -32,6 +32,16 @@ pub async fn close_case(state: State<'_, AppState>, id: i64) -> Result<(), Strin
     db::close(&state.db.pool, id).await.map_err(|e| e.to_string())
 }
 
+/// v0.16.0 — find the case the given conversation belongs to (if
+/// any). The frontend uses this to render the CaseHeaderStrip.
+#[tauri::command]
+pub async fn case_for_conversation(
+    state: State<'_, AppState>,
+    conversation_id: i64,
+) -> Result<Option<Case>, String> {
+    Ok(db::find_by_conversation(&state.db.pool, conversation_id).await)
+}
+
 #[tauri::command]
 pub async fn list_case_artifacts(
     state: State<'_, AppState>,

@@ -1,5 +1,94 @@
 # Travis Changelog
 
+## v0.16.0 — Case substrate goes live (2026-06-08)
+
+v0.14 added the `travis_case` and `case_artifact` tables but they
+were never read. v0.16.0 turns them on. Multi-day workflows now
+auto-open a case; the LLM sees a continuity context block every
+turn for the case's lifetime; the chat surfaces a header strip with
+a switcher and close button.
+
+### Auto-detection
+
+When a chat doesn't already have a case linked, `journal_ingest`
+evaluates three triggers before the agent loop:
+- An active workflow on this conversation
+- Multi-doc upload (≥2 `doc#N` markers in the user turn)
+- Conversation depth ≥3
+
+When **any two** fire, Travis auto-opens a case (named after the
+active workflow's recipe, or the user's first-turn note) and links
+the conversation to it. Cases hold across tab switches, restarts,
+and multi-day gaps.
+
+### `== ACTIVE CASE ==` context block
+
+The user message every turn now carries a tight case-context block:
+case name + id, started/last-activity timestamps, summary if any,
+plus a directive: "this conversation is part of a multi-session
+case; reference prior decisions, build on past artifacts, don't
+restart from scratch." The LLM sees this every turn for the case's
+lifetime — the continuity surface that lets Travis resume coherently.
+
+### UI: case header strip + switcher
+
+Above the chat transcript, a slim purple-tinted strip renders when
+the conversation has a linked case:
+
+```
+case  PS 89 invoice close-out · 3 conversations · started 06-05    [switch] [close case]
+```
+
+Click `switch` to see a popover of other open cases — picking one
+routes you to that case's most recent conversation. Click
+`close case` to mark it closed (still reachable from the switcher,
+just no longer "active").
+
+### New backend helpers (cases::db)
+
+- `find_by_conversation(conv_id) -> Option<Case>` — scans
+  `conversation_ids_json` to find the case holding a given turn.
+- `link_conversation(case_id, conv_id)` — idempotent append.
+- `set_summary(case_id, summary)` — background-writer hook.
+- `touch(case_id)` — bump `last_activity_at` cheaply each turn.
+
+### New Tauri commands
+
+- `case_for_conversation(conversation_id) -> Option<Case>` —
+  what the frontend strip consumes.
+
+### Bundled bug fixes
+
+User-reported during v0.16.0 development — small enough to land in
+the same slice.
+
+**Live step events.** The frontend's step-event subscription was
+gated on `activeConversationId` being non-null. When the user sent
+their first message in a fresh chat, the id was null (backend
+assigns it mid-call), so every step event the backend emitted
+during that turn was filtered out. Steps only appeared after the
+chat reloaded from the DB. Fix: subscribe persistently on mount;
+use a ref to filter against the current id without re-subscribing.
+
+**Pyodide warmup timeout.** Cold-start Pyodide load was exceeding
+the 30-second warmup wait, causing repeated "interpreter not ready"
+errors during the first `run_python` call. Each failure burned a
+manager-pass iteration on the retry loop. Bumped to 90 seconds
+which leaves comfortable headroom for cold installs.
+
+### Sequencing (v0.16.1 → v0.16.3)
+
+Queued for follow-up slices, independent + non-blocking:
+
+- **v0.16.1** — Typed-edge memory graph (#174) + decay policy (#178).
+  New `memory_edge` table with AutoMem's 11 typed edges
+  (`LEADS_TO`, `EVOLVED_INTO`, `DERIVED_FROM`, `CONTRADICTS`, etc.).
+  Cross-document reconciliation gets a real primitive.
+- **v0.16.2** — Event log substrate (#172). `conversation_message`
+  becomes a projection of an `event` log. Enables branching /
+  time-travel / `reasoning-only MessageEvent` rendering.
+- **v0.16.3** — Condenser pattern (#173). Depends on event log.
+
 ## v0.15.4 — Error observability + extended-thinking bug fix (2026-06-08)
 
 Two things bundled: the underlying bug behind v0.15.2/v0.15.3's

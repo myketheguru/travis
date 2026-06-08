@@ -16,7 +16,13 @@ use crate::AppState;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_TIMEOUT_SECS: u64 = 300;
-const INTERPRETER_WARMUP_WAIT_SECS: u64 = 30;
+// v0.16.0 — bumped 30 → 90. Cold-start Pyodide load over a slow disk
+// (or first-launch of a freshly-installed app) can easily exceed 30s.
+// At 30s, the agent loop's first run_python call was failing repeatedly
+// and burning manager-pass iterations on the retries. 90s gives the
+// interpreter a real chance to come up; subsequent calls hit the
+// already-warm path within ms.
+const INTERPRETER_WARMUP_WAIT_SECS: u64 = 90;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

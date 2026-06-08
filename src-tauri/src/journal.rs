@@ -488,6 +488,110 @@ pub struct JournalIngestResult {
     pub error: Option<String>,
 }
 
+/// v0.16.0 — auto-open a case (or find the existing one) for the
+/// current conversation. Best-effort; failures log and return None.
+///
+/// Triggers (need ≥2 of 3 to auto-open a fresh case):
+/// - active workflow on this conversation
+/// - multi-doc upload in this turn (≥2 doc# markers)
+/// - conversation depth ≥3 (this isn't a first message)
+///
+/// Always touches the case's last_activity_at on entry if one exists,
+/// so cases stay "warm" while the user is interacting.
+async fn build_or_resume_case(
+    pool: &sqlx::SqlitePool,
+    conv_id: i64,
+    workspace_id: i64,
+    raw: &str,
+    inbound_doc_ids: &[i64],
+    prior_message_count: i64,
+) -> Option<crate::cases::db::Case> {
+    // Already linked to a case?
+    if let Some(c) = crate::cases::db::find_by_conversation(pool, conv_id).await {
+        let _ = crate::cases::db::touch(pool, c.id).await;
+        return Some(c);
+    }
+
+    // Evaluate auto-open triggers
+    let workflow_active = crate::workflows::state::get_active(pool, conv_id)
+        .await
+        .is_some();
+    let multi_doc = inbound_doc_ids.len() >= 2;
+    let deep_conv = prior_message_count >= 3;
+    let trigger_count =
+        (workflow_active as u8) + (multi_doc as u8) + (deep_conv as u8);
+    if trigger_count < 2 {
+        return None;
+    }
+
+    // Build a case name. Prefer the active workflow's recipe; fall
+    // back to a truncated user note. Never panic on weird input.
+    let name = if let Some(w) =
+        crate::workflows::state::get_active(pool, conv_id).await
+    {
+        format!("Case: {}", w.recipe_name)
+    } else {
+        let trimmed = raw.trim();
+        let snippet: String = trimmed.chars().take(60).collect();
+        if snippet.is_empty() {
+            format!("Case for conversation #{conv_id}")
+        } else {
+            snippet
+        }
+    };
+
+    let case = match crate::cases::db::upsert_open(
+        pool,
+        workspace_id,
+        crate::cases::db::CaseInput {
+            name,
+            summary: None,
+            parent_case_id: None,
+        },
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("v0.16.0 auto-open case failed: {e}");
+            return None;
+        }
+    };
+    if let Err(e) = crate::cases::db::link_conversation(pool, case.id, conv_id).await {
+        tracing::warn!("v0.16.0 link_conversation failed: {e}");
+    }
+    tracing::info!(
+        "v0.16.0 auto-opened case '{}' (id {}) for conv {} — triggers: workflow={} multi_doc={} deep={}",
+        case.name,
+        case.id,
+        conv_id,
+        workflow_active,
+        multi_doc,
+        deep_conv
+    );
+    Some(case)
+}
+
+/// Format the active case for inclusion in the LLM user message.
+/// Renders a tight ~5-line block giving the LLM continuity context
+/// for the current case. Kept short — Travis's broader cases-list
+/// block already names other cases.
+fn format_active_case_block(case: &crate::cases::db::Case) -> String {
+    let mut s = String::from("== ACTIVE CASE ==\n");
+    s.push_str(&format!("You are working on case: {} (#{})\n", case.name, case.id));
+    s.push_str(&format!("Started: {}\n", case.started_at));
+    s.push_str(&format!("Last activity: {}\n", case.last_activity_at));
+    if let Some(summary) = case.summary.as_deref() {
+        if !summary.trim().is_empty() {
+            s.push_str(&format!("Summary: {}\n", summary.trim()));
+        }
+    }
+    s.push_str(
+        "\nThis conversation is part of a multi-session case. Reference prior decisions, build on past artifacts, do NOT restart from scratch. If the user pivots to unrelated work, ask whether to close this case or branch a new one.\n\n",
+    );
+    s
+}
+
 /// Match the sanitization used by the interpreter window when it
 /// mounts attached files into Pyodide's /inputs/ — keep the two in
 /// lock-step so the LLM's run_python code uses the right paths.
@@ -1498,6 +1602,41 @@ pub async fn journal_ingest(
     .await;
     let cases_block = crate::cases::db::format_for_prompt(&active_cases);
 
+    // v0.16.0 — auto-detect + per-conversation case linkage.
+    //
+    // Parse `doc#N` markers from the raw user message early so the
+    // case-detection heuristic can use them. (The doc preload block
+    // further below re-uses this vector.)
+    let inbound_doc_ids_for_case: Vec<i64> = raw
+        .split("doc#")
+        .skip(1)
+        .filter_map(|s| {
+            let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
+            digits.parse().ok()
+        })
+        .collect();
+
+    // If this conversation is already linked to an open case, surface
+    // it; otherwise evaluate the three triggers (active workflow,
+    // multi-doc upload ≥2, conversation depth ≥3). If at least two
+    // fire, auto-open a case named after the active workflow's
+    // recipe (or fall back to the first-turn user note) and link
+    // this conversation to it. Best-effort: case-detection failures
+    // never block the chat path.
+    let current_case = build_or_resume_case(
+        &state.db.pool,
+        conv_id,
+        ws_snapshot.active_id,
+        &raw,
+        &inbound_doc_ids_for_case,
+        prior.len() as i64,
+    )
+    .await;
+    let current_case_block = current_case
+        .as_ref()
+        .map(|c| format_active_case_block(c))
+        .unwrap_or_default();
+
     // Workflow dialogue state ([[feedback-workflow-led]]). If a
     // workflow is in flight for this conversation, Travis sees what's
     // filled / what's still missing / what to ask next. The catalog
@@ -1680,7 +1819,7 @@ pub async fn journal_ingest(
     };
 
     let user_msg = format!(
-        "Today is {today}.\n\nOPEN TASKS (id · title):\n{open}\n\nRELEVANT MEMORY:\n{mem}\n\n{graph}{working}{initiatives}{cases}{workflow}{catalog}{ws}{docs_preload}New turn:\n{raw}",
+        "Today is {today}.\n\nOPEN TASKS (id · title):\n{open}\n\nRELEVANT MEMORY:\n{mem}\n\n{graph}{working}{initiatives}{cases}{current_case}{workflow}{catalog}{ws}{docs_preload}New turn:\n{raw}",
         today = today_local(),
         open = format_open_tasks(&open_tasks),
         mem = format_memory(&mem_hits),
@@ -1704,6 +1843,7 @@ pub async fn journal_ingest(
         } else {
             format!("{cases_block}\n")
         },
+        current_case = current_case_block,
         workflow = if workflow_block.is_empty() {
             String::new()
         } else {

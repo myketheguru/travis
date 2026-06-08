@@ -612,6 +612,7 @@ pub fn run() {
             cases::cmd::open_case,
             cases::cmd::close_case,
             cases::cmd::list_case_artifacts,
+            cases::cmd::case_for_conversation,
             templates::cmd::save_pack_template,
             templates::cmd::list_pack_templates,
             templates::cmd::delete_pack_template,

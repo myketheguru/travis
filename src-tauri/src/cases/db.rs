@@ -199,6 +199,104 @@ pub async fn add_artifact(
     Ok(id)
 }
 
+/// Find the open/paused case whose `conversation_ids_json` array
+/// contains the given conversation id. Returns None if no case
+/// claims this conversation. v0.16.0 wiring.
+pub async fn find_by_conversation(
+    pool: &SqlitePool,
+    conversation_id: i64,
+) -> Option<Case> {
+    // Scan open + paused cases and JSON-parse each.
+    // SQLite's json_each could do this server-side, but the count of
+    // open cases per workspace is small (< ~50 in practice), so a
+    // round-trip scan keeps the SQL simple.
+    let rows: Vec<Case> = sqlx::query_as::<_, Case>(
+        "SELECT id, workspace_id, name, summary, status, parent_case_id,
+                conversation_ids_json, started_at, last_activity_at, closed_at
+         FROM travis_case
+         WHERE status IN ('open','paused')
+         ORDER BY last_activity_at DESC",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    for c in rows {
+        if let Ok(ids) = serde_json::from_str::<Vec<i64>>(&c.conversation_ids_json) {
+            if ids.contains(&conversation_id) {
+                return Some(c);
+            }
+        }
+    }
+    None
+}
+
+/// Idempotently append a conversation id to the case's
+/// `conversation_ids_json` array. No-op if already present.
+pub async fn link_conversation(
+    pool: &SqlitePool,
+    case_id: i64,
+    conversation_id: i64,
+) -> anyhow::Result<()> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT conversation_ids_json FROM travis_case WHERE id = ?1",
+    )
+    .bind(case_id)
+    .fetch_optional(pool)
+    .await?;
+    let existing_json = row.map(|r| r.0).unwrap_or_else(|| "[]".to_string());
+    let mut ids: Vec<i64> =
+        serde_json::from_str(&existing_json).unwrap_or_default();
+    if ids.contains(&conversation_id) {
+        return Ok(()); // already linked, no-op
+    }
+    ids.push(conversation_id);
+    let new_json = serde_json::to_string(&ids)?;
+    sqlx::query(
+        "UPDATE travis_case
+         SET conversation_ids_json = ?1,
+             last_activity_at = CURRENT_TIMESTAMP
+         WHERE id = ?2",
+    )
+    .bind(&new_json)
+    .bind(case_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Update the case's summary (best-effort writer called from the
+/// background summariser).
+pub async fn set_summary(
+    pool: &SqlitePool,
+    case_id: i64,
+    summary: &str,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE travis_case
+         SET summary = ?1, last_activity_at = CURRENT_TIMESTAMP
+         WHERE id = ?2",
+    )
+    .bind(summary)
+    .bind(case_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Bump last_activity_at on the case (called on every turn that
+/// touches a case-linked conversation).
+pub async fn touch(pool: &SqlitePool, case_id: i64) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE travis_case
+         SET last_activity_at = CURRENT_TIMESTAMP
+         WHERE id = ?1",
+    )
+    .bind(case_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn recent_artifacts(
     pool: &SqlitePool,
     case_id: i64,

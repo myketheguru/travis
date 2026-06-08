@@ -26,6 +26,7 @@ import { ActiveWorkflowPill } from "../../components/ActiveWorkflowPill";
 import { DocumentExtractCard } from "../../overlay/DocumentExtractCard";
 import { ChatTurn } from "../../chat/ChatTurn";
 import { AutoGrowTextarea } from "../../chat/AutoGrowTextarea";
+import { CaseHeaderStrip } from "../../chat/CaseHeaderStrip";
 import { useScrollAnchor } from "../../chat/useScrollAnchor";
 import { useAppStore } from "../../stores/app";
 
@@ -78,8 +79,56 @@ export default function AskTab() {
     `${messages.length}:${steps.length}:${busy ? "1" : "0"}`,
   );
 
-  // Subscribe to live step events; refresh persisted history whenever
-  // conversation id changes.
+  // v0.16.0 — split the step lifecycle into two effects so live events
+  // stream regardless of when `activeConversationId` arrives.
+  //
+  // Old bug: subscription was gated on activeConversationId, so during
+  // the FIRST turn of a fresh chat (id starts null → backend assigns id
+  // mid-call → frontend only learns it after journalIngest returns),
+  // every step event the backend emitted was dropped. They only showed
+  // up after the chat reloaded from the DB via listSteps. This effect
+  // change makes the subscription persistent and uses a ref to filter
+  // by the current id without re-subscribing.
+  const activeConvIdRef = useRef<number | null>(activeConversationId);
+  useEffect(() => {
+    activeConvIdRef.current = activeConversationId;
+  }, [activeConversationId]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    subscribeSteps((event: StepEvent) => {
+      // Apply against whichever conversation is currently active. If
+      // the frontend doesn't know the id yet (first-turn race),
+      // accept the event optimistically — the step DB rows are
+      // scoped by conversation_id anyway, so a later listSteps fetch
+      // for the wrong conversation would just replace the in-memory
+      // view with the correct rows.
+      const currentId = activeConvIdRef.current ?? event.conversationId;
+      setSteps((prev) => applyStepEvent(prev, event, currentId));
+    })
+      .then((fn) => {
+        if (cancelled) {
+          try {
+            fn();
+          } catch {
+            /* ignore */
+          }
+        } else {
+          unlisten = fn;
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      try {
+        unlisten?.();
+      } catch {
+        /* ignore */
+      }
+    };
+  }, []);
+
   useEffect(() => {
     if (!activeConversationId) {
       setSteps([]);
@@ -91,19 +140,8 @@ export default function AskTab() {
         if (!cancelled) setSteps(s);
       })
       .catch(() => {});
-    let unlisten: (() => void) | null = null;
-    subscribeSteps((event: StepEvent) => {
-      setSteps((prev) => applyStepEvent(prev, event, activeConversationId));
-    }).then((fn) => {
-      unlisten = fn;
-    });
     return () => {
       cancelled = true;
-      try {
-        unlisten?.();
-      } catch {
-        /* ignore */
-      }
     };
   }, [activeConversationId]);
 
@@ -393,6 +431,19 @@ export default function AskTab() {
           </button>
         </div>
       )}
+
+      {/* v0.16.0 — case substrate. Renders only when this conversation
+          is linked to an open case (auto-opened by journal_ingest when
+          the workflow + multi-doc + depth triggers fire). */}
+      <CaseHeaderStrip
+        conversationId={activeConversationId}
+        onClose={() => {
+          /* nothing to clean up locally; the strip refetches on its
+             own interval and hides when the case closes. */
+        }}
+        onSwitchToConversation={(id) => setActiveConversationId(id)}
+      />
+
 
       <div className="relative flex-1 min-h-0 flex flex-col">
         <div
