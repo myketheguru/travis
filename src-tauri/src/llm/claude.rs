@@ -304,28 +304,56 @@ impl LlmProvider for ClaudeProvider {
                 .collect::<Vec<_>>());
         }
 
-        if let Some(choice) = opts.tool_choice {
-            body["tool_choice"] = match choice {
-                ToolChoice::Auto => json!({"type": "auto"}),
-                ToolChoice::Required => json!({"type": "any"}),
-                ToolChoice::Specific(name) => json!({"type": "tool", "name": name}),
-            };
-        }
-
         // v0.15.2 — Extended thinking. When set, Anthropic returns
         // separate `thinking` content blocks before any text/tool_use,
         // giving the model a dedicated cognitive budget. Required for
         // multi-doc reconciliation, constraint solving, forensic
         // analysis — anything the Claude.ai surface does with the
-        // visible "Thinking" boxes. Temperature must be unset (or 1)
-        // when thinking is enabled; we strip it here to satisfy that
-        // constraint without callers needing to know.
+        // visible "Thinking" boxes.
+        //
+        // v0.15.4 — Constraints when thinking is enabled (per Anthropic):
+        // 1. `temperature` must be unset or 1 — strip it here.
+        // 2. `tool_choice` cannot be `Specific(...)` or `Required` —
+        //    Anthropic returns 400. Forced-tool requires the model
+        //    NOT to think first. Coerce to `auto` so the request is
+        //    accepted; the system prompt + retry directive still steer
+        //    the model toward the right tool.
+        let thinking_enabled = opts.thinking_budget.is_some();
         if let Some(budget) = opts.thinking_budget {
             body["thinking"] = json!({
                 "type": "enabled",
                 "budget_tokens": budget,
             });
             body.as_object_mut().and_then(|o| o.remove("temperature"));
+        }
+
+        if let Some(choice) = opts.tool_choice {
+            let resolved = if thinking_enabled {
+                // Coerce forced tool choices to `auto` when thinking
+                // is enabled (Anthropic constraint).
+                match &choice {
+                    ToolChoice::Specific(name) => {
+                        tracing::debug!(
+                            "claude: tool_choice Specific({name}) coerced to Auto because thinking is enabled"
+                        );
+                        json!({"type": "auto"})
+                    }
+                    ToolChoice::Required => {
+                        tracing::debug!(
+                            "claude: tool_choice Required coerced to Auto because thinking is enabled"
+                        );
+                        json!({"type": "auto"})
+                    }
+                    ToolChoice::Auto => json!({"type": "auto"}),
+                }
+            } else {
+                match choice {
+                    ToolChoice::Auto => json!({"type": "auto"}),
+                    ToolChoice::Required => json!({"type": "any"}),
+                    ToolChoice::Specific(name) => json!({"type": "tool", "name": name}),
+                }
+            };
+            body["tool_choice"] = resolved;
         }
 
         let resp = self

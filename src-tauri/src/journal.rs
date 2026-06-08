@@ -2752,29 +2752,76 @@ pub async fn journal_ingest(
                 "both primary and retry returned empty (orig_err={:?})",
                 err_msg
             );
-            let hint = match err_msg.as_deref() {
-                Some(e) if e.contains("max iterations") => {
-                    "Travis ran out of tool-call iterations on this turn. Try sending fewer documents at once, or break the request into smaller steps."
-                }
-                Some(e) if e.contains("parse") => {
-                    "Travis's reply couldn't be parsed. This is usually a transient model issue — please try again in a moment."
-                }
-                Some(_) => {
-                    "Travis hit an error while thinking through that turn. Try again, or rephrase the request."
-                }
-                None => {
-                    "Travis didn't produce a reply on that turn. Try again or rephrase the request."
-                }
+            let (hint, kind) = match err_msg.as_deref() {
+                Some(e) if e.contains("max iterations") => (
+                    "Travis ran out of tool-call iterations on this turn. Try sending fewer documents at once, or break the request into smaller steps.",
+                    crate::diagnostics::ErrorKind::IterCap,
+                ),
+                Some(e) if e.contains("parse") => (
+                    "Travis's reply couldn't be parsed. This is usually a transient model issue — please try again in a moment.",
+                    crate::diagnostics::ErrorKind::Parse,
+                ),
+                Some(_) => (
+                    "Travis hit an error while thinking through that turn. Try again, or rephrase the request.",
+                    crate::diagnostics::ErrorKind::LlmApi,
+                ),
+                None => (
+                    "Travis didn't produce a reply on that turn. Try again or rephrase the request.",
+                    crate::diagnostics::ErrorKind::Other,
+                ),
             };
+            // v0.15.4 — persist the underlying err_msg + raw response
+            // so the Diagnostics UI + the chat-side expandable error
+            // detail have something concrete to show.
+            crate::diagnostics::record_error(
+                &state.db.pool,
+                Some(conv_id),
+                kind,
+                "journal::synthesis_fallback",
+                err_msg.clone().unwrap_or_else(|| "empty response".into()),
+                Some(serde_json::json!({
+                    "errMsg": err_msg,
+                    "rawResponseSnippet": raw_response.chars().take(2000).collect::<String>(),
+                    "rawResponseLength": raw_response.len(),
+                })),
+            )
+            .await;
             hint.to_string()
         }
     };
+
+    // v0.15.4 — when the assistant message is a synthesised error
+    // hint, attach errorDetail to the payload so the chat UI can
+    // render it as a collapsed expandable trace. Normal turns use
+    // the unmodified extraction_record.
+    let assistant_payload: String = if !ok || extraction.response.as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .is_empty()
+    {
+        let mut combined: serde_json::Value =
+            serde_json::from_str(&extraction_record).unwrap_or_else(|_| serde_json::json!({}));
+        if let Some(obj) = combined.as_object_mut() {
+            obj.insert(
+                "errorDetail".into(),
+                serde_json::json!({
+                    "errMsg": err_msg.clone(),
+                    "rawResponseSnippet": raw_response.chars().take(4000).collect::<String>(),
+                    "rawResponseLength": raw_response.len(),
+                }),
+            );
+        }
+        combined.to_string()
+    } else {
+        extraction_record.clone()
+    };
+
     let _ = conversation::append(
         &state.db.pool,
         conv_id,
         "assistant",
         &assistant_visible,
-        Some(&extraction_record),
+        Some(&assistant_payload),
     )
     .await;
 

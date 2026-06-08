@@ -46,6 +46,7 @@ export function ChatTurn({
   // Extract structured fields from payload_json if present
   const payload = parsePayload(message.payloadJson);
   const thinking = payload?.thinking ?? null;
+  const errorDetail = payload?.errorDetail ?? null;
 
   // Pull attached doc IDs out of the user's message text
   // ("[Attached: name (kind, doc#N), ...]") so they render as inline
@@ -132,6 +133,8 @@ export function ChatTurn({
           )}
 
           {visibleContent.trim() && <MarkdownBody text={visibleContent} />}
+
+          {errorDetail && <ErrorTraceDetail detail={errorDetail} />}
 
           {generatedDocumentIds.length > 0 && (
             <div className="mt-2 space-y-1">
@@ -234,6 +237,13 @@ export function ChatTurn({
 interface ParsedPayload {
   thinking?: string;
   sources?: { kind: string; sourceId: number; text: string; createdAt: string }[];
+  errorDetail?: ErrorDetailShape;
+}
+
+interface ErrorDetailShape {
+  errMsg?: string | null;
+  rawResponseSnippet?: string;
+  rawResponseLength?: number;
 }
 
 function parsePayload(raw?: string | null): ParsedPayload | null {
@@ -248,10 +258,102 @@ function parsePayload(raw?: string | null): ParsedPayload | null {
     if (thinking) result.thinking = thinking;
     const sources = (p.sources ?? ext?.memorySources) as unknown;
     if (Array.isArray(sources)) result.sources = sources as ParsedPayload["sources"];
+    const errorDetail = p.errorDetail as ErrorDetailShape | undefined;
+    if (errorDetail && typeof errorDetail === "object") {
+      result.errorDetail = errorDetail;
+    }
     return result;
   } catch {
     return null;
   }
+}
+
+/// Collapsed expandable error-trace block. Renders below an error
+/// reply (the synthesised "Travis hit an error" message). Click to
+/// expand and see the underlying LLM err_msg + a snippet of the
+/// raw response, with a Copy button so the user can paste it into
+/// a bug report. Persisted in payload_json's errorDetail field by
+/// journal_ingest's synthesis fallback.
+function ErrorTraceDetail({ detail }: { detail: ErrorDetailShape }) {
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const errMsg = detail.errMsg?.trim() ?? "";
+  const rawSnippet = detail.rawResponseSnippet?.trim() ?? "";
+  const rawLen = detail.rawResponseLength ?? 0;
+  const hasAny = errMsg.length > 0 || rawSnippet.length > 0;
+  if (!hasAny) return null;
+
+  const copyText = [
+    errMsg ? `err_msg:\n${errMsg}` : null,
+    rawSnippet
+      ? `raw_response (${rawLen} chars, truncated):\n${rawSnippet}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(copyText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
+
+  return (
+    <div
+      className="mt-2 rounded-md text-[11px] overflow-hidden"
+      style={{
+        background: "rgba(255, 90, 90, 0.06)",
+        border: "1px solid rgba(255, 90, 90, 0.25)",
+      }}
+    >
+      <button
+        onClick={() => setExpanded((p) => !p)}
+        className="w-full flex items-center justify-between px-3 py-1.5 text-left hover:bg-warn/10 transition-colors"
+      >
+        <span className="font-mono tracking-wider uppercase text-warn">
+          <span className="mr-1.5">{expanded ? "▾" : "▸"}</span>
+          error trace
+        </span>
+        <span className="text-bone-3 font-mono opacity-70">
+          {errMsg ? "click to expand" : "raw response only"}
+        </span>
+      </button>
+      {expanded && (
+        <div className="px-3 pb-2 pt-1 space-y-2 border-t border-warn/20">
+          {errMsg && (
+            <div>
+              <div className="text-bone-3/70 font-mono text-[9px] tracking-wider uppercase mb-1">
+                err_msg
+              </div>
+              <pre className="whitespace-pre-wrap font-mono text-[10px] text-bone-2 leading-snug">
+                {errMsg}
+              </pre>
+            </div>
+          )}
+          {rawSnippet && (
+            <div>
+              <div className="text-bone-3/70 font-mono text-[9px] tracking-wider uppercase mb-1">
+                raw response · {rawLen} chars
+              </div>
+              <pre className="whitespace-pre-wrap font-mono text-[10px] text-bone-3 leading-snug max-h-[200px] overflow-y-auto">
+                {rawSnippet}
+              </pre>
+            </div>
+          )}
+          <button
+            onClick={handleCopy}
+            className="text-[10px] font-mono tracking-wider uppercase text-bone-3 hover:text-bone-2 underline-offset-2 hover:underline"
+          >
+            {copied ? "copied" : "copy for bug report"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 interface TreeNode {

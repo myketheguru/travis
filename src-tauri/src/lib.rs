@@ -4,6 +4,7 @@ mod behavioral_cmd;
 mod calendar;
 mod calendar_cmd;
 mod capture;
+mod diagnostics;
 mod cases;
 mod commands;
 mod conversation;
@@ -662,6 +663,8 @@ pub fn run() {
             conversation_cmd::active_conversation,
             conversation_cmd::resolve_conversation,
             conversation_cmd::append_user_message,
+            diagnostics::list_recent_errors,
+            diagnostics::clear_error_log,
             conversation_cmd::delete_message_and_after,
             actions::list_proposed_actions,
             actions::confirm_action,

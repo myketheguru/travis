@@ -1,5 +1,61 @@
 # Travis Changelog
 
+## v0.15.4 — Error observability + extended-thinking bug fix (2026-06-08)
+
+Two things bundled: the underlying bug behind v0.15.2/v0.15.3's
+recurring "Travis hit an error while thinking through that turn"
+messages, and the observability infrastructure to track future
+errors instead of staring at them blind.
+
+### The bug
+
+v0.15.2 enabled Anthropic's extended-thinking parameter on every
+primary agent-loop call (`thinking_budget: 4000`). Anthropic's API
+has a constraint we missed: when extended thinking is enabled,
+`tool_choice` can be `auto` only — `Specific(...)` and `Required`
+both get rejected with a 400. The agent loop forces
+`ToolChoice::Specific(extraction_name)` on the LAST iteration as
+its safety net, so every conversation with thinking enabled was
+one bad turn away from this error.
+
+Fix in `src-tauri/src/llm/claude.rs`: when `thinking_budget` is set,
+coerce `Specific` and `Required` tool_choice down to `Auto`. The
+system prompt + retry directive still steer the model toward the
+right tool; we just don't *force* it at the API layer when the
+constraint forbids forcing.
+
+### Error observability
+
+New `error_event` table (migration 0035) capturing every fail-soft
+path that fires in journal_ingest. Schema: `kind`
+(`llm_api` / `parse` / `iter_cap` / `tool_call` / `capture_bg` /
+`other`), `message`, `detail_json` (raw response snippet + err_msg
++ context), `source` (where in the code the error fired), timestamp.
+
+New module `src-tauri/src/diagnostics/mod.rs`:
+- `record_error()` — best-effort persistence; never propagates further
+  errors.
+- `list_recent_errors` + `clear_error_log` Tauri commands for a future
+  Diagnostics UI.
+
+The synthesis fallback in `journal_ingest` now calls `record_error`
+with the full `err_msg` + a 2000-char snippet of the raw LLM response
+each time it fires.
+
+### Expandable error trace in chat
+
+The synthesised "Travis hit an error" assistant message now carries
+the underlying error detail in its `payload_json` under `errorDetail`.
+The chat surface renders a collapsed `▸ error trace` block under the
+error message. Click to expand and see:
+- The LLM `err_msg` (parse error, HTTP status, etc.)
+- A snippet of the raw response with character count
+- A "copy for bug report" button that puts the whole trace on the
+  clipboard
+
+Means you can now actually tell us *what* went wrong instead of
+opening devtools.
+
 ## v0.15.3 — Artifact retention + iterative refinement (2026-06-08)
 
 The Claude.ai iterative-refinement loop now works in Travis. After
