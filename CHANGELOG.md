@@ -1,5 +1,72 @@
 # Travis Changelog
 
+## v0.16.2 — Stop the Pyodide-warmup loop (2026-06-08)
+
+The v0.15.4 error trace finally surfaced the recurring "Travis ran
+out of tool-call iterations" pattern: Sonnet was emitting
+`run_python({code: "print('hello')", purpose: "Warmup"})` on every
+agent-loop iteration before doing real work. Each warmup burned a
+manager iteration; by iteration 7 the loop hit MAX_ITER and bailed.
+
+This is a Sonnet training pattern — "test before you run" — that's
+actively harmful here because the Pyodide interpreter pre-warms at
+app launch and is always ready when the tool runs.
+
+### Two-pronged fix
+
+**Prompt directive** in `run_python`'s tool description:
+
+> CRITICAL: Do NOT call this with no-op warmup code (`print('hello')`,
+> `pass`, `1+1`, version checks, etc.). The Pyodide interpreter
+> pre-warms at app launch and is always ready when you call this
+> tool. […] Each warmup costs a manager-loop iteration. Write your
+> actual work code directly.
+
+**Tool-level short-circuit** — `is_warmup_pattern()` heuristic
+detects no-op calls and returns a fast synthetic success without
+touching the interpreter. Patterns caught: `pass`, empty body,
+`print("<short string>")`, `__version__`/`sys.version`, single
+arithmetic expression, OR purpose-string contains "warmup" /
+"warm-up" / "interpreter check" / "sanity check".
+
+The synthetic response includes a `note` field steering the LLM
+toward real code immediately: "Warmup-pattern code detected and
+skipped. … Proceed directly to your actual work code; do not retry
+warmup."
+
+Conservative heuristic — anything over 80 chars (after stripping
+comments) falls through to the real interpreter. Better to run a
+legitimate tiny call than skip a real one.
+
+### Pyodide lazy package loading (cold-start 30-60s → 3-5s)
+
+Bundling Pyodide locally (v0.14.1) removed the network download
+but the bootstrap was still doing 7 sequential package loads —
+`pandas`, `openpyxl`, `Pillow` via `loadPackage` (~15-25s) plus
+`reportlab`, `pypdf`, `python-docx` via `micropip.install`
+(~15-25s). Total: 30-60s before the interpreter reported ready.
+Most of those packages weren't needed for most turns.
+
+**Now:**
+- Bootstrap loads Pyodide runtime + `micropip` only (~3-5s).
+  Interpreter reports ready immediately after.
+- Each `run_python` call invokes `pyodide.loadPackagesFromImports(code)`
+  to parse the user's script and lazy-load Pyodide-bundled packages
+  (pandas, numpy, openpyxl, Pillow, etc.) on demand. Cached for
+  the session.
+- For PyPI-only packages (reportlab, pypdf, python-docx) — Pyodide
+  can't auto-detect those — we scan the code for known names and
+  `micropip.install` them ourselves.
+- Background preload of common heavy packages (pandas, openpyxl,
+  Pillow) kicks off via `requestIdleCallback` after the
+  interpreter reports ready, so first real use is warm without
+  blocking the bootstrap.
+
+Trade-off: first `import pandas` of the session adds ~8s; every
+subsequent use is free. Net win because pure-conversation turns
+(no Python at all) pay zero warmup tax and the user sees a
+usable app in 3-5s instead of 60s.
+
 ## v0.16.1 — v0.16.0 CI fix (2026-06-08)
 
 The v0.16.0 commit had a TypeScript discriminated-union access bug

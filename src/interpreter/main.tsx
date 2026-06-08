@@ -19,23 +19,34 @@ import { listen, emit } from "@tauri-apps/api/event";
 // Pyodide's TS types
 import type { PyodideInterface } from "pyodide";
 
-// Preinstalled packages — these load lazily on first import but are
-// well-known to work in Pyodide. Heavier packages (matplotlib,
-// scikit-learn) ship on demand via micropip.
-const PREINSTALLED_PACKAGES = [
-  "micropip",
-  "pandas",
-  "openpyxl",
-  "Pillow",
-];
-
-// Micropip-installable packages we want pre-warmed (pure Python,
-// not in Pyodide's default package set).
-const MICROPIP_PACKAGES = [
+// v0.16.2 — lazy loading. Bootstrap only loads Pyodide runtime +
+// micropip (~3-5s cold start). Packages load on demand via
+// `loadPackagesFromImports(code)` per run_python call, then stay
+// cached in the Pyodide instance for the rest of the session.
+//
+// Trade-off: the first `import pandas` adds ~8s once per session;
+// every subsequent use is free. Net win because the app is usable
+// in 3-5s instead of frozen for 30-60s while bootstrapping packages
+// the user may never touch (most chat turns never call run_python).
+//
+// Micropip packages — these come from PyPI (pure Python), not the
+// built-in Pyodide package set. When user code imports them,
+// loadPackagesFromImports CAN'T fetch them (it only knows
+// Pyodide-bundled packages). We watch for them in the user's code
+// and call `micropip.install` ourselves. List intentionally small;
+// extend only when needed.
+const MICROPIP_KNOWN_PACKAGES = new Set([
   "reportlab",
   "pypdf",
   "python-docx",
-];
+  "docx", // python-docx's import name
+]);
+
+// Packages we proactively warm in the background after ready. These
+// are common heavy ones the user is likely to need — kicking off
+// load during idle time means they're cached when the agent loop
+// actually runs `import pandas`.
+const BACKGROUND_PRELOAD = ["pandas", "openpyxl", "Pillow"];
 
 interface RunPythonRequest {
   requestId: string;
@@ -96,19 +107,10 @@ function InterpreterRoot() {
         if (cancelled) return;
         pyodideRef.current = pyodide;
 
-        setStatus("loading default packages…");
-        await pyodide.loadPackage(PREINSTALLED_PACKAGES);
-        if (cancelled) return;
-
-        setStatus("installing pure-Python packages via micropip…");
-        const micropip = pyodide.pyimport("micropip");
-        for (const pkg of MICROPIP_PACKAGES) {
-          try {
-            await micropip.install(pkg);
-          } catch (e) {
-            console.warn(`micropip install ${pkg} failed:`, e);
-          }
-        }
+        // v0.16.2 — bootstrap only loads micropip itself (1-2s);
+        // everything else is lazy-loaded per run_python call.
+        setStatus("loading micropip…");
+        await pyodide.loadPackage(["micropip"]);
         if (cancelled) return;
 
         // Set up shared helpers in Python globals
@@ -150,6 +152,35 @@ def _travis_clear_outputs():
         setReady(true);
         // Tell the main process Pyodide is alive
         await emit("interpreter-ready", { version: pyodideModule.version });
+
+        // v0.16.2 — background preload of common heavy packages.
+        // The interpreter reports ready BEFORE this runs, so the
+        // first run_python call doesn't have to wait. If the agent
+        // beats this race, loadPackagesFromImports inside runOne
+        // handles it; if this finishes first, the packages are
+        // already cached and runOne is instant.
+        const idleKick = (work: () => void) => {
+          if (
+            typeof (window as unknown as { requestIdleCallback?: unknown })
+              .requestIdleCallback === "function"
+          ) {
+            (
+              window as unknown as { requestIdleCallback: (cb: () => void) => void }
+            ).requestIdleCallback(work);
+          } else {
+            setTimeout(work, 1000);
+          }
+        };
+        idleKick(() => {
+          (async () => {
+            try {
+              await pyodide.loadPackage(BACKGROUND_PRELOAD);
+              console.info("background-preloaded", BACKGROUND_PRELOAD.join(", "));
+            } catch (e) {
+              console.warn("background preload failed:", e);
+            }
+          })();
+        });
       } catch (err) {
         console.error("Pyodide bootstrap failed", err);
         setStatus(`failed: ${(err as Error).message ?? String(err)}`);
@@ -214,6 +245,45 @@ def _travis_clear_outputs():
             error: `failed to install ${pkg}: ${(e as Error).message ?? e}`,
           };
         }
+      }
+    }
+
+    // v0.16.2 — lazy package loading. Two passes:
+    //
+    // 1. `loadPackagesFromImports(code)` — Pyodide parses the script,
+    //    finds `import` statements, and loads any Pyodide-bundled
+    //    packages that match (pandas, openpyxl, Pillow, numpy, etc.).
+    //    No-op if already loaded; cached for the session.
+    //
+    // 2. Scan the code for known-PyPI imports (reportlab, pypdf,
+    //    python-docx) and `micropip.install` them. Pyodide's auto-
+    //    detection can't fetch from PyPI; we have to handle it.
+    try {
+      await pyodide.loadPackagesFromImports(req.code);
+    } catch (e) {
+      console.warn("loadPackagesFromImports failed (continuing):", e);
+    }
+    const codeLower = req.code.toLowerCase();
+    const importPattern = /(?:^|\n)\s*(?:from|import)\s+([a-zA-Z0-9_]+)/g;
+    const seenImports = new Set<string>();
+    let m: RegExpExecArray | null;
+    while ((m = importPattern.exec(codeLower)) !== null) {
+      seenImports.add(m[1]);
+    }
+    for (const imp of seenImports) {
+      if (!MICROPIP_KNOWN_PACKAGES.has(imp)) continue;
+      // python-docx is installed as `python-docx` but imported as `docx`
+      const pkgName = imp === "docx" ? "python-docx" : imp;
+      if (installedExtras.current.has(pkgName)) continue;
+      try {
+        const micropip = pyodide.pyimport("micropip");
+        await micropip.install(pkgName);
+        installedExtras.current.add(pkgName);
+        console.info(`lazy-installed ${pkgName} from PyPI for this run`);
+      } catch (e) {
+        console.warn(`lazy micropip install ${pkgName} failed:`, e);
+        // Don't abort the run — let Python's import raise the real
+        // ImportError so the LLM can see it.
       }
     }
 

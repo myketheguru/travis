@@ -47,7 +47,14 @@ impl Tool for RunPythonTool {
                 Input documents are mounted at /inputs/<safe_filename>. Write generated files to \
                 /outputs/ — anything there becomes a Document. Working directory and /tmp are \
                 scratch space.\n\n\
-                Always supply a clear `purpose` string — it's surfaced to the user as the step name."
+                Always supply a clear `purpose` string — it's surfaced to the user as the step name.\n\n\
+                CRITICAL: Do NOT call this with no-op warmup code (`print('hello')`, `pass`, \
+                `1+1`, version checks, etc.). The Pyodide interpreter pre-warms at app launch \
+                and is always ready when you call this tool. If a previous call returned \
+                'interpreter not ready', that means Pyodide is still cold-loading on a fresh \
+                install — wait or proceed without code execution this turn, but NEVER spam \
+                warmup calls. Each warmup costs a manager-loop iteration. Write your actual \
+                work code directly. The interpreter will run it."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -79,6 +86,35 @@ impl Tool for RunPythonTool {
     async fn execute(&self, ctx: &ToolContext, input: Value) -> anyhow::Result<String> {
         let p: Input = serde_json::from_value(input)?;
         let state = ctx.app.state::<AppState>();
+
+        // v0.16.2 — warmup-pattern short-circuit. Sonnet has a
+        // trained habit of running `print('hello')` (or similar
+        // no-op) "to check the interpreter" before real work. This
+        // was burning agent-loop iterations on every fresh
+        // conversation. Detect the pattern, return a synthetic
+        // success without touching the interpreter, and steer the
+        // model toward real code in the error message.
+        if is_warmup_pattern(&p.code, &p.purpose) {
+            tracing::info!(
+                "run_python: short-circuited warmup pattern (purpose={:?}, code_len={})",
+                p.purpose,
+                p.code.len()
+            );
+            let payload = json!({
+                "ok": true,
+                "shortCircuit": "warmup-detected",
+                "purpose": p.purpose,
+                "stdout": "",
+                "stderr": "",
+                "executionMs": 0,
+                "generatedDocumentIds": Vec::<i64>::new(),
+                "generatedDocumentNames": Vec::<String>::new(),
+                "error": null,
+                "artifactId": null,
+                "note": "Warmup-pattern code detected and skipped. The Pyodide interpreter is pre-warmed at app launch and ready when this tool is called. Proceed directly to your actual work code; do not retry warmup."
+            });
+            return Ok(serde_json::to_string(&payload)?);
+        }
 
         // v0.15.3: use the conversation id from ToolContext (set by
         // the agent loop) so generated outputs and the artifact row
@@ -166,6 +202,74 @@ pub(crate) struct ArtifactRow<'a> {
     pub execution_ms: Option<u64>,
     pub error: Option<&'a str>,
     pub superseded_by: Option<i64>,
+}
+
+/// Heuristic: is this `run_python` call a no-op warmup that we
+/// should short-circuit? Sonnet's training surfaces a pattern of
+/// `print('hello')` / `1+1` / `pass` / version checks before real
+/// work. Each one was burning an agent-loop iteration. We catch
+/// the obvious patterns; anything substantive falls through.
+///
+/// Heuristic is intentionally conservative — we'd rather run a
+/// legitimately-tiny call than skip something real. Patterns:
+/// - purpose mentions "warmup" / "warm-up" / "interpreter check"
+///   / "test"
+/// - code body, ignoring whitespace and comments, is < 80 chars
+///   AND matches one of: literal `pass`, single `print(...)` of
+///   a short string, single arithmetic / version-check expression
+fn is_warmup_pattern(code: &str, purpose: &str) -> bool {
+    let purpose_lower = purpose.to_lowercase();
+    let purpose_smells = purpose_lower.contains("warmup")
+        || purpose_lower.contains("warm-up")
+        || purpose_lower.contains("warm up")
+        || purpose_lower.contains("interpreter check")
+        || purpose_lower.contains("interpreter test")
+        || purpose_lower.contains("sanity check");
+
+    let stripped: String = code
+        .lines()
+        .map(|l| l.split('#').next().unwrap_or("")) // drop comments
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
+
+    // Substantive code? Bail.
+    if stripped.len() > 80 {
+        return false;
+    }
+
+    let body = stripped.trim();
+    let body_lower = body.to_lowercase();
+
+    // Empty / pass
+    if body.is_empty() || body == "pass" {
+        return true;
+    }
+    // print of a short string (hello, hi, ok, ping, world, etc.)
+    if body.starts_with("print(") && body.ends_with(')') {
+        let inner = &body[6..body.len() - 1];
+        let inner_trim = inner.trim().trim_matches(|c| c == '"' || c == '\'');
+        if inner_trim.len() <= 30 {
+            return true;
+        }
+    }
+    // version check
+    if body_lower.contains("__version__") || body_lower.contains("sys.version") {
+        return true;
+    }
+    // single arithmetic expression like 1+1, 2*3
+    if body.chars().all(|c| c.is_ascii_digit() || "+-*/() ".contains(c)) && body.len() <= 20 {
+        return true;
+    }
+
+    // Purpose smells warmup AND code is short — catch the cases the
+    // body-pattern misses.
+    if purpose_smells && stripped.len() <= 40 {
+        return true;
+    }
+
+    false
 }
 
 pub(crate) async fn persist_artifact(
