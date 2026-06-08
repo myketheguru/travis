@@ -80,10 +80,20 @@ impl Tool for RunPythonTool {
         let p: Input = serde_json::from_value(input)?;
         let state = ctx.app.state::<AppState>();
 
-        // Get the active conversation if any — for attributing outputs
-        // back to the right thread. Workflow tools without a clear
-        // conversation just pass None.
-        let conversation_id: Option<i64> = None;
+        // v0.15.3: use the conversation id from ToolContext (set by
+        // the agent loop) so generated outputs and the artifact row
+        // attribute to the right thread.
+        let conversation_id = ctx.conversation_id;
+
+        // Clone the persistence handles BEFORE consuming `state` into
+        // run_python_cmd — tauri::State can't be reborrowed after
+        // being passed by value.
+        let pool_for_artifact = state.db.pool.clone();
+        let workspace_id = state.workspace.read().await.active_id;
+
+        let input_doc_ids_snapshot = p.document_ids.clone();
+        let purpose_for_artifact = p.purpose.clone();
+        let script_for_artifact = p.code.clone();
 
         let outcome = run_python_cmd(
             ctx.app.clone(),
@@ -101,6 +111,28 @@ impl Tool for RunPythonTool {
         .await
         .map_err(|e| anyhow::anyhow!("run_python failed: {e}"))?;
 
+        // v0.15.3 — persist the artifact (script + inputs + outputs)
+        // so a follow-up edit_python_artifact call can retrieve and
+        // edit. Best-effort; failure to persist is logged but does
+        // NOT fail the tool — the user still gets the generated file.
+        let artifact_id = persist_artifact(
+            &pool_for_artifact,
+            workspace_id,
+            ArtifactRow {
+                conversation_id,
+                purpose: &purpose_for_artifact,
+                script: &script_for_artifact,
+                input_doc_ids: &input_doc_ids_snapshot,
+                output_document_ids: &outcome.generated_document_ids,
+                stdout: Some(outcome.stdout.as_str()),
+                stderr: Some(outcome.stderr.as_str()),
+                execution_ms: Some(outcome.execution_ms),
+                error: outcome.error.as_deref(),
+                superseded_by: None,
+            },
+        )
+        .await;
+
         // Return a structured JSON summary to the LLM
         let payload = json!({
             "ok": outcome.error.is_none(),
@@ -111,7 +143,65 @@ impl Tool for RunPythonTool {
             "generatedDocumentIds": outcome.generated_document_ids,
             "generatedDocumentNames": outcome.generated_document_names,
             "error": outcome.error,
+            // v0.15.3 — exposed so the LLM can reference it on a
+            // follow-up edit_python_artifact call.
+            "artifactId": artifact_id,
         });
         Ok(serde_json::to_string(&payload)?)
+    }
+}
+
+/// Shared persistence helper — used by both `run_python` (first-of-lineage)
+/// and `edit_python_artifact` (links a `superseded_by` to the prior row).
+/// Returns the new artifact id on success; logs and returns None on
+/// persistence failure (the generated file still lands with the user).
+pub(crate) struct ArtifactRow<'a> {
+    pub conversation_id: Option<i64>,
+    pub purpose: &'a str,
+    pub script: &'a str,
+    pub input_doc_ids: &'a [i64],
+    pub output_document_ids: &'a [i64],
+    pub stdout: Option<&'a str>,
+    pub stderr: Option<&'a str>,
+    pub execution_ms: Option<u64>,
+    pub error: Option<&'a str>,
+    pub superseded_by: Option<i64>,
+}
+
+pub(crate) async fn persist_artifact(
+    pool: &sqlx::SqlitePool,
+    workspace_id: i64,
+    row: ArtifactRow<'_>,
+) -> Option<i64> {
+    let input_doc_ids_json = serde_json::to_string(row.input_doc_ids)
+        .unwrap_or_else(|_| "[]".to_string());
+    let output_doc_ids_json = serde_json::to_string(row.output_document_ids)
+        .unwrap_or_else(|_| "[]".to_string());
+    let result = sqlx::query(
+        "INSERT INTO python_artifact
+            (conversation_id, workspace_id, purpose, script,
+             input_doc_ids, output_document_ids,
+             stdout, stderr, execution_ms, error, superseded_by)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+    )
+    .bind(row.conversation_id)
+    .bind(workspace_id)
+    .bind(row.purpose)
+    .bind(row.script)
+    .bind(&input_doc_ids_json)
+    .bind(&output_doc_ids_json)
+    .bind(row.stdout)
+    .bind(row.stderr)
+    .bind(row.execution_ms.map(|n| n as i64))
+    .bind(row.error)
+    .bind(row.superseded_by)
+    .execute(pool)
+    .await;
+    match result {
+        Ok(r) => Some(r.last_insert_rowid()),
+        Err(e) => {
+            tracing::warn!("python_artifact persist failed: {e}");
+            None
+        }
     }
 }

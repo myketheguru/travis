@@ -1,5 +1,60 @@
 # Travis Changelog
 
+## v0.15.3 — Artifact retention + iterative refinement (2026-06-08)
+
+The Claude.ai iterative-refinement loop now works in Travis. After
+`run_python` generates a file, the script + inputs + outputs are
+persisted as a `python_artifact` row with an id the LLM sees in the
+tool response. When the user asks for a tweak ("remove the note",
+"add 7 hours to row 1", "signature line a tiny bit down"), Travis
+calls a new `edit_python_artifact` tool with the prior artifact id +
+the edited script, re-runs it, and links the lineage via
+`superseded_by`. No more from-scratch regeneration.
+
+### New table: `python_artifact` (migration 0034)
+
+- Stores the Python source, input doc IDs, output document IDs,
+  stdout / stderr / execution time / error.
+- `superseded_by` self-FK so the lineage is diff-able.
+- Indexed by conversation, workspace, and supersedes pointer.
+- v0.16's typed-edge memory graph will wire `EVOLVED_INTO` edges
+  onto these rows once it lands (per the Open WebUI / LangGraph /
+  OpenHands / AutoMem research synthesis).
+
+### `run_python` changes
+
+- After a successful run, persists a fresh `python_artifact` row
+  with `superseded_by = NULL` (first-of-lineage).
+- Tool response now includes `artifactId` so the LLM can reference
+  it on a subsequent edit.
+- Also: now uses `ctx.conversation_id` instead of hardcoded `None`,
+  so artifacts attribute to the right thread.
+
+### New tool: `edit_python_artifact`
+
+- Inputs: `supersedesArtifactId`, `purpose`, `code` (the new full
+  script with the edit applied), plus the usual `documentIds` +
+  `libraries`.
+- The LLM produces the edited script itself from its in-context view
+  of the prior one — no internal LLM call inside the tool. Faster,
+  cheaper, makes the diff visible to the user.
+- Verifies the supersedes-link points at a real artifact before
+  running; surfaces a clear error otherwise.
+- Tool description signals: "use this for SMALL edits to a script
+  you produced earlier — change a field, drop a row, adjust
+  styling. For anything substantial, call `run_python` from
+  scratch."
+
+### Why this matters
+
+The Claude.ai chat transcript that drove this whole arc shows
+repeated patterns of: generate → user nudges → small edit. Each
+edit was Claude rewriting the prior reportlab script with one
+field changed, then re-executing. Travis can now mirror that exactly
+— without paying for a regenerate, without losing the prior
+artifact, with diff-able lineage for the eventual v0.16 case
+substrate work.
+
 ## v0.15.2 — Extended thinking, capture goes background, cross-doc reconciliation, drive-the-process prompts (2026-06-08)
 
 Five bundled architectural + behavioural improvements pulling Travis
