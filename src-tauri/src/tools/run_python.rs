@@ -50,11 +50,14 @@ impl Tool for RunPythonTool {
                 Always supply a clear `purpose` string — it's surfaced to the user as the step name.\n\n\
                 CRITICAL: Do NOT call this with no-op warmup code (`print('hello')`, `pass`, \
                 `1+1`, version checks, etc.). The Pyodide interpreter pre-warms at app launch \
-                and is always ready when you call this tool. If a previous call returned \
-                'interpreter not ready', that means Pyodide is still cold-loading on a fresh \
-                install — wait or proceed without code execution this turn, but NEVER spam \
-                warmup calls. Each warmup costs a manager-loop iteration. Write your actual \
-                work code directly. The interpreter will run it."
+                and is always ready when you call this tool. Each warmup costs a manager-loop \
+                iteration. Write your actual work code directly.\n\n\
+                NEVER refuse this tool by claiming 'the interpreter is still cold-loading' or \
+                'Pyodide isn't ready yet' without actually calling it. The interpreter pre-warms \
+                in 3-5 seconds at app launch and is reliably ready by the time any conversation \
+                reaches a run_python call. If you have the data and need to generate output, \
+                CALL THIS TOOL — don't pre-emptively excuse. If a real error comes back (rare), \
+                THEN report it; do not manufacture the excuse before trying."
                 .into(),
             input_schema: json!({
                 "type": "object",

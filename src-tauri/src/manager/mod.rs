@@ -63,6 +63,39 @@ const HANDOFF_PHRASES: &[&str] = &[
     "send the sign-in", "send me the",
 ];
 
+/// v0.16.4 — phrases where the LLM is hallucinating a tool-not-ready
+/// state to avoid calling it. Distinct from generic handoff phrases
+/// because the fix is different: we don't want to just retry, we want
+/// to tell the LLM "the tool IS ready, call it now."
+const PYODIDE_EXCUSE_PHRASES: &[&str] = &[
+    "pyodide is still cold",
+    "pyodide isn't ready",
+    "pyodide is not ready",
+    "interpreter is still cold",
+    "interpreter is still loading",
+    "interpreter isn't ready",
+    "interpreter is not ready",
+    "wasm environment",
+    "cold-loading",
+    "cold loading",
+    "still cold-loading",
+    "python interpreter is still",
+    "the moment it's ready",
+    "the moment it's available",
+    "as soon as interpreter loads",
+    "as soon as the interpreter",
+    "i can't emit the pdf this turn",
+    "can't generate the pdf this turn",
+];
+
+/// Whether the worker is making a Pyodide-cold excuse. Used by
+/// the manager to force a Handoff + a more targeted continuation
+/// directive ("the tool IS ready, call it").
+pub fn is_pyodide_excuse(response: &str) -> bool {
+    let lower = response.to_lowercase();
+    PYODIDE_EXCUSE_PHRASES.iter().any(|p| lower.contains(p))
+}
+
 /// Decide whether the worker made progress this turn.
 ///
 /// `generated_doc_ids` is the list of doc ids run_python produced
@@ -88,6 +121,15 @@ pub fn evaluate_progress(
         .as_deref()
         .unwrap_or("")
         .trim();
+
+    // v0.16.4 — Pyodide-excuse detection. If the worker manufactured
+    // "interpreter is cold-loading" without actually generating
+    // output, treat as a Handoff so the manager forces a retry
+    // with a targeted directive. Strong signal: the LLM is
+    // hallucinating tool unavailability.
+    if !response.is_empty() && is_pyodide_excuse(response) {
+        return ProgressKind::Handoff;
+    }
 
     if response.is_empty() {
         return ProgressKind::Handoff;

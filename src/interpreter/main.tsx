@@ -24,29 +24,62 @@ import type { PyodideInterface } from "pyodide";
 // `loadPackagesFromImports(code)` per run_python call, then stay
 // cached in the Pyodide instance for the rest of the session.
 //
-// Trade-off: the first `import pandas` adds ~8s once per session;
-// every subsequent use is free. Net win because the app is usable
-// in 3-5s instead of frozen for 30-60s while bootstrapping packages
-// the user may never touch (most chat turns never call run_python).
+// v0.16.5 — all wheels we use today plus likely-need extras for a
+// versatile assistant are pre-bundled by scripts/fetch-pyodide-
+// wheels.mjs into the local Pyodide indexURL. That means:
+//   - In-lock packages (pandas, numpy, openpyxl, pillow, lxml, …)
+//     load from disk, not from jsdelivr.
+//   - Pure-Python extras NOT in Pyodide's lock (reportlab, pypdf,
+//     python-docx, num2words, fpdf2, xlsxwriter, qrcode, markdown)
+//     are resolved via /pyodide-bundle/.../pyodide-extras.json and
+//     installed with micropip using a local URL.
 //
-// Micropip packages — these come from PyPI (pure Python), not the
-// built-in Pyodide package set. When user code imports them,
-// loadPackagesFromImports CAN'T fetch them (it only knows
-// Pyodide-bundled packages). We watch for them in the user's code
-// and call `micropip.install` ourselves. List intentionally small;
-// extend only when needed.
-const MICROPIP_KNOWN_PACKAGES = new Set([
+// Net effect: first `import pandas` drops from 8-12s (CDN) to ~1-2s
+// (disk + decompress). Offline-by-default for everything we ship.
+//
+// Pure-Python wheels NOT in Pyodide's lock — we lazily call
+// `micropip.install(localUrl)` when user code imports them. The
+// EXTRAS_MANIFEST is fetched at startup from the bundled JSON file;
+// the in-code fallback list below mirrors what fetch-pyodide-
+// wheels.mjs vendors so the heuristic still works if the manifest
+// somehow fails to load.
+const EXTRAS_FALLBACK_NAMES = [
   "reportlab",
   "pypdf",
   "python-docx",
-  "docx", // python-docx's import name
-]);
+  "docx",        // python-docx's import name
+  "num2words",
+  "fpdf2",
+  "fpdf",        // fpdf2's import name
+  "xlsxwriter",
+  "qrcode",
+  "markdown",
+];
 
-// Packages we proactively warm in the background after ready. These
-// are common heavy ones the user is likely to need — kicking off
-// load during idle time means they're cached when the agent loop
-// actually runs `import pandas`.
-const BACKGROUND_PRELOAD = ["pandas", "openpyxl", "Pillow"];
+// Packages we proactively warm in the background after ready. Two
+// pools — in-lock ones go through loadPackage, extras go through
+// micropip from the local URL in the manifest. By the time the first
+// run_python call lands these are all cached, so a typical invoice
+// flow (pandas → openpyxl → reportlab → num2words) pays zero cold
+// cost.
+const BACKGROUND_PRELOAD_LOCK = ["pandas", "Pillow", "jinja2"];
+const BACKGROUND_PRELOAD_EXTRAS = [
+  "openpyxl",
+  "reportlab",
+  "pypdf",
+  "num2words",
+];
+
+interface ExtraManifestEntry {
+  version: string;
+  file: string;
+  url: string;
+}
+
+// Loaded from /pyodide-bundle/node_modules/pyodide/pyodide-extras.json
+// at bootstrap. Keys are micropip / import names; values point at a
+// local wheel URL.
+let EXTRAS_MANIFEST: Record<string, ExtraManifestEntry> = {};
 
 interface RunPythonRequest {
   requestId: string;
@@ -113,6 +146,25 @@ function InterpreterRoot() {
         await pyodide.loadPackage(["micropip"]);
         if (cancelled) return;
 
+        // v0.16.5 — load the extras manifest produced by
+        // scripts/fetch-pyodide-wheels.mjs. Tells us where the
+        // bundled PyPI wheels live so we can micropip.install them
+        // by local URL instead of round-tripping to pypi.org.
+        try {
+          const r = await fetch("/pyodide-bundle/node_modules/pyodide/pyodide-extras.json");
+          if (r.ok) {
+            EXTRAS_MANIFEST = await r.json();
+            console.info(
+              "loaded extras manifest:",
+              Object.keys(EXTRAS_MANIFEST).join(", "),
+            );
+          } else {
+            console.warn("extras manifest not found; PyPI fallback active");
+          }
+        } catch (e) {
+          console.warn("extras manifest fetch failed; PyPI fallback active:", e);
+        }
+
         // Set up shared helpers in Python globals
         await pyodide.runPythonAsync(`
 import sys
@@ -174,10 +226,23 @@ def _travis_clear_outputs():
         idleKick(() => {
           (async () => {
             try {
-              await pyodide.loadPackage(BACKGROUND_PRELOAD);
-              console.info("background-preloaded", BACKGROUND_PRELOAD.join(", "));
+              await pyodide.loadPackage(BACKGROUND_PRELOAD_LOCK);
+              console.info("background-preloaded lock:", BACKGROUND_PRELOAD_LOCK.join(", "));
             } catch (e) {
-              console.warn("background preload failed:", e);
+              console.warn("background preload (lock) failed:", e);
+            }
+            try {
+              const micropip = pyodide.pyimport("micropip");
+              for (const name of BACKGROUND_PRELOAD_EXTRAS) {
+                const entry = EXTRAS_MANIFEST[name];
+                if (!entry) continue;
+                if (installedExtras.current.has(name)) continue;
+                await micropip.install(entry.url);
+                installedExtras.current.add(name);
+              }
+              console.info("background-preloaded extras:", BACKGROUND_PRELOAD_EXTRAS.join(", "));
+            } catch (e) {
+              console.warn("background preload (extras) failed:", e);
             }
           })();
         });
@@ -270,18 +335,35 @@ def _travis_clear_outputs():
     while ((m = importPattern.exec(codeLower)) !== null) {
       seenImports.add(m[1]);
     }
+    // v0.16.5 — prefer the bundled extras manifest. If the import name
+    // (or its dist-name alias like python-docx for docx) is known, install
+    // from the local wheel URL — no PyPI round trip. Falls back to PyPI by
+    // bare name if the manifest is missing AND the import is in our
+    // legacy known-extras list.
+    const aliasToDist: Record<string, string> = {
+      docx: "python-docx",
+      fpdf: "fpdf2",
+    };
     for (const imp of seenImports) {
-      if (!MICROPIP_KNOWN_PACKAGES.has(imp)) continue;
-      // python-docx is installed as `python-docx` but imported as `docx`
-      const pkgName = imp === "docx" ? "python-docx" : imp;
-      if (installedExtras.current.has(pkgName)) continue;
+      const distName = aliasToDist[imp] ?? imp;
+      const entry = EXTRAS_MANIFEST[imp] ?? EXTRAS_MANIFEST[distName];
+      const isKnownFallback = EXTRAS_FALLBACK_NAMES.includes(imp);
+      if (!entry && !isKnownFallback) continue;
+      if (installedExtras.current.has(distName)) continue;
       try {
         const micropip = pyodide.pyimport("micropip");
-        await micropip.install(pkgName);
-        installedExtras.current.add(pkgName);
-        console.info(`lazy-installed ${pkgName} from PyPI for this run`);
+        if (entry) {
+          await micropip.install(entry.url);
+          console.info(
+            `lazy-installed ${distName} from bundled wheel (${entry.file})`,
+          );
+        } else {
+          await micropip.install(distName);
+          console.info(`lazy-installed ${distName} from PyPI (manifest miss)`);
+        }
+        installedExtras.current.add(distName);
       } catch (e) {
-        console.warn(`lazy micropip install ${pkgName} failed:`, e);
+        console.warn(`lazy install ${distName} failed:`, e);
         // Don't abort the run — let Python's import raise the real
         // ImportError so the LLM can see it.
       }

@@ -1,13 +1,16 @@
 {
   "name": "travis",
   "private": true,
-  "version": "0.16.3",
+  "version": "0.16.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "predev": "node scripts/fetch-pyodide-wheels.mjs",
+    "prebuild": "node scripts/fetch-pyodide-wheels.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "fetch:wheels": "node scripts/fetch-pyodide-wheels.mjs",
     "release:manifest": "node scripts/build-update-manifest.mjs"
   },
   "dependencies": {

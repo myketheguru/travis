@@ -17,8 +17,16 @@ export default defineConfig(async () => ({
     // dist/pyodide-bundle/node_modules/pyodide/ — indexURL matches that.
     viteStaticCopy({
       targets: [
+        // Core Pyodide runtime + lock manifest + every wheel we
+        // pre-fetched via scripts/fetch-pyodide-wheels.mjs (both the
+        // in-lock packages and the pure-Python PyPI extras like
+        // reportlab/pypdf/python-docx). All wheels land in one dir
+        // so `loadPackagesFromImports` and `micropip.install` both
+        // resolve to local URLs — no jsdelivr CDN round trip.
+        // pyodide-extras.json is the manifest the interpreter reads
+        // at runtime to map extra-package names → wheel filenames.
         {
-          src: "node_modules/pyodide/*.{wasm,asm.js,zip,json,mjs}",
+          src: "node_modules/pyodide/*.{wasm,asm.js,zip,json,mjs,whl}",
           dest: "pyodide-bundle",
         },
       ],

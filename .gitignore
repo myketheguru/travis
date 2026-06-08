@@ -42,3 +42,6 @@ src-tauri/.env
 *.njsproj
 *.sln
 *.sw?
+
+# Claude Code session state
+.claude/

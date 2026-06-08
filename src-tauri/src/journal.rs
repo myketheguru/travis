@@ -2129,19 +2129,27 @@ pub async fn journal_ingest(
                     );
                     break 'manager;
                 }
+                // v0.16.4: pick a more targeted directive when the
+                // worker manufactured a Pyodide-cold excuse — the
+                // generic "do the work" directive doesn't address
+                // the specific hallucination.
+                let prior_response = extraction.response.clone().unwrap_or_default();
+                let directive = if crate::manager::is_pyodide_excuse(&prior_response) {
+                    "Your previous reply claimed the Pyodide interpreter is 'still cold-loading' or 'not ready' — but you NEVER actually called run_python. That excuse is hallucinated. The interpreter pre-warms at app launch and is reliably ready in 3-5 seconds; by the time any conversation reaches your turn it is fully ready.\n\n\
+                     CALL run_python NOW with your actual work code. Generate the artifact. If a real error comes back (extremely rare), THEN you may report it — but never refuse to call the tool with a manufactured 'not ready' excuse before trying.".to_string()
+                } else {
+                    crate::manager::continuation_directive().to_string()
+                };
                 // Inject the worker's prior reply + continuation
                 // directive so the next agent-loop pass sees what it
                 // said before and is told to actually progress.
-                let prior_response = extraction.response.clone().unwrap_or_default();
                 working_messages.push(Message {
                     role: Role::Assistant,
                     content: prior_response,
                     tool_calls: vec![],
                     tool_call_id: None,
                 });
-                working_messages.push(Message::user(
-                    crate::manager::continuation_directive().to_string(),
-                ));
+                working_messages.push(Message::user(directive));
                 manager_iter += 1;
             }
         }

@@ -1,5 +1,113 @@
 # Travis Changelog
 
+## v0.16.5 — Bundled Pyodide wheels (offline + warm-by-default) (2026-06-08)
+
+The dominant cold-start tax in v0.16.2-v0.16.4 was the first
+`import pandas` (or openpyxl, reportlab, …) round-tripping to
+jsdelivr.net — 8-12 seconds even on a good connection, longer on a
+flaky one, and a hard fail offline.
+
+### What changed
+
+- New build-time script `scripts/fetch-pyodide-wheels.mjs` pulls
+  every wheel we ship at build time:
+  - **In-lock packages** (resolved transitively from Pyodide's
+    `pyodide-lock.json`): pandas, numpy, pillow, lxml, beautifulsoup4
+    (+ soupsieve, typing-extensions), pyyaml, jinja2 (+ markupsafe),
+    python-dateutil, pytz, six, pyodide-http, micropip. Downloaded
+    from `cdn.jsdelivr.net/pyodide/v0.29.4/full/` once at build time.
+  - **Pure-Python extras NOT in Pyodide's lock**: openpyxl (+
+    et_xmlfile), reportlab, pypdf, python-docx, num2words, fpdf2,
+    xlsxwriter, qrcode, markdown. Resolved via PyPI's JSON API,
+    newest `py3-none-any.whl` per package.
+  - All wheels land in `node_modules/pyodide/` so `vite-plugin-
+    static-copy`'s existing glob picks them up via one `*.whl`
+    addition. A manifest (`pyodide-extras.json`) lists the extras so
+    the interpreter knows which local URL to hand micropip.
+- `prebuild` + `predev` scripts in package.json hook the fetch
+  automatically — `npm run build` and `npm run dev` always have
+  wheels ready. Idempotent: re-runs skip wheels already on disk with
+  matching size.
+- Interpreter (`src/interpreter/main.tsx`):
+  - Bootstrap loads the extras manifest after micropip is up.
+  - Lazy-import scan inside `runOne` now consults the manifest
+    first — `micropip.install("/pyodide-bundle/.../reportlab-X.Y.Z-
+    py3-none-any.whl")` instead of `micropip.install("reportlab")`.
+    Falls back to PyPI bare-name install if the manifest is missing
+    (defence in depth).
+  - Background warmup pool expanded: in-lock (pandas, Pillow,
+    jinja2) AND extras (openpyxl, reportlab, pypdf, num2words) all
+    pre-install while the user is reading. First invoice flow pays
+    zero cold-start cost.
+- Installer growth: **+14.3 MB** (10.8 MB in-lock + 3.5 MB extras).
+  Trade we'd take ten times out of ten — eliminates the dominant
+  Pyodide friction point and makes Python work fully offline.
+
+### Why this matters
+
+Even with v0.16.2's lazy-load fix, the *first* `import pandas` in
+any session was still an 8-12 second jsdelivr fetch. For users on
+spotty wifi or offline (planes, coffee shops, secure sites), that's
+the difference between "works" and "hangs". Now: 1-2 seconds disk +
+decompress, every time.
+
+### Deferred to v0.16.6
+
+- Workspace abstraction (BaseWorkspace trait + LocalWorkspace impl) —
+  shifted from v0.16.5 to make room for wheel bundling. Independent
+  track; will land alongside Valves (#175) which is also pack
+  ergonomics.
+
+## v0.16.4 — Pyodide-excuse hallucination fix + typed-edge memory graph (2026-06-08)
+
+### Pyodide-excuse fix
+
+Sonnet was hallucinating: claiming "the Pyodide interpreter is still
+cold-loading" without ever calling `run_python`. The step log
+confirmed the tool was never invoked — the LLM was pre-empting with
+a manufactured excuse.
+
+Two-layer fix:
+- **Prompt directive** in `run_python`'s tool description:
+  "NEVER refuse this tool by claiming 'the interpreter is still
+  cold-loading' without actually calling it. The interpreter pre-
+  warms in 3-5 seconds and is reliably ready by the time any
+  conversation reaches a run_python call. CALL THIS TOOL — don't
+  pre-emptively excuse."
+- **Manager-level detection** (`manager::is_pyodide_excuse`):
+  scans the worker's response for "Pyodide is still cold", "cold-
+  loading", "interpreter isn't ready", "as soon as interpreter
+  loads", etc. (full list in `PYODIDE_EXCUSE_PHRASES`). If detected,
+  forces a `Handoff` verdict so the manager loop re-runs with a
+  *targeted* continuation directive: "Your previous reply claimed
+  the interpreter isn't ready — you never called the tool. CALL
+  run_python NOW with your actual work code."
+
+### Typed-edge memory graph (#174)
+
+Migration 0037 + new `src-tauri/src/memory/edges.rs`:
+- `memory_edge` table with `(workspace, from_kind, from_id, to_kind,
+  to_id, relation, attributes_json)`.
+- 11 canonical AutoMem-style relation types as constants:
+  `RELATES_TO`, `LEADS_TO`, `OCCURRED_BEFORE`, `PREFERS_OVER`,
+  `EXEMPLIFIES`, `CONTRADICTS`, `REINFORCES`, `INVALIDATED_BY`,
+  `EVOLVED_INTO`, `DERIVED_FROM`, `PART_OF`.
+- Helpers: `link()`, `edges_from()`, `edges_to()`, `edges_by_relation()`.
+- Distinct from the existing `relation` table (entity-graph topology
+  in the pack spine). `memory_edge` is for artifact/claim/document
+  lineage and temporal reasoning.
+
+Wiring the capture pipeline + the `python_artifact` lineage to
+write edges automatically is queued for follow-up. The substrate
+exists; the integration is a small follow-up that doesn't block
+shipping.
+
+### Deferred to v0.16.6
+
+- #175 Valves typed plugin config — will land alongside the
+  workspace abstraction (also deferred). Both are pack-ergonomics
+  work and pair naturally.
+
 ## v0.16.3 — Sub-agent tool + memory decay + store discipline (2026-06-08)
 
 Low-risk backlog batch. Three of the queued items land together:

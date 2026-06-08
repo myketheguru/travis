@@ -1,5 +1,6 @@
 pub mod claims;
 pub mod consolidate;
+pub mod edges;
 pub mod embedder;
 pub mod graph;
 pub mod working;
