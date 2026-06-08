@@ -1,5 +1,16 @@
 # Travis Changelog
 
+## v0.16.1 — v0.16.0 CI fix (2026-06-08)
+
+The v0.16.0 commit had a TypeScript discriminated-union access bug
+in `AskTab.tsx`'s step subscription handler (`event.conversationId`
+is only present on the `started` variant of `StepEvent`). CI caught
+it; this patch fixes it and re-ships the full v0.16.0 content
+under v0.16.1.
+
+All v0.16.0 content (case substrate going live, live step events
+fix, Pyodide warmup bump) ships here.
+
 ## v0.16.0 — Case substrate goes live (2026-06-08)
 
 v0.14 added the `travis_case` and `case_artifact` tables but they
