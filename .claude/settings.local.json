@@ -16,7 +16,10 @@
       "Bash(tail -80 \"C:\\\\\\\\Users\\\\\\\\bethel-babashola\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\C--Users-bethel-babashola-documents-darkmyke-travis\\\\\\\\8ea786ac-c152-440f-bb56-e826effb81d6\\\\\\\\tasks\\\\\\\\bwypr6u3p.output\")",
       "Bash(git add *)",
       "Bash(git commit -m 'v0.14.0 Slice 2: Step-streaming backend *)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git tag *)",
+      "Bash(git push *)"
     ]
   }
 }

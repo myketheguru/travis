@@ -1,5 +1,42 @@
 # Travis Changelog
 
+## v0.16.7 — Agent-loop iteration cap + tiered thinking budget (2026-06-08)
+
+Two paired fixes for the PS556→IS217 invoice-derivation flow which
+hit two walls at once: ran out of iterations AND took too long
+before it did.
+
+### Cap raised 8 → 16
+
+The flow burned through all 8 agent-loop iterations on a 5-document
+turn (existing invoice for styling + PO + WO + master sign-in xlsx +
+service catalog xlsx) and bailed with "Travis ran out of tool-call
+iterations on this turn." Worker was doing the right work — read
+each new doc, analyze styling, then run_python passes to parse
+Excel → find rows → derive line items. 8 covered the 1-2 doc case
+(v0.14.3 sizing); not the realistic 5-doc invoice flow.
+
+- `MAX_ITER` in journal.rs raised 8 → 16
+- Manager loop unchanged (3 × 16 = 48 max, same backstop)
+- Forced-extraction on the last iter still ensures finalisation
+
+### Tiered thinking budget
+
+Extended thinking was burning 4000 tokens of cognition on every
+iteration — including the mid-loop "which tool next?" turns that
+don't need full re-derivation. Latency scales roughly linearly with
+budget, so a 10-iter turn was paying ~40k thinking tokens of wall
+clock.
+
+New tiering:
+- Iter 0 → 4000 (initial plan + first tool selection)
+- Iters 1..N-2 → 1500 (decide next tool given new tool results)
+- Iter N-1 → 4000 (forced extraction, real synthesis)
+
+Net: ~50% latency reduction on long turns with no loss of depth
+where it matters (start and end). The mid-loop turns are
+mechanical dispatching, not novel reasoning.
+
 ## v0.16.6 — Valves (typed pack config) + Workspace runtime substrate (2026-06-08)
 
 ### Valves — typed plugin config (#175)

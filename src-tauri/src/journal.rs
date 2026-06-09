@@ -1898,13 +1898,20 @@ pub async fn journal_ingest(
         conversation_id: Some(conv_id),
         parent_step_id: None,
     };
-    // v0.14.3: bumped 4 → 8. With capture extraction off the primary
-    // pass the model has way more room to call tools — read_document,
-    // analyze_document_styling, then one or two run_python passes —
-    // before finalizing. Real loops won't burn the budget; this is
-    // headroom so Travis doesn't run out of turns and dump a
-    // placeholder reply instead of finishing the work.
-    const MAX_ITER: usize = 8;
+    // v0.16.7: bumped 8 → 16. The PS556→IS217 invoice-derivation flow
+    // hit the cap on a 5-doc turn (PO + WO + master sign-in xlsx +
+    // service catalog xlsx + an existing invoice for styling). The
+    // worker reasonably calls read_document on each new file, then
+    // analyze_document_styling for layout match, then 2-3 run_python
+    // passes to parse Excel structure → find rows → derive line items
+    // — easily 10+ iterations before extraction is callable. 16 leaves
+    // room for that AND the forced-extraction last iter without
+    // shipping a "ran out of tool-call iterations" error.
+    //
+    // Earlier note (v0.14.3): bumped 4 → 8 once we moved capture
+    // extraction off the primary pass. 8 was right for 1-2 doc turns;
+    // not for 5.
+    const MAX_ITER: usize = 16;
 
     // Clone the message stack before the agent loop takes ownership,
     // so the empty-response retry path below can re-run the LLM with
@@ -1964,6 +1971,27 @@ pub async fn journal_ingest(
             } else {
                 ToolChoice::Auto
             };
+            // v0.16.7: tiered thinking budget. The 4000-token blanket
+            // from v0.15.2 was great for one-shot synthesis but slow
+            // when applied to every mid-loop "which tool next?"
+            // decision — extended thinking is roughly proportional to
+            // budget in latency. Tier it:
+            //
+            //   iter 0          → 4000  (initial plan + first tool)
+            //   iters 1..N-2    → 1500  (decide next tool given new
+            //                            tool results; doesn't need
+            //                            full re-derivation)
+            //   iter N-1        → 4000  (forced extraction, real
+            //                            synthesis happens here)
+            //
+            // Net: a 10-iteration turn drops from 10×4000=40,000 thinking
+            // tokens to 4000 + 8×1500 + 4000 = 20,000 — roughly half
+            // the latency without losing depth where it matters.
+            let thinking = if iter == 0 || iter == MAX_ITER - 1 {
+                4000
+            } else {
+                1500
+            };
             let opts = ChatWithToolsOptions {
                 system: Some(build_system_prompt(
                     &profile,
@@ -1979,12 +2007,7 @@ pub async fn journal_ingest(
                 max_tokens: Some(8000),
                 tools: tool_defs.clone(),
                 tool_choice: Some(choice),
-                // v0.15.2: extended thinking. 4000-token budget gives
-                // the model real cognitive headroom for multi-doc
-                // reconciliation, constraint solving, forensic work
-                // — anything the Claude.ai "Thinking" boxes show.
-                // Per-iteration cost ~$0.06; worth the depth.
-                thinking_budget: Some(4000),
+                thinking_budget: Some(thinking),
             };
             let turn_res = provider.chat_with_tools(current_messages.clone(), opts).await;
             match turn_res {
