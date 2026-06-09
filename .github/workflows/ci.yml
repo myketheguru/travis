@@ -46,6 +46,14 @@ jobs:
         with:
           workspaces: ./src-tauri -> target
 
+      # v0.18.0 — fetch bundled CPython before cargo check. Tauri's
+      # resources glob (resources/python/**/*) must resolve at build.rs
+      # time, otherwise tauri-build aborts with "path not found or didn't
+      # match any files." The fetch script is idempotent: cached runs
+      # skip the download + reinstall.
+      - name: Fetch bundled CPython
+        run: npm run fetch:python
+
       - name: cargo check
         working-directory: src-tauri
         run: cargo check
