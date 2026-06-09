@@ -133,6 +133,15 @@ pub trait PackHandle: Send + Sync {
     fn workflows(&self) -> &'static [crate::workflows::recipe::WorkflowDef] {
         &[]
     }
+
+    /// Typed plugin configuration (Open-WebUI-style "valves"). Pack
+    /// authors declare valves once; the frontend auto-renders a
+    /// settings form, the user's chosen value is persisted in
+    /// `meta.pack.<slug>.valve.<valve_slug>`, and pack code reads it
+    /// at runtime via [`get_valve`]. Default: no valves.
+    fn valves(&self) -> &'static [ValveDef] {
+        &[]
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -284,6 +293,141 @@ pub struct PackMigration {
     pub name: &'static str,
     /// Raw SQL. Will be executed verbatim against the core DB.
     pub sql: &'static str,
+}
+
+// ---------------------------------------------------------------------------
+// Valves — typed plugin config. Open-WebUI-inspired: pack authors declare
+// settings once with a type and default, and the frontend auto-renders a
+// form. Values land in `meta.pack.<slug>.valve.<valve_slug>` as TEXT (we
+// serialize bool/int/number as their `to_string()` form for simplicity).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValveDef {
+    /// Stable slug, e.g. "default_invoice_terms". Scoped to the pack.
+    pub slug: &'static str,
+    /// Form label shown in Settings → Packs.
+    pub label: &'static str,
+    pub valve_type: ValveType,
+    /// Default value if the user has never touched the valve.
+    pub default: ValveValue,
+    /// Help text rendered under the input.
+    pub help: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ValveType {
+    Text,
+    LongText,
+    Bool,
+    Integer,
+    Number,
+    Enum { options: &'static [&'static str] },
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(tag = "type", content = "value", rename_all = "camelCase")]
+pub enum ValveValue {
+    Text(&'static str),
+    Bool(bool),
+    Int(i64),
+    Number(f64),
+    None,
+}
+
+fn valve_meta_key(pack_slug: &str, valve_slug: &str) -> String {
+    format!("pack.{pack_slug}.valve.{valve_slug}")
+}
+
+/// Read a valve's user-set value as a raw string, falling back to its
+/// declared default. Returns the string form so callers parse to the
+/// expected type. For typed access, use the variant-specific helpers
+/// ([`get_valve_text`], [`get_valve_bool`], etc.).
+pub async fn get_valve_raw(
+    pool: &SqlitePool,
+    pack_slug: &str,
+    valve: &ValveDef,
+) -> anyhow::Result<String> {
+    let key = valve_meta_key(pack_slug, valve.slug);
+    let row: Option<(String,)> = sqlx::query_as("SELECT value FROM meta WHERE key = ?1")
+        .bind(&key)
+        .fetch_optional(pool)
+        .await?;
+    if let Some((v,)) = row {
+        return Ok(v);
+    }
+    Ok(match valve.default {
+        ValveValue::Text(s) => s.to_string(),
+        ValveValue::Bool(b) => b.to_string(),
+        ValveValue::Int(i) => i.to_string(),
+        ValveValue::Number(n) => n.to_string(),
+        ValveValue::None => String::new(),
+    })
+}
+
+pub async fn get_valve_text(
+    pool: &SqlitePool,
+    pack_slug: &str,
+    valve: &ValveDef,
+) -> anyhow::Result<String> {
+    get_valve_raw(pool, pack_slug, valve).await
+}
+
+pub async fn get_valve_bool(
+    pool: &SqlitePool,
+    pack_slug: &str,
+    valve: &ValveDef,
+) -> anyhow::Result<bool> {
+    let raw = get_valve_raw(pool, pack_slug, valve).await?;
+    Ok(matches!(raw.as_str(), "true" | "1" | "yes" | "on"))
+}
+
+pub async fn get_valve_int(
+    pool: &SqlitePool,
+    pack_slug: &str,
+    valve: &ValveDef,
+) -> anyhow::Result<i64> {
+    let raw = get_valve_raw(pool, pack_slug, valve).await?;
+    Ok(raw.parse().unwrap_or(0))
+}
+
+/// Write a valve. Stored as a raw string in `meta` keyed by
+/// `pack.<slug>.valve.<valve_slug>`. Typed parsing happens on read.
+pub async fn set_valve(
+    pool: &SqlitePool,
+    pack_slug: &str,
+    valve_slug: &str,
+    value: &str,
+) -> anyhow::Result<()> {
+    let key = valve_meta_key(pack_slug, valve_slug);
+    sqlx::query(
+        "INSERT INTO meta(key, value, updated_at)
+         VALUES (?1, ?2, CURRENT_TIMESTAMP)
+         ON CONFLICT(key) DO UPDATE SET
+            value = excluded.value,
+            updated_at = CURRENT_TIMESTAMP",
+    )
+    .bind(&key)
+    .bind(value)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Reset a valve to its declared default (removes the meta row).
+pub async fn reset_valve(
+    pool: &SqlitePool,
+    pack_slug: &str,
+    valve_slug: &str,
+) -> anyhow::Result<()> {
+    let key = valve_meta_key(pack_slug, valve_slug);
+    sqlx::query("DELETE FROM meta WHERE key = ?1")
+        .bind(&key)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 /// Every pack that's been compiled into this build. The Cargo features

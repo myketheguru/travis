@@ -51,6 +51,7 @@ mod telemetry;
 mod tools;
 mod updater_cmd;
 mod workflows;
+mod workspace_runtime;
 mod workspaces;
 mod workspaces_cmd;
 
@@ -684,6 +685,9 @@ pub fn run() {
             packs_cmd::pack_table_upsert,
             packs_cmd::pack_table_delete,
             packs_cmd::pack_alerts,
+            packs_cmd::pack_valves,
+            packs_cmd::set_pack_valve,
+            packs_cmd::reset_pack_valve,
             workspaces_cmd::list_workspaces,
             workspaces_cmd::get_active_workspace,
             workspaces_cmd::set_active_workspace,

@@ -1,5 +1,53 @@
 # Travis Changelog
 
+## v0.16.6 — Valves (typed pack config) + Workspace runtime substrate (2026-06-08)
+
+### Valves — typed plugin config (#175)
+
+Pack authors can now declare typed settings once, and Travis renders
+the form in Settings → Packs automatically. Open-WebUI-inspired.
+
+- New `ValveDef` / `ValveType` / `ValveValue` on `PackHandle`:
+  ```rust
+  fn valves(&self) -> &'static [ValveDef] { &[] }
+  ```
+- Types supported: Text, LongText, Bool, Integer, Number, Enum.
+- Values land in `meta.pack.<slug>.valve.<valve_slug>` as TEXT;
+  typed parsing happens on read. Helpers: `packs::get_valve_text`,
+  `get_valve_bool`, `get_valve_int`, `set_valve`, `reset_valve`.
+- New Tauri commands: `pack_valves`, `set_pack_valve`,
+  `reset_pack_valve`.
+- L2E pack ships three example valves to validate the surface:
+  default invoice terms (Enum), auto-lock signed sheets (Bool),
+  default program for DoF-route invoices (Text). The frontend
+  Settings → Packs panel can read these via `pack_valves()` and
+  render a form using the same `FieldType`-style dispatch the
+  auto-CRUD UI already does.
+
+### Workspace runtime substrate (#176)
+
+OpenHands-style execution-environment trait. Substrate only — no
+callers migrated. Future Docker/remote modes can drop in without
+rewriting every file-touching call site.
+
+- New module `src-tauri/src/workspace_runtime/` with:
+  - `Workspace` async trait: `read_file`, `write_file`,
+    `remove_file`, `list_dir`, `exists`, plus `kind() -> &'static str`.
+  - `LocalWorkspace` impl rooted at a host directory. Rejects
+    absolute paths and `..` traversal as a defence against
+    pack-supplied paths.
+- Three unit tests cover roundtrip, absolute-path rejection, and
+  parent-traversal rejection.
+- Naming-discipline note: distinct from `crate::workspaces` (DB row,
+  organisational scope). This abstraction is *where code runs and
+  files live*; the DB row is *what data the user sees*. Documented
+  in the module header.
+
+### Why two unrelated slices in one release
+
+Both are pack-ergonomics work, both small, neither blocks the other.
+Bundling avoids two near-empty release notes.
+
 ## v0.16.5 — Bundled Pyodide wheels (offline + warm-by-default) (2026-06-08)
 
 The dominant cold-start tax in v0.16.2-v0.16.4 was the first

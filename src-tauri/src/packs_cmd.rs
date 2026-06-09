@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use tauri::State;
 
-use crate::packs::{self, AlertSeverity, FieldType, TableDef};
+use crate::packs::{self, AlertSeverity, FieldType, TableDef, ValveDef};
 use crate::AppState;
 
 #[derive(Serialize)]
@@ -544,6 +544,115 @@ pub fn row_to_json(row: &sqlx::sqlite::SqliteRow, fields: &[packs::FieldDef]) ->
         obj.insert(f.slug.to_string(), value);
     }
     serde_json::Value::Object(obj)
+}
+
+// ---------------------------------------------------------------------------
+// Valves — typed pack configuration. The frontend renders Settings → Packs
+// from `pack_valves()` and writes user changes via `set_pack_valve()`.
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValveState {
+    /// Static schema for this valve (label, type, default, help).
+    #[serde(flatten)]
+    pub def: ValveDef,
+    /// User-set value as a raw string, falling back to the declared default.
+    pub value: String,
+    /// True iff the user has explicitly written a value (vs. holding the default).
+    pub overridden: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackValves {
+    pub pack_slug: String,
+    pub pack_name: String,
+    pub valves: Vec<ValveState>,
+}
+
+/// Enumerate every enabled pack's valves with their current effective
+/// value. Drives the Settings → Packs valve form.
+#[tauri::command]
+pub async fn pack_valves(state: State<'_, AppState>) -> Result<Vec<PackValves>, String> {
+    let mut out = Vec::new();
+    for pack in &state.enabled_packs {
+        let mut valves = Vec::new();
+        for v in pack.valves() {
+            let key = format!("pack.{}.valve.{}", pack.slug(), v.slug);
+            let row: Option<(String,)> = sqlx::query_as("SELECT value FROM meta WHERE key = ?1")
+                .bind(&key)
+                .fetch_optional(&state.db.pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            let (value, overridden) = match row {
+                Some((s,)) => (s, true),
+                None => (
+                    match v.default {
+                        packs::ValveValue::Text(s) => s.to_string(),
+                        packs::ValveValue::Bool(b) => b.to_string(),
+                        packs::ValveValue::Int(i) => i.to_string(),
+                        packs::ValveValue::Number(n) => n.to_string(),
+                        packs::ValveValue::None => String::new(),
+                    },
+                    false,
+                ),
+            };
+            valves.push(ValveState {
+                def: *v,
+                value,
+                overridden,
+            });
+        }
+        if !valves.is_empty() {
+            out.push(PackValves {
+                pack_slug: pack.slug().to_string(),
+                pack_name: pack.name().to_string(),
+                valves,
+            });
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetValveParams {
+    pub pack_slug: String,
+    pub valve_slug: String,
+    pub value: String,
+}
+
+#[tauri::command]
+pub async fn set_pack_valve(
+    state: State<'_, AppState>,
+    params: SetValveParams,
+) -> Result<(), String> {
+    packs::set_valve(
+        &state.db.pool,
+        &params.pack_slug,
+        &params.valve_slug,
+        &params.value,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetValveParams {
+    pub pack_slug: String,
+    pub valve_slug: String,
+}
+
+#[tauri::command]
+pub async fn reset_pack_valve(
+    state: State<'_, AppState>,
+    params: ResetValveParams,
+) -> Result<(), String> {
+    packs::reset_valve(&state.db.pool, &params.pack_slug, &params.valve_slug)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 fn column_to_json(row: &sqlx::sqlite::SqliteRow, field: &packs::FieldDef) -> serde_json::Value {

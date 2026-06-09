@@ -21,7 +21,10 @@ mod tables;
 mod tools;
 mod workflows;
 
-use crate::packs::{AlertDef, AlertSeverity, PackHandle, PackMigration, TableDef};
+use crate::packs::{
+    AlertDef, AlertSeverity, PackHandle, PackMigration, TableDef, ValveDef, ValveType,
+    ValveValue,
+};
 use crate::workflows::recipe::WorkflowDef;
 
 const SLUG: &str = "lead-to-empower";
@@ -115,7 +118,50 @@ impl PackHandle for LeadToEmpowerPack {
     fn workflows(&self) -> &'static [WorkflowDef] {
         workflows::WORKFLOWS
     }
+
+    fn valves(&self) -> &'static [ValveDef] {
+        VALVES
+    }
 }
+
+// Pack-author-declared settings. Travis renders the form in Settings →
+// Packs; user changes land in meta.pack.lead-to-empower.valve.<slug>.
+// Pack code reads via `packs::get_valve_text(...)` etc.
+static VALVES: &[ValveDef] = &[
+    ValveDef {
+        slug: "default_invoice_terms",
+        label: "Default invoice payment terms",
+        valve_type: ValveType::Enum {
+            options: &["Net 15", "Net 30", "Net 45", "Net 60", "Due on receipt"],
+        },
+        default: ValveValue::Text("Net 30"),
+        help: Some(
+            "Used as the default Terms field when Travis drafts a new invoice. \
+             You can still override per-invoice in the form.",
+        ),
+    },
+    ValveDef {
+        slug: "auto_lock_signed_sheets",
+        label: "Auto-lock signed sign-in sheets",
+        valve_type: ValveType::Bool,
+        default: ValveValue::Bool(true),
+        help: Some(
+            "When on, once a sign-in sheet is marked signed, Travis blocks \
+             further edits to its rows. Turn off if you frequently get \
+             post-signature corrections.",
+        ),
+    },
+    ValveDef {
+        slug: "dof_route_default_program",
+        label: "Default program for DoF-route invoices",
+        valve_type: ValveType::Text,
+        default: ValveValue::Text(""),
+        help: Some(
+            "When set, new DoF-route invoices pre-fill this program name. \
+             Leave blank to require explicit selection each time.",
+        ),
+    },
+];
 
 // Operational alerts — the layer-2 metric L2E sells on. Without these,
 // the Splash screen shows "you have N invoices"; with them, it shows
