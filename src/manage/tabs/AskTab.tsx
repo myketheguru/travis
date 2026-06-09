@@ -7,6 +7,7 @@ import { journalIngest } from "../../lib/journal";
 import {
   activeConversation,
   getThread,
+  loadMoreMessages,
   deleteMessageAndAfter,
   type ConversationMessage,
 } from "../../lib/conversation";
@@ -63,6 +64,12 @@ export default function AskTab() {
     }
   }, [busy]);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  // v0.18.2 — chunked history. `haveOlder` flips false when a fetch
+  // returns nothing (we've hit the start of the conversation).
+  // `loadingOlder` debounces concurrent fetches while the user is
+  // scrolling fast at the top edge.
+  const [haveOlder, setHaveOlder] = useState(true);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [steps, setSteps] = useState<ParsedStep[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [attachedDocs, setAttachedDocs] = useState<Attachment[]>([]);
@@ -75,6 +82,41 @@ export default function AskTab() {
   // Smart scroll anchor: jumps to bottom on first paint; auto-tracks
   // bottom only when the user is already there. If they scroll up, new
   // content does NOT yank them back.
+  // v0.18.2 — scroll-near-top loader. When the chat scrolls within
+  // 120px of the top AND there's older history available, fetch the
+  // next 50 older messages. Preserves scroll position by recording
+  // scrollHeight before prepend and restoring scrollTop to the same
+  // distance-from-the-old-top after the new rows render.
+  const loadOlderIfNeeded = useCallback(
+    async (el: HTMLDivElement) => {
+      if (!haveOlder || loadingOlder) return;
+      if (!activeConversationId) return;
+      if (el.scrollTop > 120) return;
+      const earliest = messages[0]?.id;
+      if (!earliest) return;
+      setLoadingOlder(true);
+      const heightBefore = el.scrollHeight;
+      const topBefore = el.scrollTop;
+      try {
+        const older = await loadMoreMessages(activeConversationId, earliest);
+        if (older.length === 0) {
+          setHaveOlder(false);
+          return;
+        }
+        flushSync(() => {
+          setMessages((prev) => [...older, ...prev]);
+        });
+        const heightAfter = el.scrollHeight;
+        el.scrollTop = topBefore + (heightAfter - heightBefore);
+      } catch {
+        /* network/IPC blip — next scroll tick will retry */
+      } finally {
+        setLoadingOlder(false);
+      }
+    },
+    [haveOlder, loadingOlder, activeConversationId, messages],
+  );
+
   const { ref: scrollRef, atBottom, scrollToBottom } = useScrollAnchor(
     `${messages.length}:${steps.length}:${busy ? "1" : "0"}`,
   );
@@ -129,6 +171,14 @@ export default function AskTab() {
       }
     };
   }, []);
+
+  // v0.18.2 — reset chunked-history state whenever the active
+  // conversation changes. A fresh thread always begins assuming
+  // older history might exist.
+  useEffect(() => {
+    setHaveOlder(true);
+    setLoadingOlder(false);
+  }, [activeConversationId]);
 
   useEffect(() => {
     if (!activeConversationId) {
@@ -487,6 +537,7 @@ export default function AskTab() {
       <div className="relative flex-1 min-h-0 flex flex-col">
         <div
           ref={scrollRef}
+          onScroll={(e) => loadOlderIfNeeded(e.currentTarget)}
           className={
             "flex-1 min-h-0 overflow-y-auto flex flex-col gap-3 pr-2 -mr-2 " +
             (empty ? "items-center justify-center" : "")
@@ -504,6 +555,16 @@ export default function AskTab() {
             </p>
           ) : (
             <>
+              {loadingOlder && (
+                <div className="text-center text-[10px] tracking-[0.2em] uppercase text-bone-3/70 py-1">
+                  Loading earlier messages…
+                </div>
+              )}
+              {!haveOlder && messages.length > 0 && (
+                <div className="text-center text-[10px] tracking-[0.2em] uppercase text-bone-3/50 py-1">
+                  Start of conversation
+                </div>
+              )}
               <AnimatePresence initial={false}>
                 {renderTurns(
                   messages,

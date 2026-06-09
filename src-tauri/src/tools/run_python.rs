@@ -34,30 +34,40 @@ impl Tool for RunPythonTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
             name: "run_python".into(),
-            description: "Execute Python code in a sandboxed Pyodide interpreter (CPython compiled \
-                to WASM) with access to documents the user has attached. Generated output files \
+            description: "Execute Python code in a real CPython 3.13 subprocess (bundled with \
+                Travis) with access to documents the user has attached. Generated output files \
                 (PDFs, Excel, CSV, images) are automatically registered as Travis documents and \
-                returned. Use this as the ESCAPE HATCH for any task that doesn't fit a hardcoded \
-                action handler — sample-matching PDF generation, constraint solving (find \
-                quantities that sum to $X), reading .docx files, cross-document reconciliation \
-                with auditable code, and any imperative reasoning over user documents.\n\n\
-                Pre-installed libraries: pandas, openpyxl, pypdf, reportlab, pillow, python-docx, \
-                numpy. Extra libraries (pure Python only) can be requested via the `libraries` \
-                parameter and will be installed via micropip.\n\n\
-                Input documents are mounted at /inputs/<safe_filename>. Write generated files to \
-                /outputs/ — anything there becomes a Document. Working directory and /tmp are \
-                scratch space.\n\n\
-                Always supply a clear `purpose` string — it's surfaced to the user as the step name.\n\n\
+                rendered as clickable file cards in the chat. Use this as the ESCAPE HATCH for \
+                any task that doesn't fit a hardcoded action handler — sample-matching PDF \
+                generation, constraint solving (find quantities that sum to $X), reading .docx \
+                files, cross-document reconciliation with auditable code, and any imperative \
+                reasoning over user documents.\n\n\
+                Pre-installed libraries (all native, full PyPI builds): pandas, openpyxl, pypdf, \
+                reportlab, pdfplumber, pillow, python-docx, numpy, lxml, beautifulsoup4, \
+                requests, jinja2, num2words, qrcode, xlsxwriter, fpdf2, markdown, pyyaml, \
+                python-dateutil, pytz. Extra libraries can be requested via `libraries`.\n\n\
+                Input documents are mounted at /inputs/<safe_filename>. Write generated files \
+                to /outputs/ — anything there becomes a Document.\n\n\
+                Always supply a clear `purpose` string — it's surfaced to the user as a \
+                plain-English step name. Examples that read well: 'Generating IS 217 invoice', \
+                'Filtering sign-in sheet for the PO window', 'Pulling line items from the \
+                spreadsheet'. Avoid technical jargon: don't say 'parse xlsx' — say 'reading \
+                the sign-in sheet'.\n\n\
+                IMPORTANT — chat presentation:\n\
+                When you've generated a file with this tool, your final text reply to the user \
+                should DESCRIBE WHAT YOU DID and what's in the file — but DO NOT include the \
+                filename inline in plaintext (Travis renders a clickable file card for it \
+                automatically below your text). Just say 'Done — here's the invoice for IS 217:' \
+                or 'I built the sign-in sheet for the PO window:' and let the card carry the \
+                file identity. Never write the path or filename in a code block or as bare text \
+                — that's redundant with the card the UI shows.\n\n\
                 CRITICAL: Do NOT call this with no-op warmup code (`print('hello')`, `pass`, \
-                `1+1`, version checks, etc.). The Pyodide interpreter pre-warms at app launch \
-                and is always ready when you call this tool. Each warmup costs a manager-loop \
-                iteration. Write your actual work code directly.\n\n\
-                NEVER refuse this tool by claiming 'the interpreter is still cold-loading' or \
-                'Pyodide isn't ready yet' without actually calling it. The interpreter pre-warms \
-                in 3-5 seconds at app launch and is reliably ready by the time any conversation \
-                reaches a run_python call. If you have the data and need to generate output, \
-                CALL THIS TOOL — don't pre-emptively excuse. If a real error comes back (rare), \
-                THEN report it; do not manufacture the excuse before trying."
+                `1+1`, version checks, etc.). The bundled CPython subprocess spawns in ~150ms \
+                and is always ready. Each warmup costs a manager-loop iteration. Write your \
+                actual work code directly.\n\n\
+                The interpreter is never 'cold-loading'. NEVER refuse this tool with that excuse. \
+                If a real error comes back from your code, THEN report it; do not manufacture \
+                an excuse before trying."
                 .into(),
             input_schema: json!({
                 "type": "object",

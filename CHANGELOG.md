@@ -1,5 +1,80 @@
 # Travis Changelog
 
+## v0.18.2 — Step humanisation + chat truncation feel + cleaner file refs (2026-06-10)
+
+Three UX polish fixes from real-world use of v0.18.1.
+
+### Humanised step labels
+
+The chat surface was leaking technical tool names — "Running Python",
+"search_memory", "analyze_document_styling", "documentIds=[4]" — and
+that's the wrong altitude for a user-facing assistant. New
+`humanize_tool_name` in journal.rs maps the registered tool name
+(plus the LLM's `purpose` field for run_python) to plain English:
+
+- `read_document` → **Reading attachment**
+- `preview_document` → **Skimming attachment**
+- `analyze_document_styling` → **Studying the layout**
+- `search_memory` → **Checking the records**
+- `find_case` → **Looking up the case**
+- `reconcile_documents` → **Cross-referencing attachments**
+- `web_fetch` → **Fetching from the web**
+- `delegate` → **Asking a focused side-question**
+- `run_python` (purpose contains "invoice") → **Generating invoice**
+- `run_python` (purpose contains "sign…sheet") → **Building sign-in sheet**
+- `run_python` (purpose contains "pdf") → **Generating PDF**
+- `run_python` (purpose contains "excel/xlsx") → **Working with spreadsheet**
+- `run_python` (purpose contains "parse/read/extract") → **Pulling data out of the sheet**
+- `run_python` (purpose contains "filter/find") → **Filtering the data**
+- `run_python` (other) → **Working on the file**
+- `edit_python_artifact` → **Refining the file**
+
+The new `resolve_tool_detail` (replaces the synchronous
+`describe_tool_call`) hits the `document` table for any
+document-touching tool call and surfaces the actual original
+filename, so the step row reads **Reading attachment — IS 217 (1).pdf**
+instead of the previous **Reading document · documentId=2**.
+For `reconcile_documents`, up to three filenames are joined with
+" + " to keep the row compact on multi-doc calls.
+
+### Chunked chat history (proper fix for truncation feel)
+
+Users reported chats looking "truncated to the last few messages"
+on tab switch. The right fix isn't a bigger cap — it's pagination:
+
+- Backend `conversation::messages` default returns the MOST RECENT
+  50 messages (id DESC, then reversed to ASC for display). No
+  artificial upper cap; explicit `limit` overrides for callers
+  that need the whole thread.
+- New `conversation::messages_before(conv, before_id, limit)` +
+  `load_more_messages` Tauri command for paginated older fetches.
+- AskTab listens on the scroll container's `onScroll`: when within
+  120px of the top AND older history exists, fetches the next 50
+  via `loadMoreMessages`, prepends, and preserves the view by
+  setting `scrollTop = topBefore + (heightAfter - heightBefore)`.
+- "Loading earlier messages…" / "Start of conversation" indicators
+  at the top so the user knows the state.
+
+Chat-tab switch now: jumps to the latest message (where you left
+off), scroll up to lazy-load earlier turns. No artificial truncation.
+
+### Cleaner file references in agent text
+
+The `run_python` tool description now instructs the worker to
+DESCRIBE what it did in plain English without including the
+filename inline — the clickable file card the UI renders below the
+message already carries the identity. Previously the agent would
+write "Generated — doc #7 (IS217_Invoice_LTE2026217002.pdf)" which
+duplicated the card and looked technical.
+
+### Deferred (next slices)
+
+- v0.18.3 — searchable conversation switcher + organised file
+  folder structure with traceability.
+- v0.19.0 — cross-conversation context pulling, LTE pack
+  auto-population from the capture pipeline, reasoning-between-steps
+  surfacing.
+
 ## v0.18.1 — Hotfix: drop AppImage from Linux bundle targets (2026-06-09)
 
 v0.18.0's Linux Release build failed at the AppImage bundling step.

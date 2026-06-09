@@ -37,6 +37,27 @@ pub async fn get_thread(
     })
 }
 
+/// v0.18.2 — paginate older messages on scroll-up. Returns at most
+/// `limit` (default 50, max 200) messages whose ids are strictly less
+/// than `before_id`, in chat order (ASC). An empty array means
+/// nothing earlier exists.
+#[tauri::command]
+pub async fn load_more_messages(
+    state: State<'_, AppState>,
+    conversation_id: i64,
+    before_id: i64,
+    limit: Option<i64>,
+) -> Result<Vec<ConversationMessage>, String> {
+    conversation::messages_before(
+        &state.db.pool,
+        conversation_id,
+        before_id,
+        limit.unwrap_or(50),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn active_conversation(
     state: State<'_, AppState>,

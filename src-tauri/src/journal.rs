@@ -2108,17 +2108,30 @@ pub async fn journal_ingest(
                     for call in turn.tool_calls {
                         // v0.17.1 — per-tool-call step so the chat
                         // shows real-time dispatch on long turns
-                        // (e.g. 20-min invoice flows). The user can
-                        // see exactly which tool is running and how
-                        // long each one took, instead of staring at
-                        // a single "Working on it" indicator.
-                        let tool_detail = describe_tool_call(&call.name, &call.input);
+                        // (e.g. 20-min invoice flows). v0.18.2 —
+                        // humanise the labels so the user sees
+                        // "Generating file" not "run_python", and
+                        // "Checking the records" not "search_memory".
+                        let tool_name = humanize_tool_name(&call.name, &call.input);
+                        // v0.18.2 — for document-touching tools,
+                        // resolve the document id(s) to their actual
+                        // filenames so the chat shows e.g.
+                        // "Reading attachment — IS 217 (1).pdf"
+                        // instead of leaking the integer id. Best-
+                        // effort: a missing doc row falls back to a
+                        // bare label.
+                        let tool_detail = resolve_tool_detail(
+                            &state.db.pool,
+                            &call.name,
+                            &call.input,
+                        )
+                        .await;
                         let tool_step = crate::steps::Step::start(
                             &app,
                             &state.db.pool,
                             conv_id,
                             crate::steps::StepKind::ToolCall,
-                            call.name.clone(),
+                            tool_name,
                             Some(tool_detail),
                             mgr_step.as_ref().map(|s| s.id.clone()),
                         )
@@ -3213,10 +3226,69 @@ pub async fn journal_ingest(
     })
 }
 
-/// v0.17.1 — short, human-readable detail for a tool call's step row.
-/// Pulls one or two characteristic fields out of the tool input so
-/// the user sees what's being acted on instead of opaque `tool_call`.
-fn describe_tool_call(name: &str, input: &serde_json::Value) -> String {
+/// v0.18.2 — user-facing label for the step row. Maps technical tool
+/// names to plain-English verbs so the chat doesn't expose
+/// "run_python" / "search_memory" / "analyze_document_styling" to
+/// users. For `run_python` and `edit_python_artifact` we look at the
+/// declared purpose to pick a verb (e.g. a purpose that mentions
+/// "invoice" → "Generating invoice").
+fn humanize_tool_name(name: &str, input: &serde_json::Value) -> String {
+    let purpose = input
+        .get("purpose")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_lowercase();
+    match name {
+        "read_document" => "Reading attachment".to_string(),
+        "preview_document" => "Skimming attachment".to_string(),
+        "analyze_document_styling" => "Studying the layout".to_string(),
+        "reconcile_documents" => "Cross-referencing attachments".to_string(),
+        "find_documents" | "find_matching_documents" => "Finding matching documents".to_string(),
+        "search_memory" => "Checking the records".to_string(),
+        "find_case" => "Looking up the case".to_string(),
+        "web_fetch" => "Fetching from the web".to_string(),
+        "delegate" => "Asking a focused side-question".to_string(),
+        "run_python" | "edit_python_artifact" => {
+            if name == "edit_python_artifact" {
+                "Refining the file".to_string()
+            } else if purpose.contains("invoice") {
+                "Generating invoice".to_string()
+            } else if purpose.contains("sign") && purpose.contains("sheet") {
+                "Building sign-in sheet".to_string()
+            } else if purpose.contains("pdf") {
+                "Generating PDF".to_string()
+            } else if purpose.contains("excel") || purpose.contains("xlsx") {
+                "Working with spreadsheet".to_string()
+            } else if purpose.contains("parse") || purpose.contains("read") || purpose.contains("extract") {
+                "Pulling data out of the sheet".to_string()
+            } else if purpose.contains("filter") || purpose.contains("find") {
+                "Filtering the data".to_string()
+            } else {
+                "Working on the file".to_string()
+            }
+        }
+        // Pack-supplied tools — fall through with a leading verb so
+        // they read like an action rather than a snake_case identifier.
+        other => {
+            let pretty = other
+                .replace('_', " ")
+                .chars()
+                .enumerate()
+                .map(|(i, c)| if i == 0 { c.to_ascii_uppercase() } else { c })
+                .collect::<String>();
+            pretty
+        }
+    }
+}
+
+/// v0.18.2 — resolve the step's detail string from the tool input,
+/// hitting the documents table when needed so that document-touching
+/// tools surface the actual filename instead of "doc#1".
+async fn resolve_tool_detail(
+    pool: &sqlx::SqlitePool,
+    name: &str,
+    input: &serde_json::Value,
+) -> String {
     let pick = |key: &str| {
         input
             .get(key)
@@ -3224,22 +3296,58 @@ fn describe_tool_call(name: &str, input: &serde_json::Value) -> String {
             .map(|s| s.chars().take(80).collect::<String>())
     };
     match name {
-        "read_document" | "analyze_document_styling" | "preview_document" => input
-            .get("documentId")
-            .or_else(|| input.get("document_id"))
-            .and_then(|v| v.as_i64())
-            .map(|id| format!("doc#{id}"))
-            .unwrap_or_else(|| name.to_string()),
-        "run_python" | "edit_python_artifact" => {
-            pick("purpose").unwrap_or_else(|| "python".to_string())
+        "read_document" | "analyze_document_styling" | "preview_document" => {
+            if let Some(id) = input
+                .get("documentId")
+                .or_else(|| input.get("document_id"))
+                .and_then(|v| v.as_i64())
+            {
+                match crate::documents::db::get(pool, id).await {
+                    Ok(Some(doc)) => doc.original_filename,
+                    _ => String::new(),
+                }
+            } else {
+                String::new()
+            }
         }
-        "search_memory" => pick("query").unwrap_or_else(|| "search".to_string()),
-        "web_fetch" => pick("url").unwrap_or_else(|| "web".to_string()),
-        "reconcile_documents" => pick("purpose").unwrap_or_else(|| "reconcile".to_string()),
+        "run_python" | "edit_python_artifact" => {
+            // Use the worker-supplied purpose; if it lists document
+            // ids, we trust the purpose to already describe them in
+            // English rather than re-resolving every one (could be
+            // up to 5).
+            pick("purpose").unwrap_or_default()
+        }
+        "search_memory" => pick("query").unwrap_or_default(),
+        "web_fetch" => pick("url").unwrap_or_default(),
+        "reconcile_documents" => {
+            // Multi-doc tool — list filenames joined by "+", capped
+            // at three so the step row stays compact.
+            let ids: Vec<i64> = input
+                .get("documentIds")
+                .or_else(|| input.get("document_ids"))
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_i64())
+                        .take(3)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if ids.is_empty() {
+                return pick("purpose").unwrap_or_default();
+            }
+            let mut names = Vec::new();
+            for id in ids {
+                if let Ok(Some(d)) = crate::documents::db::get(pool, id).await {
+                    names.push(d.original_filename);
+                }
+            }
+            names.join(" + ")
+        }
         _ => pick("purpose")
             .or_else(|| pick("query"))
             .or_else(|| pick("name"))
-            .unwrap_or_else(|| name.to_string()),
+            .unwrap_or_default(),
     }
 }
 

@@ -162,18 +162,52 @@ pub async fn messages(
     conversation_id: i64,
     limit: Option<i64>,
 ) -> Result<Vec<ConversationMessage>, sqlx::Error> {
-    let lim = limit.unwrap_or(200).clamp(1, 500);
-    sqlx::query_as::<_, ConversationMessage>(
+    // v0.18.2 — default returns the MOST RECENT 50 messages, ordered
+    // ASC for display. Earlier history loads on demand via
+    // `messages_before`. Pass an explicit `limit` to override.
+    // SQL pulls last N by id DESC then we reverse to ASC for the
+    // chat to render top-down naturally.
+    let lim = limit.unwrap_or(50);
+    let mut rows = sqlx::query_as::<_, ConversationMessage>(
         "SELECT id, conversation_id, role, content, payload_json, created_at, response_kind
          FROM conversation_message
          WHERE conversation_id = ?1
-         ORDER BY id ASC
+         ORDER BY id DESC
          LIMIT ?2",
     )
     .bind(conversation_id)
     .bind(lim)
     .fetch_all(pool)
-    .await
+    .await?;
+    rows.reverse();
+    Ok(rows)
+}
+
+/// v0.18.2 — fetch the chunk of older messages strictly before a given
+/// id, ordered ASC. Powers the chat surface's scroll-to-load-older
+/// pagination. Returns at most `limit` rows; an empty result means
+/// there's nothing earlier and the chat can stop offering to load.
+pub async fn messages_before(
+    pool: &SqlitePool,
+    conversation_id: i64,
+    before_id: i64,
+    limit: i64,
+) -> Result<Vec<ConversationMessage>, sqlx::Error> {
+    let lim = limit.clamp(1, 200);
+    let mut rows = sqlx::query_as::<_, ConversationMessage>(
+        "SELECT id, conversation_id, role, content, payload_json, created_at, response_kind
+         FROM conversation_message
+         WHERE conversation_id = ?1 AND id < ?2
+         ORDER BY id DESC
+         LIMIT ?3",
+    )
+    .bind(conversation_id)
+    .bind(before_id)
+    .bind(lim)
+    .fetch_all(pool)
+    .await?;
+    rows.reverse();
+    Ok(rows)
 }
 
 #[derive(Debug, Deserialize, Default)]

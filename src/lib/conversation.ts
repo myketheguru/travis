@@ -42,6 +42,19 @@ export const getThread = (conversationId: number) =>
 
 export const activeConversation = () => invoke<Thread | null>("active_conversation");
 
+/// v0.18.2 — load older messages on scroll-up. Returns at most `limit`
+/// (default 50, max 200) messages with ids < `beforeId`, in ASC order.
+export const loadMoreMessages = (
+  conversationId: number,
+  beforeId: number,
+  limit?: number,
+) =>
+  invoke<ConversationMessage[]>("load_more_messages", {
+    conversationId,
+    beforeId,
+    limit,
+  });
+
 export const resolveConversation = (id: number) =>
   invoke<void>("resolve_conversation", { id });
 

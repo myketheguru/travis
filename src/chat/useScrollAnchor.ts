@@ -52,6 +52,10 @@ export function useScrollAnchor<T>(deps: T, threshold = 80) {
     if (!didFirstScroll.current) {
       // Jump on first paint where deps are real (non-empty), then mark
       // the first-scroll guard so subsequent re-mounts don't snap.
+      // v0.18.2 — pairs with the chunked-history loader: only the
+      // most recent 50 messages are in `messages` on first paint, so
+      // scrolling to bottom shows them naturally, and the user can
+      // scroll up to fetch older chunks.
       if (el.scrollHeight > el.clientHeight) {
         el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
         atBottomRef.current = true;

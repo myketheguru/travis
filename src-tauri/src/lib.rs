@@ -676,6 +676,7 @@ pub fn run() {
             conversation_cmd::list_conversations,
             conversation_cmd::get_thread,
             conversation_cmd::active_conversation,
+            conversation_cmd::load_more_messages,
             conversation_cmd::resolve_conversation,
             conversation_cmd::append_user_message,
             diagnostics::list_recent_errors,
