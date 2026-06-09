@@ -156,7 +156,7 @@ pub async fn append(
         None => None,
     };
     let id = sqlx::query(
-        "INSERT INTO event (conversation_id, kind, payload_json, parent_event_id, message_id)
+        "INSERT INTO conversation_event (conversation_id, kind, payload_json, parent_event_id, message_id)
          VALUES (?1, ?2, ?3, ?4, ?5)",
     )
     .bind(conversation_id)
@@ -197,7 +197,7 @@ pub async fn list_for_conversation(
 ) -> anyhow::Result<Vec<Event>> {
     Ok(sqlx::query_as::<_, Event>(
         "SELECT id, conversation_id, kind, payload_json, parent_event_id, message_id, created_at
-         FROM event WHERE conversation_id = ?1 ORDER BY id ASC",
+         FROM conversation_event WHERE conversation_id = ?1 ORDER BY id ASC",
     )
     .bind(conversation_id)
     .fetch_all(pool)
@@ -213,7 +213,7 @@ pub async fn list_after(
 ) -> anyhow::Result<Vec<Event>> {
     Ok(sqlx::query_as::<_, Event>(
         "SELECT id, conversation_id, kind, payload_json, parent_event_id, message_id, created_at
-         FROM event WHERE conversation_id = ?1 AND id > ?2 ORDER BY id ASC",
+         FROM conversation_event WHERE conversation_id = ?1 AND id > ?2 ORDER BY id ASC",
     )
     .bind(conversation_id)
     .bind(after_id)

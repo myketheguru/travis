@@ -10,11 +10,16 @@
 -- future slice can flip reads to project from events, at which point
 -- `conversation_message` becomes a (regenerable) view.
 --
+-- v0.17.2 — table named `conversation_event` (was `event` in v0.17.0
+-- → v0.17.1, which collided with migration 0018's spine `event`
+-- table for entity activity). The collision aborted DB open on
+-- existing installs. Distinct names now.
+--
 -- Distinct from `memory_edge` (0037): that's typed relations between
 -- artifacts/claims for memory retrieval. This is the immutable
 -- conversation history.
 
-CREATE TABLE event (
+CREATE TABLE conversation_event (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   conversation_id   INTEGER NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
 
@@ -30,7 +35,7 @@ CREATE TABLE event (
   -- Parent event for branching. NULL on the first event in a
   -- conversation. Future "time-travel"/"branch from here" UI follows
   -- parent_event_id back up the chain.
-  parent_event_id   INTEGER REFERENCES event(id) ON DELETE SET NULL,
+  parent_event_id   INTEGER REFERENCES conversation_event(id) ON DELETE SET NULL,
 
   -- Optional pointer back to the legacy conversation_message row
   -- that mirrors this event. Lets the dual-write keep both tables
@@ -41,8 +46,8 @@ CREATE TABLE event (
   created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_event_conv
-  ON event (conversation_id, id);
+CREATE INDEX idx_conv_event_conv
+  ON conversation_event (conversation_id, id);
 
-CREATE INDEX idx_event_kind
-  ON event (conversation_id, kind, id);
+CREATE INDEX idx_conv_event_kind
+  ON conversation_event (conversation_id, kind, id);

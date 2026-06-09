@@ -1,5 +1,29 @@
 # Travis Changelog
 
+## v0.17.2 — Hotfix: migration 0038 table-name collision (2026-06-09)
+
+**Critical.** v0.17.0 and v0.17.1 fail at DB open with "table event
+already exists" because migration 0038 tried to create a table
+called `event` — but migration 0018 (pack_spine, shipped long ago)
+already created a table with that name for entity activity. Anyone
+who installed v0.17.0 or v0.17.1 sees Travis refuse to launch.
+
+- Migration 0038 renamed: `event` → `conversation_event`; indexes
+  `idx_event_conv` / `idx_event_kind` → `idx_conv_event_conv` /
+  `idx_conv_event_kind`.
+- `src/events/mod.rs` SQL updated to match.
+- Since the failed v0.17.0/.1 migration ran inside a transaction
+  that rolled back, `_sqlx_migrations` was never updated. The
+  v0.17.2 migration applies cleanly on the same machine — no
+  manual cleanup needed. Just install and relaunch.
+
+Caught by myketheguru immediately on installing v0.17.1 ("Travis
+could not open its database. Table events already exists"). Should
+have been caught pre-ship by running cargo check against a DB with
+0018 already applied, OR by grepping for `CREATE TABLE event` before
+shipping a new migration. Adding the latter to the BRAIN.md
+discipline note for v0.18.
+
 ## v0.17.1 — Interpreter-ready race + step-resync race + per-tool visibility (2026-06-09)
 
 Three bugs surfaced during the PS556→IS217 invoice flow on v0.16.7.
