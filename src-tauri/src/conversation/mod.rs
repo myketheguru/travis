@@ -24,6 +24,11 @@ pub struct ConversationMessage {
     pub content: String,
     pub payload_json: Option<String>,
     pub created_at: String,
+    /// v0.17.0 — classification stamped by the agent loop. One of
+    /// "extraction" / "text_response" / "reasoning_only", or NULL for
+    /// rows written before the column existed. Drives the chat
+    /// surface's reasoning-card render.
+    pub response_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -68,14 +73,30 @@ pub async fn append(
     content: &str,
     payload_json: Option<&str>,
 ) -> Result<ConversationMessage, sqlx::Error> {
+    append_with_kind(pool, conversation_id, role, content, payload_json, None).await
+}
+
+/// v0.17.0 — append a message with an explicit response_kind tag.
+/// Agent-loop callers use this to stamp "extraction" / "text_response"
+/// / "reasoning_only"; the plain [`append`] above keeps backward
+/// compat for callers that don't classify.
+pub async fn append_with_kind(
+    pool: &SqlitePool,
+    conversation_id: i64,
+    role: &str,
+    content: &str,
+    payload_json: Option<&str>,
+    response_kind: Option<&str>,
+) -> Result<ConversationMessage, sqlx::Error> {
     let id = sqlx::query(
-        "INSERT INTO conversation_message (conversation_id, role, content, payload_json)
-         VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO conversation_message (conversation_id, role, content, payload_json, response_kind)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
     )
     .bind(conversation_id)
     .bind(role)
     .bind(content)
     .bind(payload_json)
+    .bind(response_kind)
     .execute(pool)
     .await?
     .last_insert_rowid();
@@ -86,7 +107,7 @@ pub async fn append(
         .await?;
 
     sqlx::query_as::<_, ConversationMessage>(
-        "SELECT id, conversation_id, role, content, payload_json, created_at
+        "SELECT id, conversation_id, role, content, payload_json, created_at, response_kind
          FROM conversation_message WHERE id=?1",
     )
     .bind(id)
@@ -143,7 +164,7 @@ pub async fn messages(
 ) -> Result<Vec<ConversationMessage>, sqlx::Error> {
     let lim = limit.unwrap_or(200).clamp(1, 500);
     sqlx::query_as::<_, ConversationMessage>(
-        "SELECT id, conversation_id, role, content, payload_json, created_at
+        "SELECT id, conversation_id, role, content, payload_json, created_at, response_kind
          FROM conversation_message
          WHERE conversation_id = ?1
          ORDER BY id ASC

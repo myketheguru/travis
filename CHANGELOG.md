@@ -1,5 +1,68 @@
 # Travis Changelog
 
+## v0.17.0 — Event log substrate + condenser + reasoning UI (2026-06-08)
+
+Three paired pieces of the OpenHands-inspired conversation
+architecture finish what was queued in the v0.17.0 plan.
+
+### Event log substrate (#172)
+
+- Migration 0038 adds `event` table: `(conversation_id, kind,
+  payload_json, parent_event_id, message_id, created_at)`. Indexed
+  on `(conversation_id, id)` for tail-reads.
+- `src-tauri/src/events/` module with:
+  - `EventKind` enum: UserMessage, AgentResponse, ToolCall,
+    ToolResult, Thinking, Condensation, Error.
+  - `Event` + `AgentResponsePayload` + `ResponseKind` types.
+  - `append`, `append_or_warn`, `list_for_conversation`,
+    `list_after` helpers.
+- **Dual-write** wired into `journal.rs`: every user turn writes
+  `event(UserMessage)` after `conversation_message`; every assistant
+  turn writes `event(AgentResponse)` after the message append. The
+  existing `conversation_message` table stays the UI read path; the
+  event log is ground truth for future branching, time-travel, and
+  condenser composition.
+- `parent_event_id` is NULL for now — single-thread reads. Future
+  v0.18 branching follows the chain back.
+
+### Condenser substrate (#173)
+
+`src-tauri/src/events/condenser.rs`:
+- `should_condense(events) -> bool` — heuristic on estimated token
+  cost (12k soft budget).
+- `condense(pool, provider, conversation_id, older_events)` — calls
+  a cheap-tier LLM with a tight summary prompt and appends an
+  `EventKind::Condensation` event whose payload carries the summary
+  text plus the first/last covered event ids.
+- **Not wired into the live agent loop yet.** Substrate only. Future
+  slice flips the LLM-visible projection to substitute the
+  condensation for its covered span when token budget is tight.
+
+### Reasoning-only UI (#177)
+
+- Migration 0039 adds `conversation_message.response_kind` (TEXT,
+  nullable). One of `extraction` / `text_response` / `reasoning_only`.
+- `events::classify_response(text, thinking, tool_calls, finalized)`
+  classifies each turn:
+  - finalized → Extraction
+  - 0 tools + ≥1 thinking + >80 chars text → ReasoningOnly
+  - else → TextResponse
+- Agent loop in journal.rs stamps the column via the new
+  `conversation::append_with_kind`. A new `parse_turn_stats` helper
+  pulls thinking + tool counts from the agent loop's serialized
+  last_dump (best-effort; degrades to TextResponse on parse fail).
+- `ChatTurn.tsx`: when `responseKind === "reasoning_only"`, the
+  visible content renders inside a distinct left-bordered panel
+  with a "Reasoning · not yet acted on" header so the user
+  immediately sees the worker's reasoning stage without confusing
+  it for a finished answer.
+
+### What's still queued for v0.18
+
+Wiring the condenser into the live agent loop and flipping
+conversation reads to project from the event log. Both depend on
+this substrate being stable in production first.
+
 ## v0.16.7 — Agent-loop iteration cap + tiered thinking budget (2026-06-08)
 
 Two paired fixes for the PS556→IS217 invoice-derivation flow which

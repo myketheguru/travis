@@ -18,6 +18,10 @@ export type ConversationMessage = {
   content: string;
   payloadJson: string | null;
   createdAt: string;
+  /// v0.17.0 — classifier stamped by the agent loop. Drives ChatTurn's
+  /// distinct reasoning-card render. NULL for messages written before
+  /// v0.17.0 (UI falls back to the standard bubble).
+  responseKind?: "extraction" | "text_response" | "reasoning_only" | null;
 };
 
 export type Thread = {

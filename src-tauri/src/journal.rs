@@ -1413,7 +1413,22 @@ pub async fn journal_ingest(
     .last_insert_rowid();
 
     // Append the user's message to the conversation thread.
-    let _ = conversation::append(&state.db.pool, conv_id, "user", &raw, None).await;
+    let user_msg = conversation::append(&state.db.pool, conv_id, "user", &raw, None).await;
+    // v0.17.0 — dual-write to the event log substrate. Best-effort;
+    // never blocks the user-facing flow if the substrate hiccups.
+    let user_msg_id = user_msg.as_ref().ok().map(|m| m.id);
+    let _ = crate::events::append_or_warn(
+        &state.db.pool,
+        conv_id,
+        crate::events::EventKind::UserMessage,
+        Some(&serde_json::json!({
+            "text": raw,
+            "entry_id": entry_id,
+        })),
+        None,
+        user_msg_id,
+    )
+    .await;
 
     let _ = behavioral::log_event(
         &state.db.pool,
@@ -2987,12 +3002,38 @@ pub async fn journal_ingest(
         extraction_record.clone()
     };
 
-    let _ = conversation::append(
+    // v0.17.0 — classify this turn for the chat UI's reasoning card.
+    // Pull thinking_blocks + tool_calls counts from raw_response (it's
+    // the serialized last_dump JSON the agent loop emitted).
+    let (thinking_count, tool_count) = parse_turn_stats(&raw_response);
+    let response_kind = crate::events::classify_response(
+        &assistant_visible,
+        thinking_count,
+        tool_count,
+        ok,
+    );
+    let assistant_msg = conversation::append_with_kind(
         &state.db.pool,
         conv_id,
         "assistant",
         &assistant_visible,
         Some(&assistant_payload),
+        Some(response_kind.as_str()),
+    )
+    .await;
+    let assistant_msg_id = assistant_msg.as_ref().ok().map(|m| m.id);
+    let _ = crate::events::append_or_warn(
+        &state.db.pool,
+        conv_id,
+        crate::events::EventKind::AgentResponse,
+        Some(&serde_json::json!(crate::events::AgentResponsePayload {
+            response_kind,
+            thinking_blocks: thinking_count,
+            tool_calls: tool_count,
+            iterations: manager_iter + 1,
+        })),
+        None,
+        assistant_msg_id,
     )
     .await;
 
@@ -3139,6 +3180,27 @@ pub async fn journal_ingest(
         extraction_ok: ok,
         error: err_msg,
     })
+}
+
+/// v0.17.0 — pull `(thinking_blocks, tool_calls)` from the agent
+/// loop's serialized last_dump. Best-effort: returns (0, 0) on parse
+/// failure so the response classifier degrades to `text_response`
+/// rather than crashing the turn.
+fn parse_turn_stats(raw_response: &str) -> (usize, usize) {
+    let v: serde_json::Value = match serde_json::from_str(raw_response) {
+        Ok(v) => v,
+        Err(_) => return (0, 0),
+    };
+    let thinking = v
+        .get("thinking_blocks")
+        .and_then(|n| n.as_u64())
+        .unwrap_or(0) as usize;
+    let tool_calls = v
+        .get("tool_calls")
+        .and_then(|n| n.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    (thinking, tool_calls)
 }
 
 fn fallback_extraction(raw: &str) -> Extraction {

@@ -64,6 +64,13 @@ export function ChatTurn({
   // Build parent → children tree for steps
   const stepTree = buildStepTree(steps);
 
+  // v0.17.0 — distinct render for reasoning-only turns (the worker
+  // emitted thinking + planning text but didn't act). Visually
+  // signal that this isn't a finished answer so the user knows the
+  // work isn't done.
+  const isReasoningOnly =
+    isAssistant && message.responseKind === "reasoning_only";
+
   const handleCopy = async () => {
     try {
       const text = isUser
@@ -132,7 +139,26 @@ export function ChatTurn({
             </div>
           )}
 
-          {visibleContent.trim() && <MarkdownBody text={visibleContent} />}
+          {visibleContent.trim() && (
+            isReasoningOnly ? (
+              <div
+                className="my-1 rounded-md border-l-2 px-3 py-2"
+                style={{
+                  borderColor: "rgba(124, 92, 255, 0.55)",
+                  background: "rgba(124, 92, 255, 0.06)",
+                }}
+              >
+                <div className="text-[9px] tracking-[0.2em] uppercase text-bone-3/80 mb-1">
+                  Reasoning · not yet acted on
+                </div>
+                <div className="text-bone-2 text-[13.5px] leading-relaxed">
+                  <MarkdownBody text={visibleContent} />
+                </div>
+              </div>
+            ) : (
+              <MarkdownBody text={visibleContent} />
+            )
+          )}
 
           {errorDetail && <ErrorTraceDetail detail={errorDetail} />}
 

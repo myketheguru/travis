@@ -21,6 +21,7 @@ mod initiatives;
 mod persona;
 mod email;
 mod email_cmd;
+mod events;
 mod feedback;
 mod flags;
 mod flags_cmd;
