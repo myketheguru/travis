@@ -202,8 +202,22 @@ def _travis_clear_outputs():
 
         setStatus("ready");
         setReady(true);
-        // Tell the main process Pyodide is alive
+        // Tell the main process Pyodide is alive. v0.17.1 — re-emit
+        // periodically for the first 30s as a backstop against the
+        // ready-race regression introduced by v0.16.5's faster
+        // bundled-wheel bootstrap: the interpreter window can now be
+        // ready in ~3s, BEFORE Rust's setup() finishes attaching its
+        // listener (~5s for DB migrations + keychain). The first
+        // emit can land in the void; subsequent re-emits hit the
+        // listener once it's wired. set_ready() in Rust is
+        // idempotent, so repeat firings are harmless.
         await emit("interpreter-ready", { version: pyodideModule.version });
+        let reEmitCount = 0;
+        const reEmitInterval = setInterval(() => {
+          emit("interpreter-ready", { version: pyodideModule.version });
+          reEmitCount++;
+          if (reEmitCount >= 10) clearInterval(reEmitInterval);
+        }, 3000);
 
         // v0.16.2 — background preload of common heavy packages.
         // The interpreter reports ready BEFORE this runs, so the

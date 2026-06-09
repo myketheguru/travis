@@ -1,5 +1,56 @@
 # Travis Changelog
 
+## v0.17.1 — Interpreter-ready race + step-resync race + per-tool visibility (2026-06-09)
+
+Three bugs surfaced during the PS556→IS217 invoice flow on v0.16.7.
+The cap bump + thinking tiering let the worker keep going, but the
+user couldn't tell why a turn was taking 20+ minutes — and one of
+the reasons was a legitimate failure mode invisible until now.
+
+### Interpreter-ready race (fix)
+
+`run_python` was returning "interpreter not ready (Pyodide still
+loading)" three times in a row even though Pyodide had finished
+loading. Root cause: v0.16.5's bundled wheels made the interpreter
+window's bootstrap drop from ~30s to ~3-5s — fast enough that the
+frontend's `await emit("interpreter-ready", ...)` now fires BEFORE
+Rust's setup() finishes attaching `handle.listen("interpreter-
+ready", ...)` (DB migrations + keychain take ~5s). The event lands
+in the void; `interp.set_ready(true)` never runs; every subsequent
+`wait_ready(90s)` call returns false.
+
+Fix: the interpreter window re-emits `interpreter-ready` every 3
+seconds for the first 30 seconds. `set_ready(true)` is idempotent
+so repeat firings are harmless; the first emit that lands after
+Rust's listener attaches flips the state.
+
+### Step-resync race (fix)
+
+User-reported: "the steps do not show in real time. But if I reload
+the app or remount, the steps will appear on the chat." Root cause:
+the AskTab effect keyed on `activeConversationId` calls `listSteps()`
+to resync from the DB. While that query is in flight, live
+step-events arrive via the `step-event` subscription and
+`setSteps()` adds them. When `listSteps` resolves, its
+`setSteps(dbSteps)` REPLACES the in-memory state with the DB
+snapshot from query-start — wiping every live event that arrived in
+between.
+
+Fix: new `mergeStepLists()` merges DB rows with in-memory rows by
+id, preferring whichever has a terminal status or more notes, and
+sorts by `startedAt`. Live events are never overwritten by a stale
+resync.
+
+### Per-tool-call step (visibility)
+
+Long agent-loop turns previously showed a single "Working on it"
+step for the entire pass — opaque from the user's POV. The agent
+loop now opens a `StepKind::ToolCall` step for every tool dispatch,
+labelled with a short detail pulled from the input (doc id for
+read_document, purpose for run_python, query for search_memory,
+url for web_fetch). The step's summary is the first 140 chars of
+the tool result, so the user sees what came back at a glance.
+
 ## v0.17.0 — Event log substrate + condenser + reasoning UI (2026-06-08)
 
 Three paired pieces of the OpenHands-inspired conversation

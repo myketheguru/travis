@@ -137,8 +137,17 @@ export default function AskTab() {
     }
     let cancelled = false;
     listSteps(activeConversationId)
-      .then((s) => {
-        if (!cancelled) setSteps(s);
+      .then((dbSteps) => {
+        if (cancelled) return;
+        // v0.17.1 — merge instead of replace. The listSteps resync
+        // races with the live step-event subscription: if any live
+        // events arrived between query-start and query-resolve, a
+        // raw setSteps(dbSteps) wipes them. Merge by id, prefer the
+        // newer-shaped row (the one with `status !== "running"` or
+        // more notes), and union the orderings.
+        setSteps((prev) =>
+          mergeStepLists(prev, dbSteps, activeConversationId),
+        );
       })
       .catch(() => {});
     return () => {
@@ -756,6 +765,53 @@ function mergeServerThread(
   };
   const tail = serverMessages.slice(matchedIdx + 1);
   return [...preOpt, stampedUser, ...tail];
+}
+
+/// v0.17.1 — merge a DB-fetched step list onto in-memory state without
+/// losing live-streamed steps that arrived during the fetch.
+///
+/// - Steps present in both: prefer whichever has a terminal status, then
+///   whichever has more notes (live events accumulate them).
+/// - Steps only in DB: include.
+/// - Steps only in memory: keep (the live subscription saw them before
+///   the DB query observed them — they exist).
+///
+/// Order by startedAt ascending so the chat surface renders in the
+/// expected order regardless of which side surfaced each row.
+function mergeStepLists(
+  prev: ParsedStep[],
+  dbSteps: ParsedStep[],
+  conversationId: number | null,
+): ParsedStep[] {
+  const byId = new Map<string, ParsedStep>();
+  // Seed with DB rows so they form the baseline.
+  for (const s of dbSteps) {
+    if (conversationId !== null && s.conversationId !== conversationId) continue;
+    byId.set(s.id, s);
+  }
+  // Layer in-memory rows over DB rows where applicable.
+  for (const s of prev) {
+    if (conversationId !== null && s.conversationId !== conversationId) continue;
+    const existing = byId.get(s.id);
+    if (!existing) {
+      byId.set(s.id, s);
+      continue;
+    }
+    const existingTerminal = existing.status !== "running";
+    const liveTerminal = s.status !== "running";
+    const pick =
+      liveTerminal && !existingTerminal
+        ? s
+        : existingTerminal && !liveTerminal
+        ? existing
+        : s.notes.length > existing.notes.length
+        ? s
+        : existing;
+    byId.set(s.id, pick);
+  }
+  return Array.from(byId.values()).sort((a, b) =>
+    a.startedAt.localeCompare(b.startedAt),
+  );
 }
 
 /// Apply a streaming step event to local state immutably.

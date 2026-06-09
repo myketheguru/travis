@@ -2106,6 +2106,25 @@ pub async fn journal_ingest(
                         tool_call_id: None,
                     });
                     for call in turn.tool_calls {
+                        // v0.17.1 — per-tool-call step so the chat
+                        // shows real-time dispatch on long turns
+                        // (e.g. 20-min invoice flows). The user can
+                        // see exactly which tool is running and how
+                        // long each one took, instead of staring at
+                        // a single "Working on it" indicator.
+                        let tool_detail = describe_tool_call(&call.name, &call.input);
+                        let tool_step = crate::steps::Step::start(
+                            &app,
+                            &state.db.pool,
+                            conv_id,
+                            crate::steps::StepKind::ToolCall,
+                            call.name.clone(),
+                            Some(tool_detail),
+                            mgr_step.as_ref().map(|s| s.id.clone()),
+                        )
+                        .await
+                        .ok();
+
                         let result = match read_registry
                             .execute(&tool_ctx, &call.name, call.input.clone())
                             .await
@@ -2114,6 +2133,18 @@ pub async fn journal_ingest(
                             Err(e) => format!("error: {e}"),
                         };
                         let truncated: String = result.chars().take(8000).collect();
+
+                        if let Some(step) = tool_step {
+                            // Surface a short snippet of the result
+                            // as the step's summary so the user can
+                            // see at a glance what came back.
+                            let summary: String =
+                                result.chars().take(140).collect();
+                            let _ = step
+                                .complete_ok(&app, &state.db.pool, Some(summary))
+                                .await;
+                        }
+
                         current_messages.push(Message::tool_result(call.id, truncated));
                     }
                 }
@@ -3180,6 +3211,36 @@ pub async fn journal_ingest(
         extraction_ok: ok,
         error: err_msg,
     })
+}
+
+/// v0.17.1 — short, human-readable detail for a tool call's step row.
+/// Pulls one or two characteristic fields out of the tool input so
+/// the user sees what's being acted on instead of opaque `tool_call`.
+fn describe_tool_call(name: &str, input: &serde_json::Value) -> String {
+    let pick = |key: &str| {
+        input
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.chars().take(80).collect::<String>())
+    };
+    match name {
+        "read_document" | "analyze_document_styling" | "preview_document" => input
+            .get("documentId")
+            .or_else(|| input.get("document_id"))
+            .and_then(|v| v.as_i64())
+            .map(|id| format!("doc#{id}"))
+            .unwrap_or_else(|| name.to_string()),
+        "run_python" | "edit_python_artifact" => {
+            pick("purpose").unwrap_or_else(|| "python".to_string())
+        }
+        "search_memory" => pick("query").unwrap_or_else(|| "search".to_string()),
+        "web_fetch" => pick("url").unwrap_or_else(|| "web".to_string()),
+        "reconcile_documents" => pick("purpose").unwrap_or_else(|| "reconcile".to_string()),
+        _ => pick("purpose")
+            .or_else(|| pick("query"))
+            .or_else(|| pick("name"))
+            .unwrap_or_else(|| name.to_string()),
+    }
 }
 
 /// v0.17.0 — pull `(thinking_blocks, tool_calls)` from the agent
