@@ -155,6 +155,35 @@ export default function AskTab() {
     };
   }, [activeConversationId]);
 
+  // v0.17.3 — polling fallback for live step visibility. The
+  // subscribeSteps Tauri-event path has been unreliable in
+  // production (live events deliver inconsistently during long
+  // turns; user reports steps only appearing on remount). Belt-
+  // and-suspenders: while `busy` is true, poll `list_steps` every
+  // 1.5s and merge with current state. Cheap (a single indexed
+  // DB read per tick), guaranteed visibility within ~1.5s.
+  // Stops the moment the turn finishes.
+  useEffect(() => {
+    if (!busy || !activeConversationId) return;
+    let cancelled = false;
+    const intervalId = setInterval(async () => {
+      if (cancelled || !activeConversationId) return;
+      try {
+        const dbSteps = await listSteps(activeConversationId);
+        if (cancelled) return;
+        setSteps((prev) =>
+          mergeStepLists(prev, dbSteps, activeConversationId),
+        );
+      } catch {
+        /* network/IPC blip — next tick retries */
+      }
+    }, 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [busy, activeConversationId]);
+
   // Resume a thread on mount. Prefer the persisted conversation id so
   // tab-switches always restore the same chat. Fall back to the
   // backend's "awaiting_user" heuristic only on first run.

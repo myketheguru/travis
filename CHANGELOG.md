@@ -1,5 +1,32 @@
 # Travis Changelog
 
+## v0.17.3 — Step polling fallback (2026-06-09)
+
+The v0.17.1 mergeStepLists fix addressed the listSteps resync race
+but didn't actually surface the real symptom: live events from
+subscribeSteps aren't being delivered reliably during long agent
+turns. User reported "the steps do not show in real time. But if I
+reload the app or remount, the steps will appear" — meaning events
+ARE persisted (and visible on resync), but the live Tauri-event
+path is dropping them or batching them till after the turn ends.
+
+Rather than chase Tauri event-delivery timing further, ship a
+guaranteed polling fallback:
+
+- New `useEffect` keyed on `[busy, activeConversationId]`. When
+  busy === true, `setInterval` calls `listSteps` every 1.5s and
+  merges with current state via the existing `mergeStepLists`.
+- Cheap: a single indexed DB read per tick (~ms), no LLM cost.
+- Stops the moment `busy` turns false (turn complete).
+- The live subscription path stays — when it works, you see
+  events immediately; when it doesn't, the poll catches up within
+  ~1.5s. Belt-and-suspenders.
+
+This is a UX-side fix. The underlying Tauri event reliability
+question is queued for proper investigation as part of the v0.18
+substrate work — alongside the bigger lever: switch from Pyodide
+to bundled portable CPython.
+
 ## v0.17.2 — Hotfix: migration 0038 table-name collision (2026-06-09)
 
 **Critical.** v0.17.0 and v0.17.1 fail at DB open with "table event
