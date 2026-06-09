@@ -1,5 +1,22 @@
 # Travis Changelog
 
+## v0.18.1 — Hotfix: drop AppImage from Linux bundle targets (2026-06-09)
+
+v0.18.0's Linux Release build failed at the AppImage bundling step.
+`.deb` and `.rpm` succeeded; only `.AppImage` choked — `linuxdeploy`
+exited non-zero after ~14s, almost certainly tripping over the
+332MB bundled Python's symlinks and shared libraries. AppImage's
+portable-bundle model doesn't compose well with our resource shape.
+
+Fix: `tauri.conf.json` switches `bundle.targets` from `"all"` to
+an explicit list `["deb", "rpm", "nsis", "app", "dmg"]`. Linux
+gets `.deb` (Debian/Ubuntu) and `.rpm` (Fedora/RHEL) — covers the
+vast majority of distros without the AppImage rough edges.
+
+`linuxdeploy`'s stderr isn't captured in the workflow log so the
+exact failure mode is opaque; an AppImage-specific fix may be
+worth a follow-up if/when we want that format back.
+
 ## v0.18.0 — Pyodide → bundled CPython subprocess runtime (2026-06-09)
 
 The Pyodide-in-hidden-window architecture (v0.14 → v0.17.3) is gone.

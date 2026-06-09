@@ -184,15 +184,20 @@ jobs:
         id: collect
         run: |
           set -euo pipefail
-          shopt -s globstar nullglob
+          shopt -s nullglob
           declare -a files=()
-          # User-facing installers + their .sig sidecars
-          for f in bundle/**/*.exe bundle/**/*.msi bundle/**/*.dmg \
-                   bundle/**/*.AppImage bundle/**/*.deb bundle/**/*.rpm \
-                   bundle/**/*.app.tar.gz bundle/**/*.nsis.zip ; do
+          # User-facing installers + their .sig sidecars. v0.18.1 fix:
+          # globs scoped to format-level only (bundle/<format>/<file>)
+          # so we don't pick up the .exe stubs inside the .deb's
+          # extracted resource tree (pip's vendored distlib carries
+          # t32.exe / t64.exe / w32.exe / w64.exe — recursive ** was
+          # matching them and breaking the gh release upload step).
+          for f in bundle/nsis/*.exe bundle/msi/*.msi bundle/dmg/*.dmg \
+                   bundle/appimage/*.AppImage bundle/deb/*.deb bundle/rpm/*.rpm \
+                   bundle/macos/*.app.tar.gz bundle/nsis/*.nsis.zip ; do
             files+=("$f")
           done
-          for f in bundle/**/*.sig ; do
+          for f in bundle/*/*.sig ; do
             files+=("$f")
           done
           files+=("dist-update/latest.json")
