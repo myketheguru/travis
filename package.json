@@ -1,16 +1,16 @@
 {
   "name": "travis",
   "private": true,
-  "version": "0.17.3",
+  "version": "0.18.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "predev": "node scripts/fetch-pyodide-wheels.mjs",
-    "prebuild": "node scripts/fetch-pyodide-wheels.mjs",
+    "predev": "node scripts/fetch-python.mjs",
+    "prebuild": "node scripts/fetch-python.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "fetch:wheels": "node scripts/fetch-pyodide-wheels.mjs",
+    "fetch:python": "node scripts/fetch-python.mjs",
     "release:manifest": "node scripts/build-update-manifest.mjs"
   },
   "dependencies": {
@@ -22,7 +22,6 @@
     "clsx": "^2.1.1",
     "framer-motion": "^11.11.17",
     "prism-react-renderer": "^2.4.1",
-    "pyodide": "^0.29.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
@@ -37,8 +36,7 @@
     "@vitejs/plugin-react": "^4.6.0",
     "tailwindcss": "^4.0.0",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4",
-    "vite-plugin-static-copy": "^4.1.1"
+    "vite": "^7.0.4"
   },
   "overrides": {
     "@tauri-apps/api": "~2.10.0"

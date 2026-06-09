@@ -9,20 +9,14 @@ use std::path::Path;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::documents::{cmd as docs_cmd, db as docs_db, storage};
+use crate::python_runtime;
 use crate::AppState;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_TIMEOUT_SECS: u64 = 300;
-// v0.16.0 — bumped 30 → 90. Cold-start Pyodide load over a slow disk
-// (or first-launch of a freshly-installed app) can easily exceed 30s.
-// At 30s, the agent loop's first run_python call was failing repeatedly
-// and burning manager-pass iterations on the retries. 90s gives the
-// interpreter a real chance to come up; subsequent calls hit the
-// already-warm path within ms.
-const INTERPRETER_WARMUP_WAIT_SECS: u64 = 90;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,32 +73,22 @@ pub struct RunPythonOutcome {
     pub error: Option<String>,
 }
 
-/// Internal payload format for the run-python-request Tauri event.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct InterpreterRequest {
-    request_id: String,
-    conversation_id: i64,
-    code: String,
-    purpose: String,
-    /// filename → base64
-    input_files: HashMap<String, String>,
-    extra_libraries: Vec<String>,
-    timeout_secs: u64,
-}
-
 #[tauri::command]
 pub async fn run_python(
     app: AppHandle,
     state: State<'_, AppState>,
     params: RunPythonParams,
 ) -> Result<RunPythonOutcome, String> {
-    // Wait for Pyodide to be warm before sending work
-    let interp = state.interpreter.clone();
-    if !interp.wait_ready(INTERPRETER_WARMUP_WAIT_SECS).await {
-        return Err("interpreter not ready (Pyodide still loading)".into());
-    }
-
+    // v0.18.0 — subprocess-based CPython via python_runtime. Replaces
+    // the Pyodide hidden-window architecture entirely; the wait_ready
+    // / emit / await listener pattern is gone because real-process
+    // spawn is synchronous-ish (~150ms cold) and atomic.
+    //
+    // `params.libraries` is now informational — every wheel we
+    // declared in scripts/fetch-python.mjs is preinstalled. Anything
+    // else the LLM names here is ignored (and printed in a warning
+    // step so we can spot drift between the LLM's expectations and
+    // the bundle).
     let timeout_secs = params
         .timeout_secs
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
@@ -135,36 +119,16 @@ pub async fn run_python(
     }
 
     let request_id = format!("rp_{}_{}", chrono::Utc::now().timestamp_millis(), rand_suffix());
-    let req = InterpreterRequest {
-        request_id: request_id.clone(),
-        conversation_id: params.conversation_id.unwrap_or(0),
-        code: params.code.clone(),
-        purpose: params.purpose.clone(),
-        input_files,
-        extra_libraries: params.libraries.clone(),
-        timeout_secs,
-    };
-
-    // Register the pending response slot
-    let rx = interp.register(request_id.clone()).await;
-
-    // Emit the request to the interpreter window
-    app.emit_to("interpreter", "run-python-request", &req)
-        .map_err(|e| format!("emit run-python-request: {e}"))?;
-
-    // Await result with an outer timeout slightly larger than the
-    // user-specified one (allowing for slow base64 transfer)
-    let outer_timeout = std::time::Duration::from_secs(timeout_secs + 30);
-    let result = match tokio::time::timeout(outer_timeout, rx).await {
-        Ok(Ok(r)) => r,
-        Ok(Err(_)) => return Err("interpreter response channel closed".into()),
-        Err(_) => {
-            return Err(format!(
-                "interpreter timed out (no response in {}s)",
-                outer_timeout.as_secs()
-            ))
-        }
-    };
+    let result = python_runtime::run(
+        &app,
+        python_runtime::RunParams {
+            request_id: request_id.clone(),
+            code: params.code.clone(),
+            input_files,
+            timeout_secs,
+        },
+    )
+    .await;
 
     // Register any generated files as Documents
     let mut generated_ids: Vec<i64> = Vec::new();

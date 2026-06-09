@@ -45,3 +45,6 @@ src-tauri/.env
 
 # Claude Code session state
 .claude/
+
+# Bundled CPython runtime (v0.18.0+) — fetched at build time
+src-tauri/resources/python/

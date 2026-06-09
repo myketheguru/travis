@@ -35,6 +35,7 @@ mod llm;
 mod manager;
 mod memory;
 mod memory_cmd;
+mod python_runtime;
 mod overlay;
 mod packs;
 mod packs_cmd;
@@ -255,44 +256,12 @@ pub fn run() {
                 interpreter: interpreter_state.clone(),
             });
 
-            // Interpreter wiring: listen for the readiness signal and
-            // for execution results from the hidden interpreter
-            // window. The window initializes Pyodide at app start; we
-            // need its `interpreter-ready` event to flip our ready
-            // flag (used by run_python to know when to send work),
-            // and we need `run-python-result` events routed back to
-            // the awaiting caller via InterpreterState.
-            {
-                use tauri::Listener;
-                let interp_for_ready = interpreter_state.clone();
-                handle.listen("interpreter-ready", move |_event| {
-                    tracing::info!("interpreter window reported ready");
-                    interp_for_ready.set_ready(true);
-                });
-                let interp_for_err = interpreter_state.clone();
-                handle.listen("interpreter-error", move |event| {
-                    tracing::warn!(
-                        "interpreter window error: {}",
-                        event.payload()
-                    );
-                    interp_for_err.set_ready(false);
-                });
-                let interp_for_result = interpreter_state.clone();
-                handle.listen("run-python-result", move |event| {
-                    let payload = event.payload();
-                    match serde_json::from_str::<interpreter::cmd::RunPythonResult>(payload) {
-                        Ok(result) => {
-                            let interp = interp_for_result.clone();
-                            tauri::async_runtime::spawn(async move {
-                                interp.deliver(result).await;
-                            });
-                        }
-                        Err(e) => {
-                            tracing::warn!("invalid run-python-result payload: {e}");
-                        }
-                    }
-                });
-            }
+            // v0.18.0 — interpreter wiring removed. Pyodide hidden
+            // window is gone; python execution is now subprocess-
+            // based via `python_runtime`. No readiness signal needed
+            // (process spawn is atomic) and no event routing needed
+            // (subprocess stdout/stderr are read inline).
+            let _ = &interpreter_state; // kept on AppState for now
 
             handle.global_shortcut().register(primary_shortcut)?;
 

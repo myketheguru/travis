@@ -1,5 +1,74 @@
 # Travis Changelog
 
+## v0.18.0 — Pyodide → bundled CPython subprocess runtime (2026-06-09)
+
+The Pyodide-in-hidden-window architecture (v0.14 → v0.17.3) is gone.
+Python now runs as a real CPython 3.13 subprocess bundled via
+python-build-standalone. Every chronic Pyodide failure mode goes
+away: warmup-pattern hallucination, "interpreter not ready"
+timeouts, ready-race, cold-load latency, WASM compatibility gaps.
+
+### What changed
+
+- **New runtime** `src-tauri/src/python_runtime/mod.rs`:
+  - `run(app, params) -> RunPythonResult` spawns the bundled
+    Python via `tokio::process::Command`. Per-call temp dir holds
+    inputs/ + outputs/ + the wrapped script. Process gets cleaned
+    up after every call — no state leak between turns.
+  - Cold start: ~150ms (process spawn) vs Pyodide's 3-5s.
+  - Stdin nulled, stdout/stderr piped, `CREATE_NO_WINDOW` on
+    Windows so no flash of console.
+  - Timeout via `tokio::time::timeout`; on fire, the child dies.
+- **Build-time fetcher** `scripts/fetch-python.mjs`:
+  - Downloads indygreg's python-build-standalone tarball for the
+    host platform (Windows x64, macOS arm64/x64, Linux x64).
+  - Extracts via system `tar` (Windows 10 1803+, macOS, Linux all
+    have it natively).
+  - Pre-installs 21 wheels: pandas, openpyxl, xlsxwriter,
+    reportlab, pypdf, fpdf2, pdfplumber, python-docx, pillow,
+    numpy, lxml (native C-ext), beautifulsoup4, python-dateutil,
+    pytz, num2words, markdown, jinja2, pyyaml, qrcode[pil],
+    python-barcode, requests.
+  - Hooked into `predev` + `prebuild` so `npm run build` always
+    has Python ready.
+  - Idempotent: skips re-download / re-install if already present.
+- **Tauri bundle**: `tauri.conf.json` now declares
+  `"resources": ["resources/python/**/*"]` so the installer
+  carries the bundled Python. Hidden interpreter window deleted
+  from the config (no longer needed).
+- **Frontend**: deleted `src/interpreter/main.tsx` and
+  `interpreter.html` (the old Pyodide loader entry). Removed
+  Pyodide-related vite plugin and the `pyodide` npm dependency.
+- **Tool layer**: `src-tauri/src/interpreter/cmd.rs::run_python`
+  internals swapped to call `python_runtime::run`. The tool's
+  public surface (`RunPythonParams` / `RunPythonOutcome`) is
+  unchanged — LLM-facing interface untouched.
+
+### Installer size
+
++200 MB. The bundled Python tree is 332 MB on disk (~120 MB
+compressed in the installer); numpy + pandas + lxml + reportlab
+account for the bulk. Worth it — local-first stays intact, and
+the reliability gain pays for itself in one chat session free of
+"interpreter not ready" retries.
+
+### What stays the same
+
+- The LLM's `run_python` tool description, schema, output format.
+- Artifact persistence (`python_artifact` table + lineage via
+  `superseded_by`).
+- `edit_python_artifact` tool.
+- The warmup-pattern short-circuit (v0.16.2) — still applies; new
+  runtime would handle warmups fine but spawning a process for
+  `print('hello')` is still wasted work.
+
+### Cross-platform
+
+CI matrix builds three installers (Windows, macOS, Linux) each
+with its own bundled Python. No fork in the runtime code path —
+`python_runtime::resolve_python_bin` picks the right binary via
+compile-time `cfg!(target_os)` checks.
+
 ## v0.17.3 — Step polling fallback (2026-06-09)
 
 The v0.17.1 mergeStepLists fix addressed the listSteps resync race
