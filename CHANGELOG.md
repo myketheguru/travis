@@ -1,5 +1,25 @@
 # Travis Changelog
 
+## v0.19.7 — Hotfix: macro recursion limit for the grown extraction schema (2026-06-10)
+
+CI cargo check failed with `recursion limit reached while expanding
+$crate::__private::vec!` on the v0.19.6 build. The
+`serde_json::json!` literal in `build_extraction_tool` has grown
+past the default 128-step macro limit with the v0.19.x additions
+(pack memories, document classifications, coach hours, engagement
+enrichments, invoice drafts).
+
+Local cargo (Windows) happened to fit because of incremental
+caching; clean Linux CI build hit the wall.
+
+One-line fix: `#![recursion_limit = "512"]` at the top of
+`src-tauri/src/lib.rs`. 512 leaves room for the next few additions
+before another bump is needed.
+
+Cargo check on my local box (which was on the same code prior to
+the limit bump) was green — Linux CI is the source of truth for
+this kind of macro-expansion failure.
+
 ## v0.19.6 — Core Documents tab + Newer-wins override policy with consent gate (2026-06-10)
 
 ### Newer-wins override policy with consent gate

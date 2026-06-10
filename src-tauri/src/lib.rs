@@ -1,3 +1,11 @@
+// v0.19.7 — bump macro recursion limit for the agent-loop's
+// `report_extraction` tool schema. The serde_json::json! literal at
+// journal.rs:838 has grown past the default 128 with v0.19.x's pack
+// memory / document classification / coach_hours / engagement
+// enrichment / invoice draft fields. 512 leaves room for the next
+// few extraction-field additions before another bump.
+#![recursion_limit = "512"]
+
 mod actions;
 mod behavioral;
 mod behavioral_cmd;
