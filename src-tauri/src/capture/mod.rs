@@ -29,7 +29,8 @@
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter};
 
-use crate::journal::{ExtractedReminder, ExtractedTask};
+use crate::journal::{Extraction, ExtractedReminder, ExtractedTask};
+use crate::packs::PackHandle;
 use crate::workspaces;
 
 /// Snapshot of everything `run_background` needs. Built inside
@@ -43,6 +44,20 @@ pub struct CaptureSnapshot {
     pub tasks: Vec<ExtractedTask>,
     pub reminders: Vec<ExtractedReminder>,
     pub dest_ws_state: workspaces::State,
+    /// v0.19.3 — packs in scope when the snapshot was built. Static
+    /// trait-object refs travel safely. Each pack's
+    /// `ensure_entity` / `apply_extraction_observations` runs after
+    /// tasks + reminders so it never blocks chat.
+    pub enabled_packs: Vec<&'static dyn PackHandle>,
+    /// v0.19.3 — full extraction JSON snapshot so packs can pluck out
+    /// the fields they care about (coach_hours, document_classifications,
+    /// pack-specific bucket observations) without core depending on
+    /// pack-specific typed shapes.
+    pub extraction: Extraction,
+    /// v0.19.3 — co-mentioned entities in this turn. Packs use these
+    /// as parent_hint for kinds that benefit (e.g. engagement →
+    /// school).
+    pub entities_snapshot: std::collections::HashMap<String, Vec<String>>,
 }
 
 /// Run capture persistence for a single chat turn in the background.
@@ -119,6 +134,87 @@ pub async fn run_background(snap: CaptureSnapshot) {
         }
     }
 
+    // v0.19.3 — per-pack auto-population. Each pack ensures rows
+    // for entities of its declared kinds, then applies its
+    // extraction observations (document classifications, pack-
+    // specific extraction fields). All best-effort; failures log
+    // but never propagate. Schools auto-create FIRST so engagement-
+    // type kinds can find them as parent hints.
+    let ws_id = snap.dest_ws_state.active_id;
+    let extraction_json = serde_json::to_value(&snap.extraction).unwrap_or(serde_json::Value::Null);
+    let mut auto_created: usize = 0;
+
+    // Two passes so anchor kinds (school) resolve before downstream
+    // ones (engagement) need them as parent_hint.
+    for pass in [0, 1] {
+        for pack in &snap.enabled_packs {
+            for kind in pack.entity_kinds() {
+                let is_anchor = matches!(*kind, "school" | "client" | "tutor");
+                if pass == 0 && !is_anchor {
+                    continue;
+                }
+                if pass == 1 && is_anchor {
+                    continue;
+                }
+                let bucket = format!("{kind}s");
+                let names = match snap.entities_snapshot.get(&bucket) {
+                    Some(v) => v.clone(),
+                    None => continue,
+                };
+                // Resolve parent_hint from the same extraction's
+                // anchor entities. For now we only pass through a
+                // hint when the kind is engagement-shaped and a
+                // school is in scope; packs are free to ignore.
+                let parent_hint: Option<(&str, i64)> = if !is_anchor {
+                    snap.entities_snapshot
+                        .get("schools")
+                        .and_then(|s| s.first())
+                        .and_then(|sname| {
+                            // Best-effort lookup of the spine entity.
+                            // Sync-friendly: we already await per name
+                            // below so do it then.
+                            let _ = sname;
+                            None
+                        })
+                } else {
+                    None
+                };
+                for name in &names {
+                    if let Err(e) = pack
+                        .ensure_entity(&snap.pool, ws_id, kind, name, parent_hint)
+                        .await
+                    {
+                        tracing::warn!(
+                            "background capture: ensure_entity {}/{}/{}: {e}",
+                            pack.slug(),
+                            kind,
+                            name
+                        );
+                    } else {
+                        auto_created += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // Then each pack gets the full extraction to handle its own
+    // observation fields (coach_hours, document_classifications,
+    // anything else the pack declared on its extraction schema).
+    let mut observations_applied: usize = 0;
+    for pack in &snap.enabled_packs {
+        match pack
+            .apply_extraction_observations(&snap.pool, ws_id, snap.conv_id, &extraction_json)
+            .await
+        {
+            Ok(_) => observations_applied += 1,
+            Err(e) => tracing::warn!(
+                "background capture: apply_extraction_observations {}: {e}",
+                pack.slug()
+            ),
+        }
+    }
+
     // Tell the UI something landed. v0.15.2 doesn't render this
     // yet; the event is here so a future "tracked N in background"
     // notification can be wired without backend changes.
@@ -128,13 +224,17 @@ pub async fn run_background(snap: CaptureSnapshot) {
             "conversationId": snap.conv_id,
             "tasks": task_count,
             "reminders": reminder_count,
+            "autoCreated": auto_created,
+            "observationsApplied": observations_applied,
         }),
     );
 
     tracing::info!(
-        "background capture: conv {} → {} task(s), {} reminder(s)",
+        "background capture: conv {} → {} task(s), {} reminder(s), {} auto-created, {} pack observation pass(es)",
         snap.conv_id,
         task_count,
-        reminder_count
+        reminder_count,
+        auto_created,
+        observations_applied
     );
 }

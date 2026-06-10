@@ -144,6 +144,56 @@ pub trait PackHandle: Send + Sync {
     fn valves(&self) -> &'static [ValveDef] {
         &[]
     }
+
+    /// v0.19.3 — silently ensure a typed pack row exists for a named
+    /// entity of the given kind. Called from the journal agent loop
+    /// whenever the LLM extraction names an entity declared by this
+    /// pack's [`entity_kinds`]. The pack decides whether to write a
+    /// row (observational creates) or no-op (relationship-committing
+    /// kinds that need confirmation).
+    ///
+    /// `kind` is one of the strings returned by [`entity_kinds`].
+    /// `name` is the user-facing display name. Idempotent: the pack
+    /// is expected to dedup by case-insensitive name.
+    ///
+    /// Default: no-op. Packs override for kinds they want to auto-
+    /// populate.
+    fn ensure_entity<'a>(
+        &'a self,
+        pool: &'a sqlx::SqlitePool,
+        workspace_id: i64,
+        kind: &'a str,
+        name: &'a str,
+        // School-id-like hint for entities that belong under another.
+        // Resolved by the agent loop from co-mentioned entities in the
+        // same extraction turn. Packs that don't care can ignore.
+        parent_hint: Option<(&'a str, i64)>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>>
+    {
+        let _ = (pool, workspace_id, kind, name, parent_hint);
+        Box::pin(async { Ok(()) })
+    }
+
+    /// v0.19.3 — apply pack-specific extraction observations. The
+    /// agent loop hands the full extraction JSON to every enabled
+    /// pack after the typed-action and pack-memory passes. Packs
+    /// pluck out the fields they care about (coach_hours,
+    /// document_classifications, pack-specific row inserts, …) and
+    /// apply them.
+    ///
+    /// Default: no-op. Packs override to handle their own observation
+    /// fields without core needing to know the schema.
+    fn apply_extraction_observations<'a>(
+        &'a self,
+        pool: &'a sqlx::SqlitePool,
+        workspace_id: i64,
+        conversation_id: i64,
+        extraction: &'a serde_json::Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>>
+    {
+        let _ = (pool, workspace_id, conversation_id, extraction);
+        Box::pin(async { Ok(()) })
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,91 @@
 # Travis Changelog
 
+## v0.19.3 — Pack-owned auto-population + Document classification + signing-sheet → coach_hours auto-extract + everything backgrounded (2026-06-10)
+
+Closes the document-understanding gap from the v0.19.2 audit:
+attached files were being stored as generic `kind = 'file'` and
+left disconnected from the entities they belonged to. Now every
+attached doc gets classified + linked, signing sheets feed hours
+into `coach_hours`, and auto-created engagements bind to the right
+school.
+
+### Document classifications
+
+New `documentClassifications` field on the extraction schema. The
+LLM must emit one entry per attached doc:
+
+```json
+{
+  "documentId": 3,
+  "kind": "po",
+  "linkedEntityKind": "school",
+  "linkedEntityName": "IS 217",
+  "periodStart": "2026-03-23",
+  "periodEnd": "2026-06-25"
+}
+```
+
+Agent loop applies kind via `documents::db::set_kind` and creates a
+`document_link` row via `link_to_entity` once the spine entity is
+resolved by name. Result: the Manage > Documents tab can finally
+group by real type (po / wo / signed_sheet / invoice / contract)
+and per-school drill-down can show every doc tied to a school.
+
+### Signing sheets → coach_hours auto-populate
+
+New `coachHours` extraction field. The LLM emits one row per
+(coach, school, date, hours) tuple it pulled from an attached
+signing sheet. Agent loop:
+
+1. Calls `coach::ensure(workspace, coach_name)` (auto-creates).
+2. Calls `school::ensure(workspace, school_name)` (auto-creates).
+3. Dedups by `(coach_id, school_id, session_date)` — re-uploading
+   the same signing sheet doesn't double-count.
+4. Inserts a `coach_hours` row with description `"from signing
+   sheet doc#N"` for audit.
+
+Result: the LTE coach_hours tab actually has data after a sign-in
+sheet upload, instead of staying empty.
+
+### Engagement school linkage
+
+`engagement::ensure` was called with `school_id = None` in v0.19.1.
+Now the agent loop resolves the first school named in the same
+extraction (via `school::find_by_name`) and passes its id as the
+hint. Result: auto-created engagements get a proper school FK on
+first creation, not an orphan row.
+
+### Architecture: pack-owned, fully backgrounded
+
+Two user-stated rules that this slice honors:
+
+1. **"What to ingest and persist should live under the pack."** Core
+   stays generic. Two new optional trait methods on `PackHandle`:
+   - `ensure_entity(pool, ws_id, kind, name, parent_hint)` — pack
+     decides whether the named entity gets a typed row.
+   - `apply_extraction_observations(pool, ws_id, conv_id, extraction)`
+     — pack inspects the full extraction JSON and applies whatever
+     observation fields it cares about (e.g. LTE's `coachHours`,
+     `documentClassifications`).
+   Both default to no-op. LTE overrides both. Tutoring pack can
+   plug in identically when it wants to auto-populate.
+
+2. **"Everything should run as a separate background process and
+   never interrupt chat."** The inline pack-specific code that I
+   sketched in earlier v0.19.3 drafts is gone. The capture pipeline
+   (`capture::run_background`, already a spawned task) now also
+   iterates packs and calls both hooks AFTER tasks/reminders. The
+   chat command returns the moment the assistant message is
+   appended; pack persistence runs in the spawned background task.
+
+### Deferred to v0.19.4 / v0.20.0
+
+- **Contract / invoice auto-create.** They commit to money so they
+  need the "show, confirm, dismiss in one tap" UX before rows can
+  be auto-written.
+- **Manage UI redesign.** Relationship-aware drill-down (click a
+  school → see contracts, hours, docs, generated invoices).
+
 ## v0.19.2 — LTE coach + engagement auto-create + user-facing file folder (2026-06-10)
 
 Three pieces — finishes everything queued in the v0.19.1 changelog

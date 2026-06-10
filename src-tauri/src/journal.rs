@@ -372,6 +372,15 @@ pub struct Extraction {
     /// turns where reasoning isn't useful.
     #[serde(default)]
     pub thinking: Option<String>,
+    /// v0.19.3 — document classifications the LLM picked up from
+    /// attached docs. Applied as kind updates + entity links.
+    #[serde(default)]
+    pub document_classifications: Vec<ProposedDocumentClassification>,
+    /// v0.19.3 — coach_hours rows extracted from signing sheets.
+    /// Persisted to the pack's coach_hours table; coach + school
+    /// rows are auto-created via ensure() if not present.
+    #[serde(default)]
+    pub coach_hours: Vec<ExtractedCoachHours>,
     /// v0.19.0 — pack memories the LLM picked out of the turn.
     /// User-stated rules, preferences, constraints, corrections, or
     /// facts that should outlive the current conversation. Persisted
@@ -380,6 +389,52 @@ pub struct Extraction {
     /// the LLM should remember — proactively, not only when asked.
     #[serde(default)]
     pub pack_memories: Vec<ExtractedPackMemory>,
+}
+
+/// v0.19.3 — proposed document classification the LLM emits after
+/// reading attached docs. The agent loop applies these immediately:
+/// sets the document kind and links to a spine entity if one is
+/// named (resolves by spine entity lookup on the (kind, name) pair).
+/// "Generic file" gets reclassified to "po" / "wo" / "signed_sheet"
+/// / "invoice" / "contract" / etc. so the Manage tab can group docs
+/// by their real semantic kind, not the catch-all bucket.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProposedDocumentClassification {
+    pub document_id: i64,
+    /// New kind: po | wo | signed_sheet | invoice | contract | …
+    pub kind: String,
+    /// Optional spine entity (kind, name) this doc belongs to —
+    /// the agent loop resolves it to an entity_id by name and writes
+    /// a document_link row.
+    #[serde(default)]
+    pub linked_entity_kind: Option<String>,
+    #[serde(default)]
+    pub linked_entity_name: Option<String>,
+    /// Optional period the doc covers (helps with "show me docs from
+    /// March-June"-style filters).
+    #[serde(default)]
+    pub period_start: Option<String>,
+    #[serde(default)]
+    pub period_end: Option<String>,
+}
+
+/// v0.19.3 — coach_hours row extracted from a signing sheet. Agent
+/// loop ensures the coach + school exist, then inserts the row.
+/// `linked_signing_sheet_doc_id` ties the row back to the sheet for
+/// audit.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractedCoachHours {
+    pub coach_name: String,
+    pub school_name: String,
+    /// ISO date string YYYY-MM-DD.
+    pub session_date: String,
+    /// Hours worked that day, decimal.
+    pub hours: f64,
+    /// Optional doc id of the signing sheet these hours came from.
+    #[serde(default)]
+    pub linked_signing_sheet_doc_id: Option<i64>,
 }
 
 /// v0.19.0 — a single pack memory the LLM picked out of the turn.
@@ -866,6 +921,37 @@ fn build_extraction_tool(action_kinds: &[&str], entity_kinds: &[&str]) -> ToolDe
                 "thinking": {
                     "type": ["string", "null"],
                     "description": "v0.14.0 — your concise inner reasoning, 2-4 sentences, shown to the user in a collapsible 'Thinking' section. Write it like Claude: what you understood about the request, what you noticed in any attached document, what you're planning to do next, any constraint or ambiguity worth flagging. Be plain-spoken first person ('I'm seeing...', 'I need to...', 'Before I build it, I should...'). Leave null only for purely conversational greetings or acks."
+                },
+                "documentClassifications": {
+                    "type": "array",
+                    "description": "v0.19.3 — when documents are attached, ALWAYS emit a classification for each: kind (po, wo, signed_sheet, invoice, contract, sample_invoice, …), optional linked entity (linkedEntityKind + linkedEntityName — e.g. {kind:'school', name:'IS 217'}), and optional period (start/end ISO dates). The agent loop applies kind via set_document_kind and links via document_link. Without this the doc stays kind='file' and the Manage > Documents tab can't group by type. Example for an attached PO: {documentId: 3, kind: 'po', linkedEntityKind: 'school', linkedEntityName: 'IS 217', periodStart: '2026-03-23', periodEnd: '2026-06-25'}.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "documentId": { "type": "integer" },
+                            "kind": { "type": "string", "description": "po | wo | signed_sheet | invoice | contract | sample_invoice | other" },
+                            "linkedEntityKind": { "type": ["string", "null"], "description": "Spine entity kind (school, contract, engagement, coach)." },
+                            "linkedEntityName": { "type": ["string", "null"], "description": "Display name of the linked entity. The agent loop resolves to entity_id." },
+                            "periodStart": { "type": ["string", "null"], "description": "ISO date YYYY-MM-DD for the start of any period the doc covers." },
+                            "periodEnd": { "type": ["string", "null"] }
+                        },
+                        "required": ["documentId", "kind"]
+                    }
+                },
+                "coachHours": {
+                    "type": "array",
+                    "description": "v0.19.3 — when a signing sheet (or any source listing coach work) is attached, emit one row per (coach, school, date, hours) tuple. The agent loop ensures the coach + school exist (auto-creates if not) and inserts a coach_hours row linked to both. Example: {coachName:'Maria Santos', schoolName:'IS 217', sessionDate:'2026-03-17', hours:6.0, linkedSigningSheetDocId:4}. This is how the coach_hours table fills up from sign-in sheet uploads.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "coachName": { "type": "string" },
+                            "schoolName": { "type": "string" },
+                            "sessionDate": { "type": "string", "description": "ISO YYYY-MM-DD." },
+                            "hours": { "type": "number", "description": "Decimal hours." },
+                            "linkedSigningSheetDocId": { "type": ["integer", "null"] }
+                        },
+                        "required": ["coachName", "schoolName", "sessionDate", "hours"]
+                    }
                 },
                 "packMemories": {
                     "type": "array",
@@ -2526,68 +2612,12 @@ pub async fn journal_ingest(
                     let bucket = format!("{kind}s");
                     if let Some(names) = extraction.entities.0.get(&bucket) {
                         for name in names {
-                            // v0.19.1 / v0.19.2 — proactive LTE table
-                            // population. When the L2E pack is enabled
-                            // and the extraction names a school /
-                            // coach / engagement, silently ensure a
-                            // row exists in the matching pack table.
-                            // Idempotent by case-insensitive name.
-                            // The user's "radio silence" feedback was
-                            // that pack tabs stayed empty even though
-                            // the chat clearly knew about IS 217 /
-                            // PS 556 / etc. This wires the spine
-                            // mention into the pack table without
-                            // depending on the LLM to call the
-                            // find_or_create tool mid-task.
-                            #[cfg(feature = "pack-lead-to-empower")]
-                            if pack_slug == "lead-to-empower" {
-                                match kind {
-                                    "school" => {
-                                        if let Err(e) =
-                                            crate::packs::lead_to_empower::domain::school::ensure(
-                                                &state.db.pool,
-                                                dest_ws_id,
-                                                name,
-                                            )
-                                            .await
-                                        {
-                                            tracing::warn!(
-                                                "lte school auto-create failed for {name}: {e}"
-                                            );
-                                        }
-                                    }
-                                    "coach" => {
-                                        if let Err(e) =
-                                            crate::packs::lead_to_empower::domain::coach::ensure(
-                                                &state.db.pool,
-                                                dest_ws_id,
-                                                name,
-                                            )
-                                            .await
-                                        {
-                                            tracing::warn!(
-                                                "lte coach auto-create failed for {name}: {e}"
-                                            );
-                                        }
-                                    }
-                                    "engagement" => {
-                                        if let Err(e) =
-                                            crate::packs::lead_to_empower::domain::engagement::ensure(
-                                                &state.db.pool,
-                                                dest_ws_id,
-                                                name,
-                                                None,
-                                            )
-                                            .await
-                                        {
-                                            tracing::warn!(
-                                                "lte engagement auto-create failed for {name}: {e}"
-                                            );
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
+                            // v0.19.3 — pack-table auto-population
+                            // moved to the background capture
+                            // pipeline (via PackHandle::ensure_entity)
+                            // so it never blocks the chat reply.
+                            // Only spine mention recording happens
+                            // inline here.
 
                             let entity_id = identity::record_mention(
                                 &state.db.pool,
@@ -2954,6 +2984,13 @@ pub async fn journal_ingest(
             }
         }
     }
+
+    // v0.19.3 — document classification + coach_hours persistence
+    // ran inline here in earlier drafts; both now live in the
+    // background capture pipeline (capture::run_background) via
+    // PackHandle::apply_extraction_observations. Core stays
+    // pack-agnostic; pack code owns its own bucket of the
+    // extraction.
 
     // v0.19.0 — persist pack memories. The LLM proactively picked
     // rules / preferences / constraints / facts / corrections out of
@@ -3323,6 +3360,12 @@ pub async fn journal_ingest(
             tasks: extraction.tasks.clone(),
             reminders: extraction.reminders.clone(),
             dest_ws_state: dest_ws_state.clone(),
+            // v0.19.3 — packs travel as &'static dyn refs so this is a
+            // cheap clone; the background task picks up each pack's
+            // ensure_entity + apply_extraction_observations.
+            enabled_packs: state.enabled_packs.clone(),
+            extraction: extraction.clone(),
+            entities_snapshot: extraction.entities.0.clone(),
         };
         tauri::async_runtime::spawn(async move {
             crate::capture::run_background(snap).await;

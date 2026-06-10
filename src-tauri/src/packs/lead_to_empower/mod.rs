@@ -122,6 +122,189 @@ impl PackHandle for LeadToEmpowerPack {
     fn valves(&self) -> &'static [ValveDef] {
         VALVES
     }
+
+    /// v0.19.3 — silently ensure pack rows for entity kinds the LLM
+    /// extraction names. Schools / coaches / engagements get an
+    /// observational row immediately so the Manage tabs reflect what
+    /// the chat has seen. Other kinds (dept, module) are still served
+    /// by the catalog tables and don't auto-create.
+    fn ensure_entity<'a>(
+        &'a self,
+        pool: &'a sqlx::SqlitePool,
+        workspace_id: i64,
+        kind: &'a str,
+        name: &'a str,
+        parent_hint: Option<(&'a str, i64)>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            match kind {
+                "school" => {
+                    domain::school::ensure(pool, workspace_id, name)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                }
+                "coach" => {
+                    domain::coach::ensure(pool, workspace_id, name)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                }
+                "engagement" => {
+                    let school_id = match parent_hint {
+                        Some(("school", id)) => Some(id),
+                        _ => None,
+                    };
+                    domain::engagement::ensure(pool, workspace_id, name, school_id)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                }
+                _ => {}
+            }
+            Ok(())
+        })
+    }
+
+    /// v0.19.3 — handle LTE-specific extraction fields:
+    /// - `documentClassifications`: kind + entity link
+    /// - `coachHours`: persist hours rows + auto-create coach + school
+    /// Pack-agnostic core just hands us the JSON; we pluck what we know.
+    fn apply_extraction_observations<'a>(
+        &'a self,
+        pool: &'a sqlx::SqlitePool,
+        workspace_id: i64,
+        _conversation_id: i64,
+        extraction: &'a serde_json::Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            // Document classifications. Schema mirrors core's
+            // ProposedDocumentClassification but we parse from JSON
+            // so the pack doesn't depend on core's typed struct.
+            if let Some(arr) = extraction
+                .get("documentClassifications")
+                .and_then(|v| v.as_array())
+            {
+                for c in arr {
+                    let doc_id = match c.get("documentId").and_then(|v| v.as_i64()) {
+                        Some(d) => d,
+                        None => continue,
+                    };
+                    let kind = c
+                        .get("kind")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim())
+                        .unwrap_or("");
+                    if kind.is_empty() {
+                        continue;
+                    }
+                    if let Err(e) = crate::documents::db::set_kind(pool, doc_id, kind).await {
+                        tracing::warn!(
+                            "lte apply_observations: set_kind doc#{doc_id} → {kind}: {e}"
+                        );
+                        continue;
+                    }
+                    let linked_kind = c.get("linkedEntityKind").and_then(|v| v.as_str());
+                    let linked_name = c.get("linkedEntityName").and_then(|v| v.as_str());
+                    if let (Some(lk), Some(ln)) = (linked_kind, linked_name) {
+                        if let Some((entity_id, _ek, _ps)) =
+                            crate::identity::find_by_normalized_name(pool, workspace_id, ln).await
+                        {
+                            let _ = crate::documents::db::link_to_entity(
+                                pool, doc_id, entity_id, lk,
+                            )
+                            .await;
+                        }
+                    }
+                }
+            }
+
+            // Coach hours. Ensure coach + school, dedup by (coach,
+            // school, date), then insert.
+            if let Some(arr) = extraction.get("coachHours").and_then(|v| v.as_array()) {
+                for h in arr {
+                    let coach_name = h
+                        .get("coachName")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .unwrap_or("");
+                    let school_name = h
+                        .get("schoolName")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .unwrap_or("");
+                    let session_date = h
+                        .get("sessionDate")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .unwrap_or("");
+                    let hours = h.get("hours").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let linked_doc =
+                        h.get("linkedSigningSheetDocId").and_then(|v| v.as_i64());
+                    if coach_name.is_empty()
+                        || school_name.is_empty()
+                        || session_date.is_empty()
+                        || hours <= 0.0
+                    {
+                        continue;
+                    }
+                    let coach = match domain::coach::ensure(pool, workspace_id, coach_name).await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::warn!(
+                                "lte apply_observations: coach ensure {coach_name}: {e}"
+                            );
+                            continue;
+                        }
+                    };
+                    let school = match domain::school::ensure(pool, workspace_id, school_name).await
+                    {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::warn!(
+                                "lte apply_observations: school ensure {school_name}: {e}"
+                            );
+                            continue;
+                        }
+                    };
+                    let existing: Option<(i64,)> = sqlx::query_as(
+                        "SELECT id FROM coach_hours
+                         WHERE coach_id = ?1 AND school_id = ?2 AND session_date = ?3",
+                    )
+                    .bind(coach.id)
+                    .bind(school.id)
+                    .bind(session_date)
+                    .fetch_optional(pool)
+                    .await
+                    .ok()
+                    .flatten();
+                    if existing.is_some() {
+                        continue;
+                    }
+                    let description =
+                        linked_doc.map(|d| format!("from signing sheet doc#{d}"));
+                    if let Err(e) = sqlx::query(
+                        "INSERT INTO coach_hours (workspace_id, coach_id, school_id, session_date, hours, description)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    )
+                    .bind(workspace_id)
+                    .bind(coach.id)
+                    .bind(school.id)
+                    .bind(session_date)
+                    .bind(hours)
+                    .bind(description)
+                    .execute(pool)
+                    .await
+                    {
+                        tracing::warn!(
+                            "lte apply_observations: coach_hours insert {coach_name}/{session_date}: {e}"
+                        );
+                    }
+                }
+            }
+
+            Ok(())
+        })
+    }
 }
 
 // Pack-author-declared settings. Travis renders the form in Settings →
