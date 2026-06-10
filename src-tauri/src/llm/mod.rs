@@ -260,6 +260,25 @@ pub fn build(
 ) -> anyhow::Result<Box<dyn LlmProvider>> {
     let model = model.unwrap_or_else(|| default_model(provider));
     match provider {
+        // v0.20.2 — Travis Cloud: managed Anthropic backend. Uses the
+        // build-time embedded key (TRAVIS_CLOUD_ANTHROPIC_KEY) so new
+        // users have a working LLM out of the box without configuring
+        // anything. Falls through to a clear error when the build
+        // wasn't compiled with the key.
+        "travis_cloud" => {
+            let key = travis_cloud_key()
+                .ok_or_else(|| anyhow::anyhow!(
+                    "This build of Travis wasn't compiled with a Travis Cloud key. \
+                     Open Settings → LLM Provider and switch to 'Use my own LLM', \
+                     OR install an official release build.",
+                ))?;
+            let cloud_model = travis_cloud_model().unwrap_or_else(|| default_model("claude").to_string());
+            Ok(Box::new(claude::ClaudeProvider::new(
+                http,
+                key.to_string(),
+                cloud_model,
+            )))
+        }
         "claude" => {
             let key = api_key.ok_or_else(|| missing_key_error("Claude", "claude"))?;
             Ok(Box::new(claude::ClaudeProvider::new(http, key.to_string(), model.to_string())))
@@ -274,6 +293,39 @@ pub fn build(
         }
         other => Err(anyhow::anyhow!("unknown provider: {other}")),
     }
+}
+
+/// v0.20.2 — build-time Travis Cloud key. Returns None when the build
+/// didn't ship with one (local dev, third-party fork without the
+/// secret). The Cloud provider falls through to a clear error in that
+/// case so the user knows to switch to "own LLM" mode.
+pub fn travis_cloud_key() -> Option<&'static str> {
+    let raw = option_env!("TRAVIS_CLOUD_ANTHROPIC_KEY")?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+/// Optional override for the Travis Cloud default model. If unset,
+/// falls back to default_model("claude") so we ship the latest
+/// recommended Anthropic model.
+pub fn travis_cloud_model() -> Option<String> {
+    let raw = option_env!("TRAVIS_CLOUD_MODEL")?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// True iff this build shipped with a Travis Cloud key — i.e. the
+/// Cloud provider option will actually work without user setup.
+pub fn travis_cloud_available() -> bool {
+    travis_cloud_key().is_some()
 }
 
 /// Build a descriptive error explaining WHY the key is missing — was

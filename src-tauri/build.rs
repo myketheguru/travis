@@ -10,6 +10,14 @@ fn main() {
     println!("cargo:rerun-if-env-changed=TRAVIS_GOOGLE_CLIENT_SECRET");
     println!("cargo:rerun-if-env-changed=TRAVIS_MICROSOFT_CLIENT_ID");
     println!("cargo:rerun-if-env-changed=TRAVIS_MICROSOFT_CLIENT_SECRET");
+    // v0.20.2 — Travis Cloud anthropic key, baked at build time so the
+    // shipped binary defaults to Travis Cloud for new users without
+    // any onboarding LLM-setup step. The CI workflow writes this from
+    // a secret; local dev builds without it surface the cloud option
+    // as "(this build wasn't compiled with a cloud key)" so devs know
+    // to fall back to their own key.
+    println!("cargo:rerun-if-env-changed=TRAVIS_CLOUD_ANTHROPIC_KEY");
+    println!("cargo:rerun-if-env-changed=TRAVIS_CLOUD_MODEL");
 
     // Read src-tauri/.env if present and forward each KEY=VALUE to rustc as a
     // compile-time env var. This makes the secrets reproducible across shells
