@@ -1,5 +1,99 @@
 # Travis Changelog
 
+## v0.19.0 — Cross-conversation context tool + Reasoning-between-steps (2026-06-10)
+
+### `search_conversations` — pull context from any prior thread
+
+New LLM tool that searches across all conversation threads in the
+workspace for a literal phrase. Use case: the user says "the IS 217
+work from last week, what rate did we settle on?" and Travis can
+find the answer by reaching into the prior thread instead of asking
+again.
+
+- New `src-tauri/src/tools/search_conversations.rs` —
+  `SearchConversationsTool` registered in the read-only tool registry.
+- Substring match (case-insensitive) over message body content,
+  scoped to visible workspaces, recency-ordered. Returns up to 30
+  hits with `{conversationId, conversationLabel, messageId, role,
+  snippet, createdAt}` per hit. The snippet is a ~200-char excerpt
+  centred on the matching phrase.
+- `excludeActive` defaults to true — searches OTHER threads, not
+  the one currently in flight. The LLM can flip it false on the
+  rare "search this thread itself" case.
+- Distinct from `search_memory` (semantic embeddings hit). Use
+  search_memory for "what was said"; search_conversations for
+  "where it was said and the exact words".
+- Humanised step label: **Looking through past threads**.
+
+### Reasoning-between-steps
+
+The user wanted to see Travis's thinking BETWEEN tool calls, not
+buried as collapsed notes under "Working on it". Now: every
+substantive thinking block (≥80 chars) the worker emits also
+spawns a distinct `Thinking`-kind child step under the manager
+step, with a verb-led label (`Reasoning · noticed PO rate differs
+from sample...`) and the first 280 chars as the step detail.
+
+The chat surface renders these inline alongside the tool-call
+steps, so a long turn now reads as a narration:
+
+```
+▸ Working on it
+  · Reasoning · Need to find the IS 217 PO and WO first…
+  · Reading attachment — IS 217 (1).pdf
+  · Reading attachment — LEA991893POPrint…
+  · Reasoning · noticed PO rate is $1,500, sample was $2,300…
+  · Generating invoice
+```
+
+The note-on-manager-step path stays for the collapsible archive of
+the full chain-of-thought; the new child step is the narration card.
+
+### Pack memory — Travis learns and remembers, every turn
+
+This is the heavier lift the user asked for: "travis should learn
+and constantly update its memory on things". Pack-scoped memory
+that Travis writes to PROACTIVELY in every turn, recalls into every
+future system prompt, and dedups so re-stated rules just bump
+relevance.
+
+- Migration 0040: new `pack_memory` table
+  `(workspace, pack_slug, kind, target_kind, target_id, content,
+  source, conversation_id, relevance_score, pinned, created_at,
+  updated_at)`. Five kinds: `rule`, `preference`, `constraint`,
+  `fact`, `correction`. Two scope levels: pack-wide (target NULL)
+  and entity-scoped (target_kind + target_id point at a spine
+  entity row).
+- New `packs::memory` module with `remember`, `recall_for_prompt`,
+  and `format_for_prompt`. Dedup on (workspace, pack, target,
+  content) — restating a memory bumps relevance instead of
+  creating a new row.
+- New `remember_constraint` LLM tool for explicit "remember this"
+  requests from the user. Humanised step label:
+  **Remembering that for next time**.
+- New `packMemories` field on the `report_extraction` tool schema —
+  the LLM PROACTIVELY picks rules / preferences / constraints /
+  facts / corrections out of every turn and emits them in the
+  extraction. The agent loop persists each one alongside tasks
+  and reminders. So Travis learns whether or not it's asked.
+- `build_system_prompt` now takes a `pack_memory_block` argument;
+  the agent loop calls `recall_for_prompt` for the active workspace
+  + enabled packs and folds the memories into the system prompt as
+  a `=== Pack memory ===` block.
+
+v0.19.1 will add entity-scoped recall (memories tied to a school /
+contract surface only when that entity is mentioned in the current
+turn) — currently the recall pulls pack-wide memories only, which
+is strictly additive: no risk of hiding relevant memories.
+
+### Deferred to v0.19.1
+
+- Entity-scoped recall (needs entity-in-conversation tracking).
+- LTE pack auto-creation of schools / contracts / engagements from
+  the same extraction path (proactive table population, not just
+  memory).
+- Organised file-folder symlink farm under `Documents/Travis/…`.
+
 ## v0.18.3 — Conversation switcher + Reveal-in-folder file trace (2026-06-10)
 
 ### Searchable conversation switcher (#)

@@ -22,7 +22,9 @@ pub mod read_document;
 pub mod reconcile_documents;
 pub mod delegate;
 pub mod edit_python_artifact;
+pub mod remember_constraint;
 pub mod run_python;
+pub mod search_conversations;
 pub mod search_memory;
 pub mod update_document;
 pub mod web_fetch;
@@ -219,6 +221,8 @@ pub fn read_only_registry(packs: &[&dyn crate::packs::PackHandle]) -> ToolRegist
     let mut reg = ToolRegistry::new();
     reg.register(Box::new(web_fetch::WebFetchTool));
     reg.register(Box::new(search_memory::SearchMemoryTool));
+    reg.register(Box::new(search_conversations::SearchConversationsTool));
+    reg.register(Box::new(remember_constraint::RememberConstraintTool));
     reg.register(Box::new(list_open_tasks::ListOpenTasksTool));
     reg.register(Box::new(clipboard::ReadClipboardTool));
     reg.register(Box::new(open_url::OpenUrlTool));

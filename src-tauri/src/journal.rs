@@ -34,6 +34,7 @@ fn build_system_prompt(
     profile: &UserProfile,
     pack_fragment: &str,
     workspace_block: &str,
+    pack_memory_block: &str,
 ) -> String {
     let name = profile.name.trim();
     let first = name.split_whitespace().next().unwrap_or(name);
@@ -218,6 +219,15 @@ Capture-only fields (`tasks`, `entities`, `reminders`, `completedTaskIds`, `clar
         prompt.push_str("\n\n");
         prompt.push_str(workspace_block);
     }
+    // v0.19.0 — pack memory recall. User-stated rules / preferences /
+    // constraints / facts / corrections, scoped to entities currently
+    // in conversation context. Appended last so they sit near the
+    // model's attention horizon and aren't outranked by the older
+    // boilerplate above.
+    if !pack_memory_block.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(pack_memory_block);
+    }
     prompt
 }
 
@@ -362,6 +372,31 @@ pub struct Extraction {
     /// turns where reasoning isn't useful.
     #[serde(default)]
     pub thinking: Option<String>,
+    /// v0.19.0 — pack memories the LLM picked out of the turn.
+    /// User-stated rules, preferences, constraints, corrections, or
+    /// facts that should outlive the current conversation. Persisted
+    /// to `pack_memory` and recalled into future system prompts.
+    /// Travis should populate this whenever the user states something
+    /// the LLM should remember — proactively, not only when asked.
+    #[serde(default)]
+    pub pack_memories: Vec<ExtractedPackMemory>,
+}
+
+/// v0.19.0 — a single pack memory the LLM picked out of the turn.
+/// Mirror of the [`crate::tools::remember_constraint`] tool input
+/// but emitted automatically as part of the extraction.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractedPackMemory {
+    pub pack_slug: String,
+    /// rule | preference | constraint | fact | correction
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub target_kind: Option<String>,
+    #[serde(default)]
+    pub target_id: Option<i64>,
+    pub content: String,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -831,6 +866,21 @@ fn build_extraction_tool(action_kinds: &[&str], entity_kinds: &[&str]) -> ToolDe
                 "thinking": {
                     "type": ["string", "null"],
                     "description": "v0.14.0 — your concise inner reasoning, 2-4 sentences, shown to the user in a collapsible 'Thinking' section. Write it like Claude: what you understood about the request, what you noticed in any attached document, what you're planning to do next, any constraint or ambiguity worth flagging. Be plain-spoken first person ('I'm seeing...', 'I need to...', 'Before I build it, I should...'). Leave null only for purely conversational greetings or acks."
+                },
+                "packMemories": {
+                    "type": "array",
+                    "description": "v0.19.0 — RULES, PREFERENCES, CONSTRAINTS, FACTS, or CORRECTIONS the user established in this turn that you should remember beyond this conversation. PROACTIVELY pick these out — don't wait to be asked to remember. Examples: user says 'never include March 17 dates for IS 217' → emit {packSlug:'lead-to-empower', kind:'constraint', targetKind:'school', content:'Never include 03/17 service dates for IS 217 — pre-PO window'}. User says 'Taylor prefers Net 30' → emit {packSlug:'lead-to-empower', kind:'preference', content:'Taylor prefers Net 30 payment terms'}. User corrects you ('the school is IS 217, not Performing Arts') → emit {packSlug:'lead-to-empower', kind:'correction', targetKind:'school', content:'School is named IS 217 (not Performing Arts — that is the PO deliver-to label only)'}. Dense, specific, one memory per array entry. Pack scope MUST match an enabled pack slug.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "packSlug": { "type": "string", "description": "Slug of the pack this memory belongs to (e.g. 'lead-to-empower')." },
+                            "kind": { "type": "string", "enum": ["rule", "preference", "constraint", "fact", "correction"], "description": "Memory category. Default 'rule'." },
+                            "targetKind": { "type": ["string", "null"], "description": "Optional spine entity kind to scope this memory ('school', 'contract', 'engagement', 'coach', ...). Required if targetId is set." },
+                            "targetId": { "type": ["integer", "null"], "description": "Optional spine entity id paired with targetKind." },
+                            "content": { "type": "string", "description": "The memory text. Dense and specific." }
+                        },
+                        "required": ["packSlug", "content"]
+                    }
                 }
             },
             "required": ["intent", "response"]
@@ -1688,6 +1738,35 @@ pub async fn journal_ingest(
     )
     .await;
 
+    // v0.19.0 — pack memory recall. Loads user-stated rules /
+    // preferences scoped to the enabled packs. v0.19.1 will add
+    // entity-scoped filtering (memories tied to a specific school /
+    // contract surface only when that entity is in scope); for now
+    // we load pack-wide memories only — strictly additive, no
+    // risk of hiding relevant memories.
+    let pack_memory_block = {
+        let enabled_slugs: Vec<&str> = state
+            .enabled_packs
+            .iter()
+            .map(|p| p.slug())
+            .collect();
+        match crate::packs::memory::recall_for_prompt(
+            &state.db.pool,
+            ws_snapshot.active_id,
+            &enabled_slugs,
+            &[], // no entity scoping yet — pack-wide memories only
+            20,
+        )
+        .await
+        {
+            Ok(memories) => crate::packs::memory::format_for_prompt(&memories),
+            Err(e) => {
+                tracing::warn!("pack memory recall failed: {e}");
+                String::new()
+            }
+        }
+    };
+
     // List the visible workspaces so the LLM can route. Sensitive
     // workspaces are excluded from this list — they're never
     // auto-routed into; the user must switch into them explicitly.
@@ -2012,6 +2091,7 @@ pub async fn journal_ingest(
                     &profile,
                     &crate::packs::prompt_fragment(&state.enabled_packs),
                     &workspace_block,
+                    &pack_memory_block,
                 )),
                 cache_system: true,
                 // v0.15.2: with extended thinking enabled, temperature
@@ -2048,11 +2128,50 @@ pub async fn journal_ingest(
                     // worker's reasoning stream into the chat as it
                     // happens — the same loop-doesn't-quit texture as
                     // Claude.ai's chat surface.
+                    //
+                    // v0.19.0 — substantive thinking ALSO emits its
+                    // own child step so it lands BETWEEN the tool
+                    // calls in the chat surface (the user wanted
+                    // to see Travis's reasoning between actions, not
+                    // buried as a footnote on the manager step). The
+                    // note-on-manager-step path stays for the
+                    // collapsible reasoning archive.
                     for thought in &turn.thinking_blocks {
                         if let Some(s) = mgr_step.as_ref() {
                             let snippet: String =
                                 thought.chars().take(500).collect();
                             s.note(&app, &state.db.pool, snippet).await;
+                        }
+                        let cleaned = thought.trim();
+                        if cleaned.chars().count() >= 80 {
+                            let label = summarise_thinking(cleaned);
+                            let mut detail: String =
+                                cleaned.chars().take(280).collect();
+                            if cleaned.chars().count() > 280 {
+                                detail.push('…');
+                            }
+                            let parent_id =
+                                mgr_step.as_ref().map(|s| s.id.clone());
+                            if let Ok(thinking_step) =
+                                crate::steps::Step::start(
+                                    &app,
+                                    &state.db.pool,
+                                    conv_id,
+                                    crate::steps::StepKind::Thinking,
+                                    label,
+                                    Some(detail),
+                                    parent_id,
+                                )
+                                .await
+                            {
+                                let _ = thinking_step
+                                    .complete_ok(
+                                        &app,
+                                        &state.db.pool,
+                                        None,
+                                    )
+                                    .await;
+                            }
                         }
                     }
 
@@ -2766,6 +2885,46 @@ pub async fn journal_ingest(
         }
     }
 
+    // v0.19.0 — persist pack memories. The LLM proactively picked
+    // rules / preferences / constraints / facts / corrections out of
+    // this turn; write each to pack_memory so they recall into
+    // future system prompts. Dedup happens inside `remember()` so
+    // re-emitting the same memory just bumps relevance, not a new row.
+    if !extraction.pack_memories.is_empty() {
+        let enabled_slug_set: std::collections::HashSet<String> = state
+            .enabled_packs
+            .iter()
+            .map(|p| p.slug().to_string())
+            .collect();
+        for m in &extraction.pack_memories {
+            if !enabled_slug_set.contains(&m.pack_slug) {
+                tracing::warn!(
+                    "extraction emitted pack_memory for disabled/unknown pack {}",
+                    m.pack_slug
+                );
+                continue;
+            }
+            let kind = crate::packs::memory::MemoryKind::from_str(
+                m.kind.as_deref().unwrap_or("rule"),
+            );
+            if let Err(e) = crate::packs::memory::remember(
+                &state.db.pool,
+                ws_snapshot.active_id,
+                &m.pack_slug,
+                kind,
+                m.target_kind.as_deref(),
+                m.target_id,
+                &m.content,
+                "extraction",
+                Some(conv_id),
+            )
+            .await
+            {
+                tracing::warn!("pack memory persist failed: {e}");
+            }
+        }
+    }
+
     // Apply workflow ops in order ([[feedback-workflow-led]]). The LLM
     // emits a `Start` then any number of `FillSlot`s; later turns might
     // add more fills, then a `Complete` once finalization is proposed.
@@ -2889,6 +3048,7 @@ pub async fn journal_ingest(
                 &profile,
                 &crate::packs::prompt_fragment(&state.enabled_packs),
                 &workspace_block,
+                &pack_memory_block,
             )),
             cache_system: true,
             temperature: Some(0.3),
@@ -3245,6 +3405,8 @@ fn humanize_tool_name(name: &str, input: &serde_json::Value) -> String {
         "reconcile_documents" => "Cross-referencing attachments".to_string(),
         "find_documents" | "find_matching_documents" => "Finding matching documents".to_string(),
         "search_memory" => "Checking the records".to_string(),
+        "search_conversations" => "Looking through past threads".to_string(),
+        "remember_constraint" => "Remembering that for next time".to_string(),
         "find_case" => "Looking up the case".to_string(),
         "web_fetch" => "Fetching from the web".to_string(),
         "delegate" => "Asking a focused side-question".to_string(),
@@ -3278,6 +3440,30 @@ fn humanize_tool_name(name: &str, input: &serde_json::Value) -> String {
                 .collect::<String>();
             pretty
         }
+    }
+}
+
+/// v0.19.0 — produce a short label for a Thinking-kind child step
+/// from the raw thinking block. We don't want to dump the whole
+/// chain-of-thought in the step name, just a verb-led summary so the
+/// chat surface reads like a narration. Heuristic: the first sentence
+/// or first 60 chars, with a leading "Thinking about" prefix.
+fn summarise_thinking(thought: &str) -> String {
+    let first_sentence = thought
+        .split(|c: char| c == '.' || c == '?' || c == '!' || c == '\n')
+        .find(|s| !s.trim().is_empty())
+        .unwrap_or(thought)
+        .trim();
+    let trimmed: String = first_sentence.chars().take(60).collect();
+    if trimmed.is_empty() {
+        "Thinking…".to_string()
+    } else if trimmed.to_lowercase().starts_with("i ")
+        || trimmed.to_lowercase().starts_with("let me ")
+        || trimmed.to_lowercase().starts_with("looking ")
+    {
+        format!("Reasoning · {trimmed}")
+    } else {
+        format!("Reasoning · {trimmed}")
     }
 }
 
@@ -3318,6 +3504,7 @@ async fn resolve_tool_detail(
             pick("purpose").unwrap_or_default()
         }
         "search_memory" => pick("query").unwrap_or_default(),
+        "search_conversations" => pick("query").unwrap_or_default(),
         "web_fetch" => pick("url").unwrap_or_default(),
         "reconcile_documents" => {
             // Multi-doc tool — list filenames joined by "+", capped

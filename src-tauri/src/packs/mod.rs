@@ -28,6 +28,8 @@
 
 use sqlx::SqlitePool;
 
+pub mod memory;
+
 #[cfg(feature = "pack-lead-to-empower")]
 pub mod lead_to_empower;
 
