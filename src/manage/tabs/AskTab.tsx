@@ -14,6 +14,7 @@ import {
 import {
   ingestDocument,
   formatBytes,
+  getDocument,
   type Document,
 } from "../../lib/documents";
 import {
@@ -65,6 +66,40 @@ export default function AskTab() {
     }
   }, [busy]);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  // v0.19.6 — bridge from DocumentsTab. The "attach to chat" button
+  // in the library dispatches a window event; we listen here, look
+  // up the doc, and add it to attachedDocs as if the user dropped it.
+  useEffect(() => {
+    const onAttach = async (e: Event) => {
+      const detail = (e as CustomEvent).detail as
+        | { documentId?: number }
+        | undefined;
+      const id = detail?.documentId;
+      if (typeof id !== "number") return;
+      try {
+        const doc = await getDocument(id);
+        if (!doc) return;
+        setAttachedDocs((prev) => {
+          // Dedup — don't add if already attached (by id).
+          if (prev.some((a) => !isPending(a) && a.id === doc.id)) return prev;
+          return [...prev, doc];
+        });
+      } catch {
+        /* ignore */
+      }
+    };
+    window.addEventListener(
+      "travis:attach-document-from-library",
+      onAttach as EventListener,
+    );
+    return () => {
+      window.removeEventListener(
+        "travis:attach-document-from-library",
+        onAttach as EventListener,
+      );
+    };
+  }, []);
+
   // v0.18.2 — chunked history. `haveOlder` flips false when a fetch
   // returns nothing (we've hit the start of the conversation).
   // `loadingOlder` debounces concurrent fetches while the user is

@@ -83,6 +83,13 @@ impl PackHandle for LeadToEmpowerPack {
             "lte_create_purchase_order",
             "lte_derive_sign_in_sheet",
             "lte_create_contract_from_doc",
+            // v0.19.5 — consent-required override actions surfaced by
+            // apply_extraction_observations when a newer doc/extraction
+            // would change a critical field (contract_ref, invoice
+            // amount, status). UI renders these as confirm-or-dismiss
+            // cards; action handlers apply the change on confirm.
+            "lte_engagement_critical_change",
+            "lte_invoice_critical_change",
         ]
     }
 
@@ -172,7 +179,7 @@ impl PackHandle for LeadToEmpowerPack {
         &'a self,
         pool: &'a sqlx::SqlitePool,
         workspace_id: i64,
-        _conversation_id: i64,
+        conversation_id: i64,
         extraction: &'a serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>>
     {
@@ -214,6 +221,296 @@ impl PackHandle for LeadToEmpowerPack {
                             )
                             .await;
                         }
+                    }
+                }
+            }
+
+            // Engagement enrichments. v0.19.4. The LLM emits these
+            // when reading a PO / WO doc. We update the matching
+            // engagement row's business terms (contract_ref, period,
+            // ceiling, school_year) but never overwrite a non-null
+            // field with null — additive only.
+            if let Some(arr) = extraction
+                .get("engagementEnrichments")
+                .and_then(|v| v.as_array())
+            {
+                for e in arr {
+                    let name = e
+                        .get("engagementName")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .unwrap_or("");
+                    if name.is_empty() {
+                        continue;
+                    }
+                    let engagement = match domain::engagement::find_by_name(pool, workspace_id, name).await {
+                        Ok(Some(e)) => e,
+                        Ok(None) => {
+                            // Auto-create then enrich — the LLM may
+                            // have surfaced terms before the bare
+                            // mention triggered ensure.
+                            match domain::engagement::ensure(pool, workspace_id, name, None).await {
+                                Ok(e) => e,
+                                Err(err) => {
+                                    tracing::warn!(
+                                        "lte enrichment: engagement ensure {name}: {err}"
+                                    );
+                                    continue;
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                "lte enrichment: engagement lookup {name}: {err}"
+                            );
+                            continue;
+                        }
+                    };
+                    let contract_ref = e.get("contractRef").and_then(|v| v.as_str()).unwrap_or("").trim();
+                    let school_year = e.get("schoolYear").and_then(|v| v.as_str()).unwrap_or("").trim();
+                    // v0.19.5 — newer-wins policy with consent gate:
+                    // - Soft fields (school_year, summary stash):
+                    //   silent newer-wins.
+                    // - Critical field (contract_ref): if currently
+                    //   null, silent set; if currently non-null and
+                    //   would change, propose_action for confirmation.
+                    //   contract_ref change implies the engagement is
+                    //   bound to a different contract instrument —
+                    //   too critical to overwrite silently.
+                    let prior_contract_ref = engagement
+                        .contract_ref
+                        .as_deref()
+                        .map(str::trim)
+                        .unwrap_or("");
+                    if !contract_ref.is_empty()
+                        && !prior_contract_ref.is_empty()
+                        && !prior_contract_ref.eq_ignore_ascii_case(contract_ref)
+                    {
+                        let params = serde_json::json!({
+                            "engagementId": engagement.id,
+                            "engagementName": name,
+                            "field": "contract_ref",
+                            "oldValue": prior_contract_ref,
+                            "newValue": contract_ref,
+                        })
+                        .to_string();
+                        let rationale = format!(
+                            "Contract reference would change from '{prior_contract_ref}' to '{contract_ref}' for engagement '{name}'. Confirm to overwrite or dismiss to keep the existing value."
+                        );
+                        let _ = crate::actions::record(
+                            pool,
+                            conversation_id,
+                            "lte_engagement_critical_change",
+                            Some(&rationale),
+                            &params,
+                        )
+                        .await;
+                    } else if !contract_ref.is_empty() {
+                        // Either prior was empty or values match —
+                        // safe to apply.
+                        let _ = sqlx::query(
+                            "UPDATE engagement
+                             SET contract_ref = ?1,
+                                 updated_at = CURRENT_TIMESTAMP
+                             WHERE id = ?2",
+                        )
+                        .bind(contract_ref)
+                        .bind(engagement.id)
+                        .execute(pool)
+                        .await;
+                    }
+                    if !school_year.is_empty() {
+                        // School year is soft — newer-wins silent.
+                        let _ = sqlx::query(
+                            "UPDATE engagement
+                             SET school_year = ?1,
+                                 updated_at = CURRENT_TIMESTAMP
+                             WHERE id = ?2",
+                        )
+                        .bind(school_year)
+                        .bind(engagement.id)
+                        .execute(pool)
+                        .await;
+                    }
+                    // Period and ceiling stash to the summary column
+                    // so they're visible in the Manage tab until v0.20
+                    // schema work promotes them to typed columns.
+                    let period_start = e.get("periodStart").and_then(|v| v.as_str());
+                    let period_end = e.get("periodEnd").and_then(|v| v.as_str());
+                    let ceiling_cents = e.get("ceilingCents").and_then(|v| v.as_i64());
+                    if period_start.is_some() || period_end.is_some() || ceiling_cents.is_some() {
+                        let mut bits = Vec::new();
+                        if let (Some(s), Some(en)) = (period_start, period_end) {
+                            bits.push(format!("Period: {s} → {en}"));
+                        } else if let Some(s) = period_start {
+                            bits.push(format!("Period start: {s}"));
+                        }
+                        if let Some(c) = ceiling_cents {
+                            bits.push(format!("Ceiling: ${:.2}", c as f64 / 100.0));
+                        }
+                        let summary_addition = bits.join(" · ");
+                        let _ = sqlx::query(
+                            "UPDATE engagement
+                             SET summary = COALESCE(summary, '') || CASE
+                                 WHEN summary IS NULL OR summary = '' THEN ?1
+                                 ELSE char(10) || ?1
+                             END,
+                             updated_at = CURRENT_TIMESTAMP
+                             WHERE id = ?2 AND (summary IS NULL OR summary NOT LIKE '%' || ?1 || '%')",
+                        )
+                        .bind(&summary_addition)
+                        .bind(engagement.id)
+                        .execute(pool)
+                        .await;
+                    }
+                }
+            }
+
+            // Invoice drafts. v0.19.4. The LLM emits one entry per
+            // invoice generation; we insert with status='draft'.
+            // Dedup on `number` since invoice.number is UNIQUE.
+            if let Some(arr) = extraction.get("invoiceDrafts").and_then(|v| v.as_array()) {
+                for d in arr {
+                    let number = d
+                        .get("number")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .unwrap_or("");
+                    let recipient = d
+                        .get("recipient")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .unwrap_or("");
+                    let period_start = d
+                        .get("periodStart")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .unwrap_or("");
+                    let period_end = d
+                        .get("periodEnd")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .unwrap_or("");
+                    if number.is_empty()
+                        || recipient.is_empty()
+                        || period_start.is_empty()
+                        || period_end.is_empty()
+                    {
+                        continue;
+                    }
+                    // v0.19.5 — newer-wins for invoice drafts BUT
+                    // money + status changes are critical: propose_action.
+                    let existing: Option<(i64, i64, String)> = sqlx::query_as(
+                        "SELECT id, amount_cents, status FROM invoice WHERE number = ?1",
+                    )
+                    .bind(number)
+                    .fetch_optional(pool)
+                    .await
+                    .ok()
+                    .flatten();
+                    if let Some((existing_id, existing_amount, existing_status)) = existing {
+                        let new_amount = d
+                            .get("amountCents")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        let amount_changed = new_amount != existing_amount;
+                        let already_sent = matches!(
+                            existing_status.as_str(),
+                            "sent" | "paid"
+                        );
+                        if amount_changed || already_sent {
+                            let params = serde_json::json!({
+                                "invoiceId": existing_id,
+                                "number": number,
+                                "field": "amount_cents",
+                                "oldValue": existing_amount,
+                                "newValue": new_amount,
+                                "existingStatus": existing_status,
+                            })
+                            .to_string();
+                            let rationale = if already_sent {
+                                format!(
+                                    "Invoice #{number} is already marked '{existing_status}' — re-emission would overwrite a sent / paid record. Confirm explicitly to revise."
+                                )
+                            } else {
+                                format!(
+                                    "Invoice #{number} amount would change from ${:.2} to ${:.2}. Confirm to revise the draft.",
+                                    existing_amount as f64 / 100.0,
+                                    new_amount as f64 / 100.0,
+                                )
+                            };
+                            let _ = crate::actions::record(
+                                pool,
+                                conversation_id,
+                                "lte_invoice_critical_change",
+                                Some(&rationale),
+                                &params,
+                            )
+                            .await;
+                        }
+                        // Critical or not, don't silently overwrite —
+                        // user confirmation drives the actual update.
+                        continue;
+                    }
+                    let school_id = if let Some(s) = d.get("schoolName").and_then(|v| v.as_str()) {
+                        domain::school::find_by_name(pool, workspace_id, s)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|r| r.id)
+                    } else {
+                        None
+                    };
+                    let coach_id = if let Some(c) = d.get("coachName").and_then(|v| v.as_str()) {
+                        domain::coach::find_by_name(pool, workspace_id, c)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|r| r.id)
+                    } else {
+                        None
+                    };
+                    let hours_total = d.get("hoursTotal").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let rate_cents = d.get("rateCents").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let amount_cents = d.get("amountCents").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let notes = d.get("notes").and_then(|v| v.as_str());
+                    if let Err(e) = sqlx::query(
+                        "INSERT INTO invoice
+                            (workspace_id, number, recipient, coach_id, school_id,
+                             period_start, period_end, hours_total, rate_cents,
+                             amount_cents, status, notes)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'draft', ?11)",
+                    )
+                    .bind(workspace_id)
+                    .bind(number)
+                    .bind(recipient)
+                    .bind(coach_id)
+                    .bind(school_id)
+                    .bind(period_start)
+                    .bind(period_end)
+                    .bind(hours_total)
+                    .bind(rate_cents)
+                    .bind(amount_cents)
+                    .bind(notes)
+                    .execute(pool)
+                    .await
+                    {
+                        tracing::warn!(
+                            "lte invoice_drafts: insert {number}: {e}"
+                        );
+                        continue;
+                    }
+                    // Link the generated PDF doc to the invoice row's
+                    // school via document_link so the file shows up
+                    // under the school's docs.
+                    if let (Some(doc_id), Some(sid)) = (
+                        d.get("generatedDocId").and_then(|v| v.as_i64()),
+                        school_id,
+                    ) {
+                        let _ = crate::documents::db::link_to_entity(
+                            pool, doc_id, sid, "invoice_for",
+                        )
+                        .await;
                     }
                 }
             }

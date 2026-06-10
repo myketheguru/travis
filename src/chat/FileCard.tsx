@@ -8,6 +8,7 @@ import {
   revealDocumentInFolder,
   type Document,
 } from "../lib/documents";
+import { DocumentIcon } from "./DocumentIcon";
 
 interface Props {
   documentId: number;
@@ -43,19 +44,6 @@ export function FileCard({ documentId }: Props) {
   }
 
   const isImage = doc.mimeType?.startsWith("image/");
-
-  const kindGlyph = (() => {
-    if (doc.kind === "generated_pdf" || doc.mimeType === "application/pdf")
-      return "📄";
-    if (
-      doc.kind === "generated_spreadsheet" ||
-      doc.kind === "coach_hours_master" ||
-      doc.mimeType.includes("spreadsheet")
-    )
-      return "📊";
-    if (isImage) return "🖼";
-    return "📎";
-  })();
 
   const handleOpen = async () => {
     setOpening(true);
@@ -118,7 +106,9 @@ export function FileCard({ documentId }: Props) {
       }}
       title="Open in default viewer"
     >
-      <span className="text-[20px] shrink-0">{kindGlyph}</span>
+      <span className="shrink-0 text-bone-2">
+        <DocumentIcon kind={doc.kind} mimeType={doc.mimeType} size={20} />
+      </span>
       <div className="flex-1 min-w-0">
         <div className="text-bone text-[13px] truncate">{doc.displayName}</div>
         <div className="text-bone-3 text-[10px] font-mono mt-0.5">

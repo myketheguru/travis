@@ -113,6 +113,32 @@ pub async fn remember(
         return Ok(id);
     }
 
+    // v0.19.5 — corrections archive prior memories that conflict.
+    // When the LLM emits a `correction` for a target, we treat any
+    // existing rule / fact / preference memories for that SAME
+    // target as superseded — set their relevance_score to 0 so they
+    // drop out of recall. The raw row stays on disk (audit trail);
+    // the user can re-pin via the Manage UI if needed.
+    if matches!(kind, MemoryKind::Correction) && (target_kind.is_some() || target_id.is_some()) {
+        sqlx::query(
+            "UPDATE pack_memory
+             SET relevance_score = 0,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE workspace_id = ?1
+               AND pack_slug = ?2
+               AND IFNULL(target_kind,'') = IFNULL(?3,'')
+               AND IFNULL(target_id, 0) = IFNULL(?4, 0)
+               AND kind != 'correction'
+               AND pinned = 0",
+        )
+        .bind(workspace_id)
+        .bind(pack_slug)
+        .bind(target_kind)
+        .bind(target_id)
+        .execute(pool)
+        .await?;
+    }
+
     let id = sqlx::query(
         "INSERT INTO pack_memory
            (workspace_id, pack_slug, kind, target_kind, target_id,

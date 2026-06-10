@@ -381,6 +381,19 @@ pub struct Extraction {
     /// rows are auto-created via ensure() if not present.
     #[serde(default)]
     pub coach_hours: Vec<ExtractedCoachHours>,
+    /// v0.19.4 — engagement / contract enrichment from PO/WO docs.
+    /// When a PO is classified, the LLM can attach its ref, period,
+    /// and ceiling so the engagement row populates with the business
+    /// terms instead of just the name.
+    #[serde(default)]
+    pub engagement_enrichments: Vec<ExtractedEngagementEnrichment>,
+    /// v0.19.4 — invoice drafts the LLM produced this turn (e.g. via
+    /// run_python emitting an invoice PDF). One row per draft; the
+    /// pack persists to its `invoice` table as status='draft' so the
+    /// Invoices tab reflects work-in-progress without committing
+    /// "sent" or "paid" without confirmation.
+    #[serde(default)]
+    pub invoice_drafts: Vec<ExtractedInvoiceDraft>,
     /// v0.19.0 — pack memories the LLM picked out of the turn.
     /// User-stated rules, preferences, constraints, corrections, or
     /// facts that should outlive the current conversation. Persisted
@@ -435,6 +448,65 @@ pub struct ExtractedCoachHours {
     /// Optional doc id of the signing sheet these hours came from.
     #[serde(default)]
     pub linked_signing_sheet_doc_id: Option<i64>,
+}
+
+/// v0.19.4 — fields the LLM picks out of a PO/WO/scope doc to
+/// enrich the matching engagement row. All fields optional; the
+/// pack only updates columns the LLM actually filled.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractedEngagementEnrichment {
+    pub engagement_name: String,
+    /// Contract reference string from the doc — e.g. "QR179CF".
+    #[serde(default)]
+    pub contract_ref: Option<String>,
+    /// Activity start.
+    #[serde(default)]
+    pub period_start: Option<String>,
+    /// Activity end.
+    #[serde(default)]
+    pub period_end: Option<String>,
+    /// Total dollar value in cents (PO ceiling).
+    #[serde(default)]
+    pub ceiling_cents: Option<i64>,
+    /// School year string, e.g. "2025-26".
+    #[serde(default)]
+    pub school_year: Option<String>,
+}
+
+/// v0.19.4 — a single invoice draft the LLM produced this turn.
+/// Pack creates a row in the `invoice` table with status='draft'.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractedInvoiceDraft {
+    /// The invoice number string. e.g. "LTE2026217002".
+    pub number: String,
+    /// Bill-to / recipient string (the school name or full address).
+    pub recipient: String,
+    /// Optional school + coach refs by name. Resolved by the pack.
+    #[serde(default)]
+    pub school_name: Option<String>,
+    #[serde(default)]
+    pub coach_name: Option<String>,
+    /// ISO YYYY-MM-DD.
+    pub period_start: String,
+    pub period_end: String,
+    /// Decimal hours totalled across line items.
+    #[serde(default)]
+    pub hours_total: f64,
+    /// Per-hour or per-unit rate in cents.
+    #[serde(default)]
+    pub rate_cents: i64,
+    /// Total amount in cents.
+    pub amount_cents: i64,
+    /// Optional generated-PDF document id so the invoice row links
+    /// back to the file Travis produced.
+    #[serde(default)]
+    pub generated_doc_id: Option<i64>,
+    /// Optional note (e.g. "Includes 03/17 per CEO permission —
+    /// outside PO window otherwise").
+    #[serde(default)]
+    pub notes: Option<String>,
 }
 
 /// v0.19.0 — a single pack memory the LLM picked out of the turn.
@@ -951,6 +1023,43 @@ fn build_extraction_tool(action_kinds: &[&str], entity_kinds: &[&str]) -> ToolDe
                             "linkedSigningSheetDocId": { "type": ["integer", "null"] }
                         },
                         "required": ["coachName", "schoolName", "sessionDate", "hours"]
+                    }
+                },
+                "engagementEnrichments": {
+                    "type": "array",
+                    "description": "v0.19.4 — when a PO / WO / scope doc is read and reveals business terms about an engagement (contract reference, activity period, ceiling dollars), emit one entry here. The pack updates the matching engagement row's contract_ref / period / school_year / etc. Engagement is matched by case-insensitive name. Example: {engagementName:'IS 217 Leadership Coaching', contractRef:'QR179CF', periodStart:'2026-03-23', periodEnd:'2026-06-25', ceilingCents:1500000, schoolYear:'2025-26'}.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "engagementName": { "type": "string" },
+                            "contractRef": { "type": ["string", "null"] },
+                            "periodStart": { "type": ["string", "null"] },
+                            "periodEnd": { "type": ["string", "null"] },
+                            "ceilingCents": { "type": ["integer", "null"] },
+                            "schoolYear": { "type": ["string", "null"] }
+                        },
+                        "required": ["engagementName"]
+                    }
+                },
+                "invoiceDrafts": {
+                    "type": "array",
+                    "description": "v0.19.4 — whenever you generate an invoice (via run_python or otherwise), ALSO emit a draft row here so it appears in the Invoices tab as status='draft'. The pack creates the row; you do NOT need to commit 'sent' or 'paid' status — that stays user-driven. Include the generatedDocId pointing at the PDF doc id Travis just registered, so the invoice row links to the file. Example: {number:'LTE2026217002', recipient:'IS 217 School of Performing Arts, 977 Fox St Rm 129, Bronx NY 10459', schoolName:'IS 217', periodStart:'2026-03-17', periodEnd:'2026-05-26', hoursTotal:10, rateCents:150000, amountCents:1500000, generatedDocId:7, notes:'Includes 03/17 per CEO permission'}.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "number": { "type": "string" },
+                            "recipient": { "type": "string" },
+                            "schoolName": { "type": ["string", "null"] },
+                            "coachName": { "type": ["string", "null"] },
+                            "periodStart": { "type": "string" },
+                            "periodEnd": { "type": "string" },
+                            "hoursTotal": { "type": "number" },
+                            "rateCents": { "type": "integer" },
+                            "amountCents": { "type": "integer" },
+                            "generatedDocId": { "type": ["integer", "null"] },
+                            "notes": { "type": ["string", "null"] }
+                        },
+                        "required": ["number", "recipient", "periodStart", "periodEnd", "amountCents"]
                     }
                 },
                 "packMemories": {
