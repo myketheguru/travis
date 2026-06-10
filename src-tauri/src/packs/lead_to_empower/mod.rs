@@ -12,6 +12,7 @@
 //! modules, `pdf/`, and the L2E commands move next.
 
 mod actions;
+pub mod detail_cmd;
 pub mod domain;
 pub mod domain_cmd;
 pub mod pdf;
@@ -332,36 +333,91 @@ impl PackHandle for LeadToEmpowerPack {
                         .execute(pool)
                         .await;
                     }
-                    // Period and ceiling stash to the summary column
-                    // so they're visible in the Manage tab until v0.20
-                    // schema work promotes them to typed columns.
-                    let period_start = e.get("periodStart").and_then(|v| v.as_str());
-                    let period_end = e.get("periodEnd").and_then(|v| v.as_str());
+                    // v0.20.0 — period + ceiling now live as typed
+                    // columns. Soft fields (period dates) silent
+                    // newer-wins. Ceiling change is critical: if
+                    // the new value differs meaningfully (>5%) from
+                    // the prior non-null value, record a
+                    // proposed_action; otherwise silent set.
+                    let period_start = e
+                        .get("periodStart")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty());
+                    let period_end = e
+                        .get("periodEnd")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty());
                     let ceiling_cents = e.get("ceilingCents").and_then(|v| v.as_i64());
-                    if period_start.is_some() || period_end.is_some() || ceiling_cents.is_some() {
-                        let mut bits = Vec::new();
-                        if let (Some(s), Some(en)) = (period_start, period_end) {
-                            bits.push(format!("Period: {s} → {en}"));
-                        } else if let Some(s) = period_start {
-                            bits.push(format!("Period start: {s}"));
-                        }
-                        if let Some(c) = ceiling_cents {
-                            bits.push(format!("Ceiling: ${:.2}", c as f64 / 100.0));
-                        }
-                        let summary_addition = bits.join(" · ");
+
+                    if let Some(s) = period_start {
                         let _ = sqlx::query(
-                            "UPDATE engagement
-                             SET summary = COALESCE(summary, '') || CASE
-                                 WHEN summary IS NULL OR summary = '' THEN ?1
-                                 ELSE char(10) || ?1
-                             END,
-                             updated_at = CURRENT_TIMESTAMP
-                             WHERE id = ?2 AND (summary IS NULL OR summary NOT LIKE '%' || ?1 || '%')",
+                            "UPDATE engagement SET period_start = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
                         )
-                        .bind(&summary_addition)
+                        .bind(s)
                         .bind(engagement.id)
                         .execute(pool)
                         .await;
+                    }
+                    if let Some(s) = period_end {
+                        let _ = sqlx::query(
+                            "UPDATE engagement SET period_end = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+                        )
+                        .bind(s)
+                        .bind(engagement.id)
+                        .execute(pool)
+                        .await;
+                    }
+                    if let Some(new_ceiling) = ceiling_cents {
+                        match engagement.ceiling_cents {
+                            Some(prior) if prior > 0 => {
+                                let pct_diff = (new_ceiling - prior).abs() as f64
+                                    / prior as f64;
+                                if pct_diff > 0.05 {
+                                    let params = serde_json::json!({
+                                        "engagementId": engagement.id,
+                                        "engagementName": name,
+                                        "field": "ceiling_cents",
+                                        "oldValue": prior,
+                                        "newValue": new_ceiling,
+                                    })
+                                    .to_string();
+                                    let rationale = format!(
+                                        "Engagement '{name}' ceiling would change from ${:.2} to ${:.2}. Confirm to apply.",
+                                        prior as f64 / 100.0,
+                                        new_ceiling as f64 / 100.0,
+                                    );
+                                    let _ = crate::actions::record(
+                                        pool,
+                                        conversation_id,
+                                        "lte_engagement_critical_change",
+                                        Some(&rationale),
+                                        &params,
+                                    )
+                                    .await;
+                                } else {
+                                    // Within tolerance → silent update.
+                                    let _ = sqlx::query(
+                                        "UPDATE engagement SET ceiling_cents = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+                                    )
+                                    .bind(new_ceiling)
+                                    .bind(engagement.id)
+                                    .execute(pool)
+                                    .await;
+                                }
+                            }
+                            _ => {
+                                // Prior null → silent first-set.
+                                let _ = sqlx::query(
+                                    "UPDATE engagement SET ceiling_cents = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = ?2",
+                                )
+                                .bind(new_ceiling)
+                                .bind(engagement.id)
+                                .execute(pool)
+                                .await;
+                            }
+                        }
                     }
                 }
             }
@@ -886,6 +942,7 @@ static ALERTS: &[AlertDef] = &[
 // schema_version`. The billing-spine tables predate pack migrations
 // and stay in core's 0003_domain.sql — see domain/mod.rs.
 const PROGRAM_DELIVERY_SQL: &str = include_str!("migrations/0001_program_delivery.sql");
+const ENGAGEMENT_TERMS_SQL: &str = include_str!("migrations/0006_engagement_terms.sql");
 const QUOTE_SQL: &str = include_str!("migrations/0002_quote.sql");
 const INVOICING_SQL: &str = include_str!("migrations/0003_invoicing.sql");
 const CONTRACTS_SQL: &str = include_str!("migrations/0004_contracts.sql");
@@ -912,6 +969,10 @@ static MIGRATIONS: &[PackMigration] = &[
     PackMigration {
         name: "0005_collapse_contract_engagement",
         sql: COLLAPSE_CONTRACT_SQL,
+    },
+    PackMigration {
+        name: "0006_engagement_terms",
+        sql: ENGAGEMENT_TERMS_SQL,
     },
 ];
 

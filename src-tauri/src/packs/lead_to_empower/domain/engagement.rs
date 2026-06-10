@@ -26,6 +26,11 @@ pub struct Engagement {
     pub metrics_agreement_signed: i64,
     pub metrics_signed_on: Option<String>,
     pub summary: Option<String>,
+    /// v0.20.0 — activity window from the PO/WO doc.
+    pub period_start: Option<String>,
+    pub period_end: Option<String>,
+    /// v0.20.0 — PO ceiling in cents.
+    pub ceiling_cents: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -42,7 +47,9 @@ pub async fn find_by_name(
     }
     let row = sqlx::query_as::<_, Engagement>(
         "SELECT id, workspace_id, name, school_id, stage, contract_ref, school_year,
-                metrics_agreement_signed, metrics_signed_on, summary, created_at, updated_at
+                metrics_agreement_signed, metrics_signed_on, summary,
+                period_start, period_end, ceiling_cents,
+                created_at, updated_at
          FROM engagement
          WHERE workspace_id = ?1 AND LOWER(name) = LOWER(?2)
          LIMIT 1",
@@ -80,7 +87,9 @@ pub async fn ensure(
 
     let row = sqlx::query_as::<_, Engagement>(
         "SELECT id, workspace_id, name, school_id, stage, contract_ref, school_year,
-                metrics_agreement_signed, metrics_signed_on, summary, created_at, updated_at
+                metrics_agreement_signed, metrics_signed_on, summary,
+                period_start, period_end, ceiling_cents,
+                created_at, updated_at
          FROM engagement WHERE id=?1",
     )
     .bind(id)

@@ -51,6 +51,28 @@ const OVERRIDES: OverrideDecl[] = [
     view: "list",
     component: "InvoicesTab",
   },
+  // v0.20.0 — relationship-aware drill-downs for the three core
+  // entities. Engagement = contract (collapsed in pack v0.7.0); the
+  // table slug stays `engagement` because the SQL table name didn't
+  // change.
+  {
+    packSlug: "lead-to-empower",
+    tableSlug: "school",
+    view: "detail",
+    component: "SchoolDetail",
+  },
+  {
+    packSlug: "lead-to-empower",
+    tableSlug: "engagement",
+    view: "detail",
+    component: "EngagementDetail",
+  },
+  {
+    packSlug: "lead-to-empower",
+    tableSlug: "coach",
+    view: "detail",
+    component: "CoachDetail",
+  },
 ];
 
 /// Look up a custom UI component for a given (pack, table, view) trio.

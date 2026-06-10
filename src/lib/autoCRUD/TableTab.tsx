@@ -3,6 +3,7 @@ import type { PackSchema, TableDef } from "../packs";
 import { ListView } from "./ListView";
 import { DetailView } from "./DetailView";
 import { FormView } from "./FormView";
+import { getOverride } from "../packRegistry";
 
 type Mode =
   | { kind: "list"; nonce: number }
@@ -59,7 +60,16 @@ export function TableTab({
         />
       );
 
-    case "detail":
+    case "detail": {
+      // v0.20.0 — packs can ship a custom detail-view component
+      // (e.g. SchoolDetail) for relationship-aware drill-downs that
+      // need to load + join across multiple pack tables. The
+      // override receives id + onClose; everything else is the
+      // pack's responsibility.
+      const Override = getOverride(pack.slug, table.slug, "detail");
+      if (Override) {
+        return <Override id={mode.id} onClose={goList} />;
+      }
       return (
         <DetailView
           pack={pack}
@@ -70,6 +80,7 @@ export function TableTab({
           onDeleted={goList}
         />
       );
+    }
 
     case "edit":
       return (

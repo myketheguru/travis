@@ -3629,6 +3629,7 @@ fn humanize_tool_name(name: &str, input: &serde_json::Value) -> String {
         "search_memory" => "Checking the records".to_string(),
         "search_conversations" => "Looking through past threads".to_string(),
         "remember_constraint" => "Remembering that for next time".to_string(),
+        "load_python_artifact" => "Loading the prior version".to_string(),
         "find_case" => "Looking up the case".to_string(),
         "web_fetch" => "Fetching from the web".to_string(),
         "delegate" => "Asking a focused side-question".to_string(),

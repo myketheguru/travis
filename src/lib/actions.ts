@@ -44,6 +44,11 @@ export function actionLabel(kind: string): string {
       return "Send email";
     case "update_profile_context":
       return "Save to your profile";
+    // v0.19.5 consent-gated critical changes (v0.20.0 surfaces in chat).
+    case "lte_engagement_critical_change":
+      return "Change engagement terms";
+    case "lte_invoice_critical_change":
+      return "Revise invoice";
     default:
       return kind.replace(/_/g, " ");
   }
@@ -104,6 +109,18 @@ export function actionDetails(kind: string, paramsJson: string): string | null {
       }
       if (style) parts.push(`Voice: ${style}`);
       return parts.join(" · ") || null;
+    }
+    case "lte_engagement_critical_change":
+    case "lte_invoice_critical_change": {
+      const field = String(params.field ?? "");
+      const oldV = params.oldValue;
+      const newV = params.newValue;
+      if (field === "amount_cents" || field === "ceiling_cents") {
+        const fmt = (v: unknown) =>
+          typeof v === "number" ? `$${(v / 100).toFixed(2)}` : String(v);
+        return `${field}: ${fmt(oldV)} → ${fmt(newV)}`;
+      }
+      return `${field}: ${oldV} → ${newV}`;
     }
     default:
       return null;

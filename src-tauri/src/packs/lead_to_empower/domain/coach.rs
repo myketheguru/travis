@@ -160,6 +160,25 @@ pub async fn ensure(
     .await
 }
 
+/// v0.20.0 — lookup by id (the underscore in the name is a leftover
+/// from when this also accepted name fallback; kept since callers
+/// already named it this way).
+pub async fn find_by_name_or_id(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    id: i64,
+) -> Result<Option<Coach>, DomainError> {
+    let row = sqlx::query_as::<_, Coach>(
+        "SELECT id, workspace_id, name, email, rate_cents, notes, created_at, updated_at
+         FROM coach WHERE id = ?1 AND workspace_id = ?2 LIMIT 1",
+    )
+    .bind(id)
+    .bind(workspace_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
 pub async fn delete(pool: &SqlitePool, id: i64) -> Result<(), DomainError> {
     sqlx::query("DELETE FROM coach WHERE id=?1").bind(id).execute(pool).await?;
     Ok(())

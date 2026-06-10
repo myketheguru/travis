@@ -30,6 +30,13 @@ import { ChatTurn } from "../../chat/ChatTurn";
 import { AutoGrowTextarea } from "../../chat/AutoGrowTextarea";
 import { CaseHeaderStrip } from "../../chat/CaseHeaderStrip";
 import { ConversationSwitcher } from "../../chat/ConversationSwitcher";
+import { ActionCard } from "../../chat/ActionCard";
+import {
+  confirmAction,
+  declineAction,
+  listProposedActions,
+  type ProposedAction,
+} from "../../lib/actions";
 import { useScrollAnchor } from "../../chat/useScrollAnchor";
 import { useAppStore } from "../../stores/app";
 
@@ -100,6 +107,35 @@ export default function AskTab() {
     };
   }, []);
 
+  // v0.20.0 — surface pending proposed_actions in the chat feed.
+  // Loads on conversation change + after each turn (busy → false
+  // transition) + on a low-frequency poll while the chat is open.
+  // The ActionCard's confirm/decline handlers refetch so the list
+  // shrinks immediately.
+  const refreshPendingActions = useCallback(async () => {
+    if (!activeConversationId) {
+      setPendingActions([]);
+      return;
+    }
+    try {
+      const list = await listProposedActions({
+        conversationId: activeConversationId,
+        status: "proposed",
+      });
+      setPendingActions(list);
+    } catch {
+      /* ignore — empty list is the safe default */
+    }
+  }, [activeConversationId]);
+  useEffect(() => {
+    refreshPendingActions();
+  }, [refreshPendingActions]);
+  useEffect(() => {
+    if (!activeConversationId) return;
+    const id = setInterval(refreshPendingActions, 5000);
+    return () => clearInterval(id);
+  }, [activeConversationId, refreshPendingActions]);
+
   // v0.18.2 — chunked history. `haveOlder` flips false when a fetch
   // returns nothing (we've hit the start of the conversation).
   // `loadingOlder` debounces concurrent fetches while the user is
@@ -108,6 +144,7 @@ export default function AskTab() {
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [steps, setSteps] = useState<ParsedStep[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [pendingActions, setPendingActions] = useState<ProposedAction[]>([]);
   const [attachedDocs, setAttachedDocs] = useState<Attachment[]>([]);
   const [expandedDocs, setExpandedDocs] = useState<Set<number>>(new Set());
   const [dropHovering, setDropHovering] = useState(false);
@@ -702,6 +739,37 @@ export default function AskTab() {
           </div>
         )}
         <ActiveWorkflowPill conversationId={activeConversationId} />
+
+        {/* v0.20.0 — proposed actions awaiting consent appear above
+            the input. Confirm applies via the action handler;
+            dismiss marks declined. Both refetch the list so the
+            card disappears immediately on resolution. */}
+        {pendingActions.length > 0 && (
+          <div className="mb-3 space-y-2">
+            {pendingActions.map((a) => (
+              <ActionCard
+                key={a.id}
+                action={a}
+                onConfirm={async () => {
+                  try {
+                    await confirmAction(a.id);
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : String(e));
+                  }
+                  refreshPendingActions();
+                }}
+                onDecline={async () => {
+                  try {
+                    await declineAction(a.id);
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : String(e));
+                  }
+                  refreshPendingActions();
+                }}
+              />
+            ))}
+          </div>
+        )}
 
         {attachedDocs.length > 0 && (
           <>

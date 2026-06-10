@@ -1,5 +1,58 @@
 # Travis Changelog
 
+## v0.20.0 — Engagement schema promotion + Consent cards in chat (2026-06-10)
+
+Two of the three v0.19.x deferred items now land. The third
+(relationship-aware drill-down per school) is its own slice in v0.20.1.
+
+### Engagement: period + ceiling promoted to typed columns
+
+Pack migration `0006_engagement_terms.sql`:
+- `engagement.period_start TEXT`
+- `engagement.period_end TEXT`
+- `engagement.ceiling_cents INTEGER`
+- Index `idx_engagement_period` on `(period_start, period_end)` for
+  the upcoming "show me engagements active between X and Y" filters.
+
+The LTE pack's `apply_extraction_observations` (background) now
+writes these columns directly when the LLM extracts an
+`engagementEnrichments` entry from a PO/WO doc — replacing the
+v0.19.4 stash into the `summary` text column.
+
+### Consent-required changes flow through the chat now
+
+The two action kinds introduced in v0.19.5 —
+`lte_engagement_critical_change`, `lte_invoice_critical_change` —
+finally render where users can act on them. The pack records the
+diff; the chat surface shows a confirm-or-dismiss card.
+
+- New shared `ActionCard.tsx` extracted from the overlay. Same
+  visuals: pulse-tinted by default, warn-tinted for high-risk
+  kinds (shell, money/identity changes).
+- Per-kind details surface the actual diff. For money fields
+  (`amount_cents`, `ceiling_cents`): `$X.XX → $Y.YY`. For other
+  fields: `oldValue → newValue`.
+- AskTab loads `listProposedActions({status: 'proposed'})` for the
+  active conversation, polls every 5s while open, and renders the
+  cards above the chat input. Confirm/decline trigger the existing
+  action handlers and refetch so the card disappears immediately.
+
+### Critical-field tolerance
+
+Engagement ceiling changes within 5% are treated as soft (silent
+newer-wins). Larger swings emit `lte_engagement_critical_change`.
+This keeps drifting rounding ("$15,000.00" → "$14,997.50") from
+spamming consent cards while material changes ($15K → $20K) still
+gate on user confirmation.
+
+### Deferred to v0.20.1
+
+- **School / engagement detail drill-down.** Click a row in the LTE
+  Schools / Engagements tabs → side panel showing the full
+  relationship graph (engagements + their hours + invoices + linked
+  docs all on one page). The data's all there; this is a focused
+  UI slice.
+
 ## v0.19.7 — Hotfix: macro recursion limit for the grown extraction schema (2026-06-10)
 
 CI cargo check failed with `recursion limit reached while expanding
