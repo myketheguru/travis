@@ -215,6 +215,37 @@ pub async fn run_background(snap: CaptureSnapshot) {
         }
     }
 
+    // v0.20.2+ Tier 4 — when a document is classified as a sample or
+    // template, kick off binary asset extraction in the background.
+    // The LLM's next turn can then call `list_template_assets(doc_id)`
+    // and embed the actual PNGs / page renders in its run_python
+    // output instead of approximating from styling_json.
+    if let Some(classifications) = extraction_json
+        .get("documentClassifications")
+        .and_then(|v| v.as_array())
+    {
+        for c in classifications {
+            let kind = c
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let is_template_kind =
+                kind.starts_with("sample_") || kind.starts_with("template_") || kind == "sample";
+            if !is_template_kind {
+                continue;
+            }
+            let Some(doc_id) = c.get("documentId").and_then(|v| v.as_i64()) else {
+                continue;
+            };
+            crate::template_assets::schedule_extraction(
+                snap.app.clone(),
+                snap.pool.clone(),
+                doc_id,
+            )
+            .await;
+        }
+    }
+
     // Tell the UI something landed. v0.15.2 doesn't render this
     // yet; the event is here so a future "tracked N in background"
     // notification can be wired without backend changes.

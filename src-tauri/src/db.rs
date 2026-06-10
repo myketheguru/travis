@@ -141,6 +141,75 @@ impl Db {
         Ok(())
     }
 
+    /// v0.20.2 — migrate any existing profile to default Travis Cloud
+    /// IF this build shipped with a cloud key AND the user hasn't
+    /// already been migrated (meta flag `travis_cloud_migrated_v020`).
+    /// Their previous provider + model are preserved in meta keys so
+    /// Settings can offer "switch back to <previous>" easily.
+    ///
+    /// Called once on app startup from setup(). Idempotent.
+    pub async fn migrate_to_travis_cloud_if_needed(&self) -> anyhow::Result<()> {
+        if !crate::llm::travis_cloud_available() {
+            return Ok(());
+        }
+        let already: Option<(String,)> = sqlx::query_as(
+            "SELECT value FROM meta WHERE key = 'travis_cloud_migrated_v020'",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        if already.is_some() {
+            return Ok(());
+        }
+        if let Some(profile) = self.user_profile().await? {
+            if profile.llm_provider != "travis_cloud" {
+                // Stash previous values so Settings can show "previously
+                // <provider>" + "switch back" affordance.
+                let _ = sqlx::query(
+                    "INSERT INTO meta(key, value, updated_at)
+                     VALUES (?1, ?2, CURRENT_TIMESTAMP)
+                     ON CONFLICT(key) DO UPDATE SET
+                       value = excluded.value,
+                       updated_at = CURRENT_TIMESTAMP",
+                )
+                .bind("previous_llm_provider")
+                .bind(&profile.llm_provider)
+                .execute(&self.pool)
+                .await;
+                if let Some(model) = &profile.model {
+                    let _ = sqlx::query(
+                        "INSERT INTO meta(key, value, updated_at)
+                         VALUES (?1, ?2, CURRENT_TIMESTAMP)
+                         ON CONFLICT(key) DO UPDATE SET
+                           value = excluded.value,
+                           updated_at = CURRENT_TIMESTAMP",
+                    )
+                    .bind("previous_model")
+                    .bind(model)
+                    .execute(&self.pool)
+                    .await;
+                }
+                // Flip the live provider to travis_cloud.
+                sqlx::query(
+                    "UPDATE user_profile SET llm_provider = 'travis_cloud', updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+                )
+                .execute(&self.pool)
+                .await?;
+                tracing::info!(
+                    "migrated user profile to travis_cloud (previous = {})",
+                    profile.llm_provider
+                );
+            }
+        }
+        sqlx::query(
+            "INSERT INTO meta(key, value, updated_at)
+             VALUES ('travis_cloud_migrated_v020', '1', CURRENT_TIMESTAMP)
+             ON CONFLICT(key) DO NOTHING",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn user_profile(&self) -> anyhow::Result<Option<UserProfile>> {
         let row: Option<(
             String,

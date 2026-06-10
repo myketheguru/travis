@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { invoke } from "@tauri-apps/api/core";
 import { PresenceOrb } from "../components/PresenceOrb";
 import { useAppStore } from "../stores/app";
 import {
@@ -50,6 +51,7 @@ const providers: { id: Provider; name: string; blurb: string; needsKey: boolean 
 ];
 
 const defaultModels: Record<Provider, string> = {
+  travis_cloud: "claude-sonnet-4-6",
   claude: "claude-sonnet-4-6",
   openai: "gpt-4o",
   ollama: "llama3.1:8b",
@@ -63,6 +65,15 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<PingResult | null>(null);
   const [packs, setPacks] = useState<PackInfo[] | null>(null);
+  // v0.20.2 — when this build ships with a Travis Cloud key, the
+  // provider + api-key steps are skipped entirely. New users default
+  // to "travis_cloud" without touching anything.
+  const [cloudAvailable, setCloudAvailable] = useState<boolean | null>(null);
+  useEffect(() => {
+    invoke<{ travisCloudAvailable: boolean }>("platform_info")
+      .then((info) => setCloudAvailable(info.travisCloudAvailable))
+      .catch(() => setCloudAvailable(false));
+  }, []);
   const [savingPacks, setSavingPacks] = useState(false);
   const [extraWorkspaceName, setExtraWorkspaceName] = useState("");
   const [extraWorkspaceCategory, setExtraWorkspaceCategory] =
@@ -139,8 +150,32 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
     }
   };
 
-  const next = () => setStep((s) => Math.min(s + 1, TOTAL_STEPS - 1));
-  const back = () => setStep((s) => Math.max(s - 1, 0));
+  // v0.20.2 — skip provider + api-key steps when Travis Cloud is
+  // available. Going forward from 5 jumps to 8; going back from 8
+  // jumps to 5. The two skipped steps stay rendered for the dev/
+  // fallback path so nothing breaks when cloud isn't shipped.
+  const skipCloudSteps = cloudAvailable === true;
+  const next = () =>
+    setStep((s) => {
+      const candidate = Math.min(s + 1, TOTAL_STEPS - 1);
+      if (skipCloudSteps && (candidate === 6 || candidate === 7)) {
+        // Default to travis_cloud the moment we skip past the provider
+        // selection.
+        if (draft.provider !== ("travis_cloud" as Provider)) {
+          setDraft((d) => ({ ...d, provider: "travis_cloud" as Provider }));
+        }
+        return 8;
+      }
+      return candidate;
+    });
+  const back = () =>
+    setStep((s) => {
+      const candidate = Math.max(s - 1, 0);
+      if (skipCloudSteps && (candidate === 6 || candidate === 7)) {
+        return 5;
+      }
+      return candidate;
+    });
 
   return (
     <main className="relative h-full w-full overflow-y-auto">

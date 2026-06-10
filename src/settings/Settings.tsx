@@ -5,6 +5,7 @@ import {
   getShellEnabled,
   getUserProfile,
   hasApiKey,
+  platformInfo,
   setApiKey,
   setProactiveEnabled,
   setProactiveSchedule,
@@ -34,12 +35,14 @@ import { VoiceDropdown } from "../components/VoiceDropdown";
 import { useAppStore } from "../stores/app";
 
 const providers: { id: Provider; name: string; blurb: string; needsKey: boolean }[] = [
-  { id: "claude", name: "Claude",  blurb: "Anthropic — best reasoning, prompt caching",  needsKey: true },
-  { id: "openai", name: "OpenAI",  blurb: "GPT-class models, broadly compatible",         needsKey: true },
-  { id: "ollama", name: "Ollama",  blurb: "Run locally, private, no API key",             needsKey: false },
+  { id: "travis_cloud", name: "Travis Cloud", blurb: "Managed by Travis — no API key needed",  needsKey: false },
+  { id: "claude",       name: "Claude",       blurb: "Anthropic — your own API key",            needsKey: true },
+  { id: "openai",       name: "OpenAI",       blurb: "GPT-class models, your own API key",      needsKey: true },
+  { id: "ollama",       name: "Ollama",       blurb: "Run locally, private, no API key",         needsKey: false },
 ];
 
 const defaultModels: Record<Provider, string> = {
+  travis_cloud: "claude-sonnet-4-6",
   claude: "claude-sonnet-4-6",
   openai: "gpt-4o",
   ollama: "llama3.1:8b",
@@ -65,12 +68,15 @@ export default function Settings({ onClose }: { onClose: () => void }) {
   const [test, setTest] = useState<PingResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savedHint, setSavedHint] = useState<string | null>(null);
+  const [cloudAvailable, setCloudAvailable] = useState<boolean>(false);
+  const [useOwnLlm, setUseOwnLlm] = useState<boolean>(false);
   const setActivity = useAppStore((s) => s.setActivity);
   const setProfile = useAppStore((s) => s.setProfile);
 
   useEffect(() => {
     (async () => {
-      const p = await getUserProfile();
+      const [p, info] = await Promise.all([getUserProfile(), platformInfo()]);
+      setCloudAvailable(info.travisCloudAvailable);
       if (!p) return;
       setDraft({
         name: p.name,
@@ -83,7 +89,8 @@ export default function Settings({ onClose }: { onClose: () => void }) {
         ollamaUrl: p.ollamaUrl ?? "http://localhost:11434",
         model: p.model ?? "",
       });
-      if (p.llmProvider !== "ollama") {
+      setUseOwnLlm(p.llmProvider !== "travis_cloud");
+      if (p.llmProvider !== "ollama" && p.llmProvider !== "travis_cloud") {
         setKeyExists(await hasApiKey(p.llmProvider));
       }
     })();
@@ -104,8 +111,9 @@ export default function Settings({ onClose }: { onClose: () => void }) {
     try {
       const r = await testProvider({
         provider: draft.provider,
-        apiKey: draft.provider === "ollama" ? undefined : draft.apiKey || undefined,
+        apiKey: draft.provider === "ollama" || draft.provider === "travis_cloud" ? undefined : draft.apiKey || undefined,
         ollamaUrl: draft.provider === "ollama" ? draft.ollamaUrl : undefined,
+
         model: draft.model || undefined,
       });
       setTest(r);
@@ -136,14 +144,15 @@ export default function Settings({ onClose }: { onClose: () => void }) {
         communicationStyle: draft.communicationStyle.trim() || undefined,
         provider: draft.provider,
         apiKey:
-          draft.provider === "ollama"
+          draft.provider === "ollama" || draft.provider === "travis_cloud"
             ? undefined
             : draft.apiKey.trim() || undefined,
         ollamaUrl: draft.provider === "ollama" ? draft.ollamaUrl : undefined,
+
         model: draft.model || undefined,
       });
 
-      if (draft.provider !== "ollama" && draft.apiKey.trim()) {
+      if (draft.provider !== "ollama" && draft.provider !== "travis_cloud" && draft.apiKey.trim()) {
         try {
           await setApiKey(draft.provider, draft.apiKey.trim());
         } catch (e) {
@@ -155,7 +164,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
       const refreshed = (await getUserProfile()) as UserProfile;
       setProfile(refreshed);
       setKeyExists(
-        draft.provider === "ollama" ? false : await hasApiKey(draft.provider),
+        draft.provider === "ollama" || draft.provider === "travis_cloud" ? false : await hasApiKey(draft.provider),
       );
       setDraft({ ...draft, apiKey: "" });
       setSavedHint("Saved.");
@@ -238,33 +247,73 @@ export default function Settings({ onClose }: { onClose: () => void }) {
         </Section>
 
         <Section title="Model">
-          <div className="flex flex-col gap-2">
-            {providers.map((p) => {
-              const active = draft.provider === p.id;
-              return (
-                <button
-                  key={p.id}
-                  onClick={() => update({ provider: p.id })}
-                  className={
-                    "text-left rounded-xl border px-4 py-3 transition-all " +
-                    (active
-                      ? "border-pulse/60 bg-pulse/[0.07]"
-                      : "border-ink-3 bg-ink-2/30 hover:border-ink-3/80 hover:bg-ink-2/50")
-                  }
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-bone font-medium">{p.name}</span>
-                    {active && (
-                      <span className="h-1.5 w-1.5 rounded-full bg-pulse-2 shadow-[0_0_8px_rgba(110,196,232,0.7)]" />
-                    )}
-                  </div>
-                  <p className="text-bone-3 text-xs mt-0.5">{p.blurb}</p>
-                </button>
-              );
-            })}
-          </div>
+          {cloudAvailable && (
+            <div className="rounded-xl border border-pulse/40 bg-pulse/[0.05] p-3.5 flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-bone font-medium text-sm">Travis Cloud</div>
+                  <p className="text-bone-3 text-[11px] mt-0.5 leading-relaxed">
+                    Recommended. Managed by Travis — no API key, no setup. We run
+                    Claude under the hood and keep the model up to date for you.
+                  </p>
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer select-none shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={!useOwnLlm}
+                    onChange={(e) => {
+                      const goCloud = e.target.checked;
+                      setUseOwnLlm(!goCloud);
+                      if (goCloud) {
+                        update({ provider: "travis_cloud" as Provider });
+                      } else if (draft.provider === "travis_cloud") {
+                        update({ provider: "claude" as Provider });
+                      }
+                    }}
+                    className="accent-pulse"
+                  />
+                  <span className="text-bone-2 text-xs">Use Travis Cloud</span>
+                </label>
+              </div>
+            </div>
+          )}
 
-          {provider.needsKey ? (
+          {(useOwnLlm || !cloudAvailable) && (
+            <div className="flex flex-col gap-2">
+              <p className="text-bone-3 text-[11px] -mb-1">
+                {cloudAvailable
+                  ? "Bring your own provider and key."
+                  : "This build wasn't compiled with a Travis Cloud key — bring your own provider."}
+              </p>
+              {providers
+                .filter((p) => p.id !== "travis_cloud")
+                .map((p) => {
+                  const active = draft.provider === p.id;
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => update({ provider: p.id })}
+                      className={
+                        "text-left rounded-xl border px-4 py-3 transition-all " +
+                        (active
+                          ? "border-pulse/60 bg-pulse/[0.07]"
+                          : "border-ink-3 bg-ink-2/30 hover:border-ink-3/80 hover:bg-ink-2/50")
+                      }
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-bone font-medium">{p.name}</span>
+                        {active && (
+                          <span className="h-1.5 w-1.5 rounded-full bg-pulse-2 shadow-[0_0_8px_rgba(110,196,232,0.7)]" />
+                        )}
+                      </div>
+                      <p className="text-bone-3 text-xs mt-0.5">{p.blurb}</p>
+                    </button>
+                  );
+                })}
+            </div>
+          )}
+
+          {draft.provider === "travis_cloud" ? null : provider.needsKey ? (
             <Field
               label={
                 keyExists
@@ -316,7 +365,9 @@ export default function Settings({ onClose }: { onClose: () => void }) {
               onClick={runTest}
               disabled={
                 testing ||
-                (provider.needsKey
+                (draft.provider === "travis_cloud"
+                  ? false
+                  : provider.needsKey
                   ? !keyExists && draft.apiKey.trim().length === 0
                   : draft.ollamaUrl.trim().length === 0)
               }

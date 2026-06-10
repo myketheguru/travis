@@ -1,5 +1,134 @@
 # Travis Changelog
 
+## v0.20.2 — Travis Cloud + forced-upgrade gate + 1:1 template replication (2026-06-10)
+
+### 1:1 template replication via binary asset extraction (Tier 4)
+
+The pre-existing `analyze_document_styling` tool returns a JSON
+description of a sample's visuals — "Arial 12pt, navy header, logo at
+top-left." Useful, but not enough to reproduce: a script following that
+description has to redraw the logo from text, and the result is an
+approximation, not a 1:1 replica. The user flagged this directly:
+"The invoice it generated was great and accurate but strayed from the
+provided template/sample design. The embedded images and headings were
+not captured."
+
+This release adds the complementary tool: actual binary extraction.
+
+- **New migration `0041_template_assets.sql`** introduces three tables:
+  - `template_extraction` — per-document lifecycle (`pending` →
+    `extracting` → `ready` / `failed`) + the per-doc manifest JSON.
+  - `template_asset` — the global, deduped asset library.
+    Content-addressed by SHA-256 with a UNIQUE constraint, so the
+    same L2E logo lifted from twenty sample invoices is ONE row.
+    Each asset carries `kind` (`logo` / `header_banner` /
+    `signature` / `watermark` / `page_render` / `embedded_image`)
+    and a human `display_name` so the LLM can ground "use the L2E
+    logo" against an actual row.
+  - `template_asset_source` — N:M asset ↔ source doc with page +
+    bbox. Answers "where did this logo come from", supports
+    "constrain to this sample's assets only" lookups, and lets one
+    asset belong to many samples without duplication.
+- **`src-tauri/src/template_assets.rs`** owns the extraction. Inline
+  Python script (uses already-bundled `pdfplumber` + `pypdfium2` +
+  `Pillow`) rasterizes every page at 300 DPI and crops every embedded
+  image. Each image is then SHA-hashed, copied into
+  `<app_data>/template_assets/<hash[:2]>/<hash>.png` (skip if exists),
+  and upserted into `template_asset` by content_hash. Kind inferred
+  heuristically from page position + dimensions (top-left small →
+  `logo`; wide-thin top → `header_banner`; wide-thin bottom →
+  `signature`; centered massive → `watermark`).
+- **Capture pipeline hook** in `src-tauri/src/capture/mod.rs`: when the
+  background extraction observes a `documentClassifications` entry
+  with `kind` starting with `sample_` / `template_` (or exactly
+  `sample`), it schedules extraction for that doc. Runs after the
+  chat reply is delivered — never blocks a turn.
+- **Two new LLM tools**:
+  - `list_template_assets(documentId)` — returns the per-document
+    manifest. Use when the user JUST attached a sample.
+  - `find_template_assets({kind?, query?, sourceDocumentId?})` —
+    library-wide search. Use when the user asks for a doc without
+    attaching a sample but Travis has seen relevant samples before.
+    Grab the L2E logo from any prior sample and embed it in a fresh
+    invoice; no need to attach the original sample.
+- **Updated journal prompt**: the "make one like this" workflow now
+  pairs `analyze_document_styling` (layout JSON) with
+  `list_template_assets` (actual pixels). Explicit instruction that
+  reuse across docs is the point, via `find_template_assets`.
+- **Storage**: assets at `<app_data>/template_assets/<hash[:2]>/<hash>.png`
+  (one file per unique image, ever). Per-doc lifecycle is in
+  `template_extraction`; binary lifecycle is independent and survives
+  doc deletion if other docs still reference it via
+  `template_asset_source`.
+
+### Travis Cloud is the default
+
+Provider configuration moves out of the onboarding path. Builds compiled
+with `TRAVIS_CLOUD_ANTHROPIC_KEY` ship with Travis Cloud baked in; users
+land at "ready to chat" instead of "paste your Anthropic key, pick a
+model."
+
+- `build.rs` reads `TRAVIS_CLOUD_ANTHROPIC_KEY` and
+  `TRAVIS_CLOUD_MODEL` as `option_env!`. Key never appears in the binary
+  as plaintext at rest — it's compiled into the release artifact at CI
+  time. CI sets the secret; local dev builds without the secret fall
+  back to the existing claude/openai/ollama flow unchanged.
+- New `travis_cloud` provider in `llm::build`. Resolves the build-time
+  key on demand; if a user somehow lands on the provider in a build
+  without the key, they get a clear "switch to your own LLM in
+  Settings" error rather than a silent failure.
+- `default_model("travis_cloud")` and `cheap_model("travis_cloud")`
+  share the claude tiers, so the same Sonnet-4-6 / Haiku-4-5 split
+  applies.
+
+### Existing users get migrated, not re-onboarded
+
+- `Db::migrate_to_travis_cloud_if_needed` runs once at startup. If
+  cloud is available and the user wasn't on `travis_cloud` already,
+  their previous provider/model are stashed into `meta` keys
+  (`previous_llm_provider`, `previous_model`) and the profile flips to
+  cloud. A `travis_cloud_migrated_v020` flag prevents the migration
+  from re-firing.
+- Stashed values surface via `platform_info` so Settings can show
+  "previously you were on Claude — switch back" if needed.
+
+### Onboarding skip + Settings toggle
+
+- New `platform_info` Tauri command tells the UI whether this build
+  has cloud baked in.
+- Onboarding skips provider + api-key steps (6, 7) when cloud is
+  available. Forward and back navigation both honor the skip.
+- Settings grows a "Travis Cloud / Use my own LLM" toggle. With cloud
+  selected, the provider grid + API key field disappear; the user just
+  has Travis Cloud. Flipping the toggle reveals the existing
+  claude/openai/ollama configuration unchanged.
+
+### Forced upgrade enforcement
+
+New mechanism for marking a build too old to keep using. The release
+ops can publish a tiny sentinel and every running Travis below that
+floor sees a hard gate.
+
+- `force_upgrade::check_force_upgrade` fetches
+  `https://github.com/myketheguru/travis-releases/raw/main/min-supported.json`
+  (`{"minVersion": "x.y.z", "reason": "...", "latestVersion": "x.y.z"}`)
+  and compares the running version. Network failures and missing files
+  are treated as "not required" — a transient outage never gates the
+  user.
+- `ForceUpgradeGate` overlay wraps the app shell. When the sentinel
+  says the build is below the minimum, the user gets a non-dismissible
+  modal with "Install update" (kicks the existing updater) or "Quit
+  Travis" (calls a new `quit_app` command). No back door, no settings
+  escape.
+- Default behavior is permissive: if the sentinel file doesn't exist
+  in the releases repo (today's state), no one is gated. Publishing
+  `{"minVersion": "0.20.2"}` is the explicit opt-in to start blocking
+  older builds.
+
+### Version bump
+`package.json`, `tauri.conf.json`, `src-tauri/Cargo.toml` → 0.20.2.
+v0.20.1's tag-only release left these at 0.20.0; cleaned up here.
+
 ## v0.20.0 — Engagement schema promotion + Consent cards in chat (2026-06-10)
 
 Two of the three v0.19.x deferred items now land. The third

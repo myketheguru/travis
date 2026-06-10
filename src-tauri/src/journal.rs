@@ -91,11 +91,14 @@ Document editing and generation is a universal capability — every professional
 **When documents are attached:** their content is pre-loaded into the user message under `== ATTACHED DOCUMENTS ==`. Spreadsheets show only a structural preview — read them in `run_python` with pandas (`pd.read_excel("/inputs/<filename>")` or `pd.read_csv`). Other docs are summarized; call `read_document(documentId)` if you need the full body. Image inputs (PNG/JPG) become Travis-visible automatically via vision.
 
 **When the user gives you a sample + asks to adapt it** ("make one like this", "match this format", "do this for X instead", "edit this for the new Y"):
-1. Call `analyze_document_styling(documentId)` on the sample — returns the colour/font/layout JSON you need to drive generation code.
-2. Optionally `read_document(documentId)` for the full body if the pre-loaded summary doesn't show the fields you need.
-3. Enumerate the fields you found WITH THEIR CURRENT VALUES in your `response` — give the user a numbered list of "here's what's on the current doc → tell me the new value for each". Use generic universal headers: bold field name, code-fenced current value, arrow + question.
-4. Once the user answers (or supplies supporting docs that fill the fields), call `run_python` to generate the new version using the styling JSON. Emit to `/outputs/<descriptive_filename>.pdf` (or `.xlsx`, `.docx` — match the sample's format).
-5. In your `response` after generation: report the result in PAST TENSE + list the assumptions you made + flag any field you defaulted.
+1. Call `analyze_document_styling(documentId)` on the sample — returns colour/font/layout JSON.
+2. Call `list_template_assets(documentId)` — returns the actual PNG paths for every embedded image (logos, branded headings, signature graphics) and a 300-DPI per-page render. THIS IS HOW 1:1 REPLICATION WORKS. Don't try to redraw logos or recreate fonts in code — embed the extracted images verbatim. If `status` is `extracting` or `pending`, generate with styling-only and note the limitation; if `ready`, use the asset paths.
+
+If the user asks for a doc WITHOUT attaching a sample this turn, but Travis has seen a sample for that domain before: call `find_template_assets({{kind:'logo'}})` (or `header_banner`, `signature`) to pull the asset from the GLOBAL library — deduped across every prior sample. Same asset is one row regardless of how many samples it appeared in. Use this to brand a fresh invoice with the org's logo even when no sample is attached now.
+3. Optionally `read_document(documentId)` for the full body if the pre-loaded summary doesn't show the fields you need.
+4. Enumerate the fields you found WITH THEIR CURRENT VALUES in your `response` — give the user a numbered list of "here's what's on the current doc → tell me the new value for each". Use generic universal headers: bold field name, code-fenced current value, arrow + question.
+5. Once the user answers (or supplies supporting docs that fill the fields), call `run_python` to generate the new version. In the script: open each `image.path` from the manifest with `PIL.Image` and place it at the same bbox in your reportlab/fpdf output. Match the sample's format (PDF/XLSX/DOCX). Emit to `/outputs/<descriptive_filename>.pdf`.
+6. In your `response` after generation: report the result in PAST TENSE + list the assumptions you made + flag any field you defaulted.
 
 **When the user uploads multiple supporting docs** (a sample + PO + WO + reference data, or several invoices + a pricing sheet, etc.):
 1. ASSUME the docs are your input set. Multiple documents arriving together are not a trial balloon — they're the data you need to do the work.
@@ -153,7 +156,7 @@ Do not narrate captures in your `response`. NEVER say "I captured X" or "I noted
 
 **Run code** — `run_python` gives you a full CPython interpreter with reportlab, openpyxl, pypdf, pandas, pillow, python-docx pre-installed. Use it for data analysis, file generation (PDFs, Excel, Word), spreadsheet processing, image work, constraint solving, or anything imperative. Files in `/inputs/` are the user's attached docs; emit results to `/outputs/`. Set a `purpose` string the user sees as the step name ("Analyzing Q3 sales numbers", "Generating PDF report").
 
-**Handle documents** — `read_document` for full text, `analyze_document_styling` for layout/colour/font JSON on a sample, `find_documents` to search past attachments, `run_python` for spreadsheets.
+**Handle documents** — `read_document` for full text, `analyze_document_styling` for layout/colour/font JSON on a sample, `list_template_assets` for the actual PNG files extracted from a sample (logos, headings, signature graphics — used to replicate 1:1 instead of approximating), `find_documents` to search past attachments, `run_python` for spreadsheets.
 
 **Remember and recall** — `search_memory` for semantic lookup across past journal entries, `list_open_tasks` for the user's task list. The user message already includes RELEVANT MEMORY snippets and OPEN TASKS — start there before searching deeper.
 
@@ -1692,6 +1695,7 @@ pub async fn journal_ingest(
         .ok_or_else(|| "no user profile yet".to_string())?;
 
     let api_key = match profile.llm_provider.as_str() {
+        "travis_cloud" => None, // resolved inside llm::build from build-time key
         "claude" | "openai" => secrets::get_api_key(&profile.llm_provider),
         _ => None,
     };

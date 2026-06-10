@@ -8,6 +8,7 @@ use crate::db::Db;
 use crate::llm::ToolDef;
 
 pub mod analyze_document_styling;
+pub mod list_template_assets;
 pub mod cases;
 pub mod clipboard;
 pub mod find_documents;
@@ -144,6 +145,8 @@ fn human_label_for_tool(tool_name: &str) -> String {
         "preview_document" => "Opening document",
         "run_python" => "Running Python",
         "analyze_document_styling" => "Analyzing document styling",
+        "list_template_assets" => "Loading template assets",
+        "find_template_assets" => "Searching template library",
         "open_case" => "Opening case",
         "note_case" => "Recording case note",
         "close_case" => "Closing case",
@@ -240,6 +243,8 @@ pub fn read_only_registry(packs: &[&dyn crate::packs::PackHandle]) -> ToolRegist
     reg.register(Box::new(load_python_artifact::LoadPythonArtifactTool));
     reg.register(Box::new(delegate::DelegateTool));
     reg.register(Box::new(analyze_document_styling::AnalyzeDocumentStylingTool));
+    reg.register(Box::new(list_template_assets::ListTemplateAssetsTool));
+    reg.register(Box::new(list_template_assets::FindTemplateAssetsTool));
     reg.register(Box::new(cases::OpenCaseTool));
     reg.register(Box::new(cases::NoteCaseTool));
     reg.register(Box::new(cases::CloseCaseTool));

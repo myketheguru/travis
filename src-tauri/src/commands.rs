@@ -85,7 +85,7 @@ async fn write_profile_and_key(
     payload: &OnboardingPayload,
 ) -> Result<(), String> {
     let provider = payload.provider.trim().to_lowercase();
-    if !matches!(provider.as_str(), "claude" | "openai" | "ollama") {
+    if !matches!(provider.as_str(), "travis_cloud" | "claude" | "openai" | "ollama") {
         return Err(format!("unknown provider: {provider}"));
     }
 
@@ -354,6 +354,7 @@ pub async fn chat(
         .ok_or_else(|| "no user profile yet".to_string())?;
 
     let api_key = match profile.llm_provider.as_str() {
+        "travis_cloud" => None, // resolved inside llm::build from build-time key
         "claude" | "openai" => secrets::get_api_key(&profile.llm_provider),
         _ => None,
     };

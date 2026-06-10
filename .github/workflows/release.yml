@@ -122,6 +122,12 @@ jobs:
           TRAVIS_MICROSOFT_CLIENT_SECRET: ${{ secrets.TRAVIS_MICROSOFT_CLIENT_SECRET }}
           TRAVIS_TELEMETRY_URL: ${{ secrets.TRAVIS_TELEMETRY_URL }}
           TRAVIS_TELEMETRY_TOKEN: ${{ secrets.TRAVIS_TELEMETRY_TOKEN }}
+          # v0.20.2 — bakes the cloud Anthropic key into the binary so
+          # users skip provider configuration in onboarding. If the
+          # secret isn't set in this repo, the build falls back to the
+          # legacy "bring your own LLM" flow at runtime.
+          TRAVIS_CLOUD_ANTHROPIC_KEY: ${{ secrets.TRAVIS_CLOUD_ANTHROPIC_KEY }}
+          TRAVIS_CLOUD_MODEL: ${{ secrets.TRAVIS_CLOUD_MODEL }}
         with:
           # Intentionally no tagName/releaseName — that suppresses the
           # release-creation step in tauri-action so we don't need

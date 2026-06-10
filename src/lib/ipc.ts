@@ -1,7 +1,30 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { AppStatus } from "../stores/app";
 
-export type Provider = "claude" | "openai" | "ollama";
+export type Provider = "travis_cloud" | "claude" | "openai" | "ollama";
+
+/// v0.20.2 — info about what this build of Travis supports.
+export type PlatformInfo = {
+  travisCloudAvailable: boolean;
+  previousLlmProvider: string | null;
+  previousModel: string | null;
+};
+
+/// v0.20.2 — query the build's platform support.
+export const platformInfo = () => invoke<PlatformInfo>("platform_info");
+
+/// v0.20.2 — Travis admin can mark a min-supported version remotely; older
+/// builds are gated until they upgrade.
+export type ForceUpgradeStatus = {
+  required: boolean;
+  currentVersion: string;
+  minVersion: string | null;
+  latestVersion: string | null;
+  reason: string | null;
+};
+
+export const checkForceUpgrade = () =>
+  invoke<ForceUpgradeStatus>("check_force_upgrade");
 
 export type UserProfile = {
   name: string;

@@ -47,6 +47,9 @@ mod python_runtime;
 mod overlay;
 mod packs;
 mod packs_cmd;
+mod platform_cmd;
+mod force_upgrade;
+mod template_assets;
 mod proactive;
 mod reminders;
 mod reminders_cmd;
@@ -203,6 +206,16 @@ pub fn run() {
 
             let db_arc = Arc::new(db);
             let health_arc = Arc::new(health::Health::new());
+
+            // v0.20.2 — one-time migration to Travis Cloud as default
+            // LLM provider. No-op when the build doesn't ship a cloud
+            // key OR the user has already been migrated.
+            let db_for_migrate = db_arc.clone();
+            tauri::async_runtime::block_on(async move {
+                if let Err(e) = db_for_migrate.migrate_to_travis_cloud_if_needed().await {
+                    tracing::warn!("travis cloud migration failed (non-fatal): {e}");
+                }
+            });
 
             // Resolve which compiled-in packs the user has enabled at
             // runtime via `meta.pack.<slug>.enabled` (PACKS.md "two
@@ -660,6 +673,12 @@ pub fn run() {
             flags_cmd::get_flags,
             flags_cmd::get_flag,
             flags_cmd::set_flags_url,
+            platform_cmd::platform_info,
+            force_upgrade::check_force_upgrade,
+            force_upgrade::quit_app,
+            template_assets::list_template_assets,
+            template_assets::find_template_assets,
+            template_assets::request_template_extraction,
             packs_cmd::list_packs,
             packs_cmd::set_pack_enabled,
             packs_cmd::pack_schemas,
