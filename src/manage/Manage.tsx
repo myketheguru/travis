@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
+import { DocumentViewer } from "../chat/DocumentViewer";
+import { ResizableSplit } from "../chat/ResizableSplit";
 import AskTab from "./tabs/AskTab";
 import TasksTab from "./tabs/TasksTab";
 import RemindersTab from "./tabs/RemindersTab";
@@ -69,6 +71,9 @@ const diagnosticTabs: CoreTab[] = [
 export default function Manage({ onClose }: { onClose: () => void }) {
   const showDiagnostics = useAppStore((s) => s.showDiagnostics);
   const enabledPacks = useAppStore((s) => s.status?.enabledPacks ?? []);
+  const viewerDocumentId = useAppStore((s) => s.viewerDocumentId);
+  const chatPaneFraction = useAppStore((s) => s.chatPaneFraction);
+  const setChatPaneFraction = useAppStore((s) => s.setChatPaneFraction);
   const [schemas, setSchemas] = useState<PackSchema[] | null>(null);
   const [tab, setTab] = useState<string>("ask");
 
@@ -174,38 +179,44 @@ export default function Manage({ onClose }: { onClose: () => void }) {
         </nav>
       </aside>
 
-      {/* Content */}
-      <section className="flex-1 overflow-y-auto">
-        {active?.kind === "core" && active.id === "ask" && <AskTab />}
-        {active?.kind === "core" && active.id === "threads" && <ThreadsTab />}
-        {active?.kind === "core" && active.id === "tasks" && <TasksTab />}
-        {active?.kind === "core" && active.id === "reminders" && <RemindersTab />}
-        {active?.kind === "core" && active.id === "documents" && <DocumentsTab />}
-        {active?.kind === "core" && active.id === "entities" && <EntitiesTab />}
-        {active?.kind === "core" && active.id === "summaries" && <SummariesTab />}
-        {active?.kind === "core" && active.id === "asks" && <AsksTab />}
-        {active?.kind === "pack" && (() => {
-          // Pack-shipped custom UI takes priority over auto-CRUD when
-          // an override is declared. PLUGIN_PLATFORM.md explains the
-          // override mechanism + how it'll evolve when runtime-loaded
-          // packs land.
-          const Override = getOverride(active.pack.slug, active.table.slug, "list");
-          if (Override) {
-            return <Override />;
-          }
-          // Key forces a fresh TableTab (and its ListView) every time
-          // the user switches tables — otherwise React preserves the
-          // previous tab's sortField state, leaking e.g. "name" from
-          // Coaches into the Hours tab whose fields don't include it.
-          return (
-            <TableTab
-              key={`${active.pack.slug}:${active.table.slug}`}
-              pack={active.pack}
-              table={active.table}
-            />
-          );
-        })()}
-      </section>
+      {/* Content — split when the document previewer is open. */}
+      {viewerDocumentId != null ? (
+        <ResizableSplit
+          fraction={chatPaneFraction}
+          onFractionChange={setChatPaneFraction}
+          left={<section className="flex-1 overflow-y-auto h-full">{renderActiveContent(active, schemas)}</section>}
+          right={<DocumentViewer documentId={viewerDocumentId} />}
+        />
+      ) : (
+        <section className="flex-1 overflow-y-auto">{renderActiveContent(active, schemas)}</section>
+      )}
     </main>
   );
+}
+
+function renderActiveContent(active: Tab | undefined, schemas: PackSchema[] | null): React.ReactNode {
+  void schemas;
+  if (!active) return null;
+  if (active.kind === "core") {
+    if (active.id === "ask") return <AskTab />;
+    if (active.id === "threads") return <ThreadsTab />;
+    if (active.id === "tasks") return <TasksTab />;
+    if (active.id === "reminders") return <RemindersTab />;
+    if (active.id === "documents") return <DocumentsTab />;
+    if (active.id === "entities") return <EntitiesTab />;
+    if (active.id === "summaries") return <SummariesTab />;
+    if (active.id === "asks") return <AsksTab />;
+  }
+  if (active.kind === "pack") {
+    const Override = getOverride(active.pack.slug, active.table.slug, "list");
+    if (Override) return <Override />;
+    return (
+      <TableTab
+        key={`${active.pack.slug}:${active.table.slug}`}
+        pack={active.pack}
+        table={active.table}
+      />
+    );
+  }
+  return null;
 }

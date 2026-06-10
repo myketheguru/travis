@@ -19,6 +19,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
+  downloadDocument,
   formatBytes,
   listDocuments,
   previewDocument,
@@ -28,6 +29,7 @@ import {
 } from "../../lib/documents";
 import { useAppStore } from "../../stores/app";
 import { DocumentIcon } from "../../chat/DocumentIcon";
+import { Select } from "../../components/Select";
 
 const KIND_CATEGORIES: { id: string; label: string; matchers: string[] }[] = [
   { id: "all",          label: "All",                matchers: [] },
@@ -114,7 +116,14 @@ export default function DocumentsTab() {
     return counts;
   }, [docs]);
 
-  const handleOpen = async (doc: Document) => {
+  const setViewerDocumentId = useAppStore((s) => s.setViewerDocumentId);
+
+  const handleOpen = (doc: Document) => {
+    // v0.20.1 — primary click opens the in-Travis split viewer.
+    setViewerDocumentId(doc.id);
+  };
+
+  const handleOpenExternal = async (doc: Document) => {
     try {
       await previewDocument(doc.id);
     } catch {
@@ -125,6 +134,14 @@ export default function DocumentsTab() {
   const handleReveal = async (doc: Document) => {
     try {
       await revealDocumentInFolder(doc.id);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const handleDownload = async (doc: Document) => {
+    try {
+      await downloadDocument(doc.id, doc.originalFilename);
     } catch {
       /* ignore */
     }
@@ -234,22 +251,18 @@ export default function DocumentsTab() {
                   </span>
                 </div>
                 <div className="text-bone-3 text-[10px] font-mono mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                  <select
+                  <Select
                     value={doc.kind}
-                    onChange={(e) => handleSetKind(doc, e.target.value)}
-                    onClick={(e) => e.stopPropagation()}
-                    className="bg-white/[0.04] hover:bg-white/[0.07] rounded px-1.5 py-0.5 text-bone-2 cursor-pointer"
+                    onChange={(next) => handleSetKind(doc, next)}
+                    options={[
+                      ...(KIND_OPTIONS.includes(doc.kind)
+                        ? []
+                        : [{ value: doc.kind }]),
+                      ...KIND_OPTIONS.map((k) => ({ value: k })),
+                    ]}
                     title="Set the document kind"
-                  >
-                    {!KIND_OPTIONS.includes(doc.kind) && (
-                      <option value={doc.kind}>{doc.kind}</option>
-                    )}
-                    {KIND_OPTIONS.map((k) => (
-                      <option key={k} value={k}>
-                        {k}
-                      </option>
-                    ))}
-                  </select>
+                    aria-label="Document kind"
+                  />
                   <span>·</span>
                   <span>{SOURCE_LABEL[doc.source] ?? doc.source}</span>
                   <span>·</span>
@@ -275,6 +288,18 @@ export default function DocumentsTab() {
                   title="Attach to the active chat"
                 >
                   attach to chat
+                </button>
+                <button
+                  onClick={() => handleDownload(doc)}
+                  className="text-[10px] text-bone-2 hover:text-bone hover:bg-white/[0.06] rounded px-2 py-0.5 transition-colors inline-flex items-center gap-1"
+                  title="Download a copy"
+                >
+                  <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="7 10 12 15 17 10" />
+                    <line x1="12" y1="15" x2="12" y2="3" />
+                  </svg>
+                  download
                 </button>
                 <button
                   onClick={() => handleReveal(doc)}

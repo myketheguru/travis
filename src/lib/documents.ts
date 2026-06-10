@@ -120,6 +120,25 @@ export async function revealDocumentInFolder(id: number): Promise<string> {
   return await invoke<string>("reveal_document_in_folder", { id });
 }
 
+/// v0.20.1 — download a managed document to a user-chosen location
+/// via the OS save dialog. Default filename is the original filename
+/// the user dropped (or Travis generated). Returns the resolved
+/// target path, or null if the user cancelled the dialog.
+export async function downloadDocument(
+  id: number,
+  defaultFilename: string,
+): Promise<string | null> {
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const target = await save({
+    defaultPath: defaultFilename,
+  });
+  if (!target) return null;
+  return await invoke<string>("download_document", {
+    id,
+    targetPath: target,
+  });
+}
+
 /// Format a byte count as a human-readable size for the UI ("1.2 MB").
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;

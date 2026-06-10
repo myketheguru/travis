@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
+  downloadDocument,
   formatBytes,
   getDocument,
   getDocumentPath,
@@ -9,6 +10,7 @@ import {
   type Document,
 } from "../lib/documents";
 import { DocumentIcon } from "./DocumentIcon";
+import { useAppStore } from "../stores/app";
 
 interface Props {
   documentId: number;
@@ -21,6 +23,7 @@ export function FileCard({ documentId }: Props) {
   const [doc, setDoc] = useState<Document | null>(null);
   const [imgSrc, setImgSrc] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
+  const setViewerDocumentId = useAppStore((s) => s.setViewerDocumentId);
 
   useEffect(() => {
     getDocument(documentId)
@@ -45,14 +48,21 @@ export function FileCard({ documentId }: Props) {
 
   const isImage = doc.mimeType?.startsWith("image/");
 
-  const handleOpen = async () => {
+  // v0.20.1 — primary click opens the in-Travis split-window viewer.
+  // OS viewer stays available via the bottom-right icon button.
+  const handleOpen = () => {
     setOpening(true);
+    setViewerDocumentId(documentId);
+    setTimeout(() => setOpening(false), 200);
+  };
+
+  const handleOpenExternal = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
     try {
       await previewDocument(documentId);
     } catch {
       /* ignore */
-    } finally {
-      setTimeout(() => setOpening(false), 300);
     }
   };
 
@@ -63,6 +73,20 @@ export function FileCard({ documentId }: Props) {
     e.preventDefault();
     try {
       await revealDocumentInFolder(documentId);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  // v0.20.1 — download button. Opens OS save dialog defaulted to the
+  // original filename. stopPropagation so the surrounding open click
+  // doesn't fire too.
+  const handleDownload = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!doc) return;
+    try {
+      await downloadDocument(documentId, doc.originalFilename);
     } catch {
       /* ignore */
     }
@@ -116,24 +140,57 @@ export function FileCard({ documentId }: Props) {
         </div>
       </div>
       <span className="text-bone-3 text-[11px] shrink-0">
-        {opening ? "opening…" : "open"}
+        {opening ? "opening…" : "preview"}
       </span>
-      <span
-        role="button"
-        tabIndex={0}
-        onClick={handleReveal}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            handleReveal(e as unknown as React.MouseEvent);
-          }
-        }}
-        className="text-bone-3 text-[11px] shrink-0 ml-1 px-1.5 py-0.5 rounded hover:bg-white/[0.08] hover:text-bone-2 cursor-pointer"
-        title="Show in file manager"
+      <IconAction label="Open in OS viewer" onClick={handleOpenExternal}>
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+          <polyline points="15 3 21 3 21 9" />
+          <line x1="10" y1="14" x2="21" y2="3" />
+        </svg>
+      </IconAction>
+      <IconAction
+        label="Download"
+        onClick={handleDownload}
       >
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" />
+          <line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+      </IconAction>
+      <IconAction label="Show in file manager" onClick={handleReveal}>
         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
         </svg>
-      </span>
+      </IconAction>
     </button>
+  );
+}
+
+function IconAction({
+  label,
+  onClick,
+  children,
+}: {
+  label: string;
+  onClick: (e: React.MouseEvent) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          onClick(e as unknown as React.MouseEvent);
+        }
+      }}
+      className="text-bone-3 text-[11px] shrink-0 ml-1 px-1.5 py-0.5 rounded hover:bg-white/[0.08] hover:text-bone-2 cursor-pointer"
+      title={label}
+    >
+      {children}
+    </span>
   );
 }

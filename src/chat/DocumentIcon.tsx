@@ -24,6 +24,14 @@ export type DocumentIconKind =
   | "spreadsheet"
   | "image"
   | "pdf"
+  | "docx"
+  | "csv"
+  | "text"
+  | "code"
+  | "archive"
+  | "audio"
+  | "video"
+  | "presentation"
   | "file";
 
 interface Props extends SVGProps<SVGSVGElement> {
@@ -140,22 +148,79 @@ export function DocumentIcon({
         </svg>
       );
     case "pdf":
-      // Page with PDF micro-label
       return (
         <svg {...common}>
           <path d="M5 3h11l4 4v14H5z" />
           <path d="M16 3v4h4" />
-          <text
-            x="12"
-            y="16"
-            textAnchor="middle"
-            fontSize="5"
-            fontWeight="600"
-            stroke="none"
-            fill="currentColor"
-          >
-            PDF
-          </text>
+          <text x="12" y="16" textAnchor="middle" fontSize="5" fontWeight="600" stroke="none" fill="currentColor">PDF</text>
+        </svg>
+      );
+    case "docx":
+      return (
+        <svg {...common}>
+          <path d="M5 3h11l4 4v14H5z" />
+          <path d="M16 3v4h4" />
+          <text x="12" y="16" textAnchor="middle" fontSize="4.5" fontWeight="600" stroke="none" fill="currentColor">DOC</text>
+        </svg>
+      );
+    case "csv":
+      return (
+        <svg {...common}>
+          <path d="M5 3h11l4 4v14H5z" />
+          <path d="M16 3v4h4" />
+          <text x="12" y="16" textAnchor="middle" fontSize="4.5" fontWeight="600" stroke="none" fill="currentColor">CSV</text>
+        </svg>
+      );
+    case "text":
+      return (
+        <svg {...common}>
+          <path d="M5 3h11l4 4v14H5z" />
+          <line x1="9" y1="9" x2="15" y2="9" />
+          <line x1="9" y1="12" x2="15" y2="12" />
+          <line x1="9" y1="15" x2="15" y2="15" />
+          <line x1="9" y1="18" x2="13" y2="18" />
+        </svg>
+      );
+    case "code":
+      return (
+        <svg {...common}>
+          <path d="M5 3h11l4 4v14H5z" />
+          <polyline points="10 12 8 14 10 16" />
+          <polyline points="14 12 16 14 14 16" />
+        </svg>
+      );
+    case "archive":
+      return (
+        <svg {...common}>
+          <rect x="4" y="6" width="16" height="14" rx="1.5" />
+          <line x1="4" y1="10" x2="20" y2="10" />
+          <line x1="12" y1="6" x2="12" y2="14" />
+          <rect x="11" y="13" width="2" height="3" fill="currentColor" stroke="none" />
+        </svg>
+      );
+    case "audio":
+      return (
+        <svg {...common}>
+          <path d="M5 3h11l4 4v14H5z" />
+          <circle cx="10" cy="16" r="1.8" />
+          <path d="M11.8 16V9l4 1.5v6" />
+          <circle cx="14" cy="17" r="1.6" />
+        </svg>
+      );
+    case "video":
+      return (
+        <svg {...common}>
+          <rect x="3" y="6" width="14" height="12" rx="1" />
+          <path d="M17 10l4-2v8l-4-2z" />
+        </svg>
+      );
+    case "presentation":
+      return (
+        <svg {...common}>
+          <rect x="3" y="4" width="18" height="12" rx="1" />
+          <line x1="9" y1="20" x2="15" y2="20" />
+          <line x1="12" y1="16" x2="12" y2="20" />
+          <polyline points="7 12 10 9 13 12 17 8" />
         </svg>
       );
     case "file":
@@ -182,10 +247,18 @@ function resolveKind(kind?: string, mimeType?: string): DocumentIconKind {
   if (k.includes("signed_sheet") || k.includes("signing_sheet") || k.includes("sign_in") || k.includes("master")) {
     return "signed_sheet";
   }
-  if (k.includes("spreadsheet") || k === "generated_csv" || m.includes("spreadsheet") || m.includes("excel") || m.includes("csv")) {
-    return "spreadsheet";
+  if (m.includes("presentation") || m.includes("powerpoint") || k.includes("presentation") || k.includes("slides")) {
+    return "presentation";
   }
+  if (k === "generated_csv" || m.includes("csv") || k === "csv") return "csv";
+  if (k.includes("spreadsheet") || m.includes("spreadsheet") || m.includes("excel")) return "spreadsheet";
+  if (m.includes("zip") || m.includes("compressed") || k.includes("archive") || k.includes("zip")) return "archive";
+  if (m.startsWith("audio/")) return "audio";
+  if (m.startsWith("video/")) return "video";
   if (m.startsWith("image/")) return "image";
   if (m === "application/pdf" || k.includes("pdf")) return "pdf";
+  if (m.includes("word") || k === "generated_doc" || k === "docx" || k === "doc") return "docx";
+  if (m.startsWith("text/") || k.includes("text") || k.includes("note") || k === "txt" || k === "md") return "text";
+  if (k.includes("code") || k.includes("script") || k === "py" || k === "js" || k === "ts" || k === "json") return "code";
   return "file";
 }

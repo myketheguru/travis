@@ -630,6 +630,7 @@ pub fn run() {
             documents::cmd::update_document_extraction,
             documents::cmd::preview_document,
             documents::cmd::reveal_document_in_folder,
+            documents::cmd::download_document,
             documents::cmd::analyze_document_styling,
             cases::cmd::list_open_cases,
             cases::cmd::open_case,

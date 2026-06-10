@@ -435,6 +435,37 @@ pub async fn reveal_document_in_folder(
     Ok(abs_str)
 }
 
+/// v0.20.1 — copy a managed document to a user-chosen destination
+/// path. Frontend uses plugin-dialog to ask "where do you want to save
+/// it?" then hands us the absolute target path; we copy the canonical
+/// file there. Returns the resolved target path on success.
+#[tauri::command]
+pub async fn download_document(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+    target_path: String,
+) -> Result<String, String> {
+    let doc = db::get(&state.db.pool, id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("document {id} not found"))?;
+    let storage_root = resolve_storage_root(&app)?;
+    let src = storage::absolute_path(&storage_root, Path::new(&doc.relative_path));
+    let target = PathBuf::from(&target_path);
+    if let Some(parent) = target.parent() {
+        if !parent.exists() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("could not create destination dir: {e}"))?;
+        }
+    }
+    tokio::fs::copy(&src, &target)
+        .await
+        .map_err(|e| format!("could not copy doc#{id}: {e}"))?;
+    Ok(target.to_string_lossy().into_owned())
+}
+
 fn basename(p: &Path) -> String {
     p.file_name()
         .and_then(|n| n.to_str())
