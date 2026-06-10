@@ -402,6 +402,34 @@ pub async fn preview_document(
     Ok(abs_str)
 }
 
+/// v0.18.3 — reveal a document in the OS file explorer (Finder on
+/// macOS, Explorer on Windows, the default file manager on Linux).
+/// Different from `preview_document` which opens the file directly
+/// in its default viewer; this lets the user see WHERE on disk the
+/// file lives, copy it elsewhere, etc.
+#[tauri::command]
+pub async fn reveal_document_in_folder(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<String, String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let doc = db::get(&state.db.pool, id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("document {id} not found"))?;
+
+    let storage_root = resolve_storage_root(&app)?;
+    let abs = storage::absolute_path(&storage_root, Path::new(&doc.relative_path));
+    let abs_str = abs.to_string_lossy().into_owned();
+
+    app.opener()
+        .reveal_item_in_dir(abs.clone())
+        .map_err(|e| format!("could not reveal {abs_str}: {e}"))?;
+    Ok(abs_str)
+}
+
 fn basename(p: &Path) -> String {
     p.file_name()
         .and_then(|n| n.to_str())

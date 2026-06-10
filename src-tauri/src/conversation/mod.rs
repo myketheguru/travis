@@ -38,6 +38,24 @@ pub struct Thread {
     pub messages: Vec<ConversationMessage>,
 }
 
+/// v0.18.3 — row shape for the conversation switcher. Includes a
+/// short preview snippet (first user message, capped at 80 chars)
+/// so the dropdown can show "Invoice for IS 217 PO/WO docs..." next
+/// to each thread, since most conversations don't have explicit
+/// titles.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationListItem {
+    pub id: i64,
+    pub title: Option<String>,
+    pub preview: Option<String>,
+    pub status: String,
+    pub kind: String,
+    pub message_count: i64,
+    pub updated_at: String,
+    pub created_at: String,
+}
+
 pub async fn open(
     pool: &SqlitePool,
     workspace_id: i64,
@@ -245,6 +263,105 @@ pub async fn list(
         q = q.bind(id);
     }
     q.fetch_all(pool).await
+}
+
+/// v0.18.3 — list with first-user-message preview snippets for the
+/// switcher UI. Optional `query` does a case-insensitive LIKE match
+/// against the conversation title AND against the first 4000 chars
+/// of any message content (so users can search for "IS 217" or
+/// "Wallace Ave" and find the right thread). Newest-first; `limit`
+/// defaults to 50.
+pub async fn list_for_switcher(
+    pool: &SqlitePool,
+    visible_ids: &[i64],
+    query: Option<&str>,
+    limit: i64,
+) -> Result<Vec<ConversationListItem>, sqlx::Error> {
+    if visible_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let lim = limit.clamp(1, 200);
+    let n_ws = visible_ids.len();
+    // SQL placeholders: ?1 = like pattern (or NULL when no query),
+    // ?2 = limit, ?3..?3+n = workspace ids.
+    let ws_clause: String = (3..3 + n_ws)
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT
+           c.id,
+           c.title,
+           c.status,
+           c.kind,
+           c.created_at,
+           c.updated_at,
+           (SELECT COUNT(*) FROM conversation_message m
+              WHERE m.conversation_id = c.id) AS message_count,
+           (SELECT m.content FROM conversation_message m
+              WHERE m.conversation_id = c.id AND m.role = 'user'
+              ORDER BY m.id ASC LIMIT 1) AS preview
+         FROM conversation c
+         WHERE c.workspace_id IN ({ws_clause})
+           AND (
+             ?1 IS NULL
+             OR LOWER(IFNULL(c.title, '')) LIKE ?1
+             OR EXISTS (
+                 SELECT 1 FROM conversation_message m
+                  WHERE m.conversation_id = c.id
+                    AND LOWER(SUBSTR(m.content, 1, 4000)) LIKE ?1
+             )
+           )
+         ORDER BY c.updated_at DESC
+         LIMIT ?2"
+    );
+    let like_pattern = query.map(|q| format!("%{}%", q.to_lowercase()));
+    let mut q = sqlx::query_as::<
+        _,
+        (
+            i64,
+            Option<String>,
+            String,
+            String,
+            String,
+            String,
+            i64,
+            Option<String>,
+        ),
+    >(&sql)
+    .bind(&like_pattern)
+    .bind(lim);
+    for id in visible_ids {
+        q = q.bind(id);
+    }
+    let rows = q.fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, title, status, kind, created_at, updated_at, message_count, preview)| {
+                ConversationListItem {
+                    id,
+                    title,
+                    preview: preview.map(|s| {
+                        // Trim attachment marker + truncate to 80 chars
+                        let cleaned = s
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .replace("[Attached:", "")
+                            .trim()
+                            .to_string();
+                        cleaned.chars().take(80).collect::<String>()
+                    }),
+                    status,
+                    kind,
+                    message_count,
+                    updated_at,
+                    created_at,
+                }
+            },
+        )
+        .collect())
 }
 
 /// Auto-close any conversation that's been idle for 7+ days.

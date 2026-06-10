@@ -112,6 +112,14 @@ export async function previewDocument(id: number): Promise<string> {
   return await invoke<string>("preview_document", { id });
 }
 
+/// v0.18.3 — reveal the document in the OS file explorer (Finder /
+/// Explorer / your distro's file manager). Different from previewDocument
+/// which opens the file directly; this surfaces WHERE on disk it lives.
+/// Returns the absolute path.
+export async function revealDocumentInFolder(id: number): Promise<string> {
+  return await invoke<string>("reveal_document_in_folder", { id });
+}
+
 /// Format a byte count as a human-readable size for the UI ("1.2 MB").
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;

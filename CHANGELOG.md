@@ -1,5 +1,58 @@
 # Travis Changelog
 
+## v0.18.3 — Conversation switcher + Reveal-in-folder file trace (2026-06-10)
+
+### Searchable conversation switcher (#)
+
+The chat surface now has a dropdown at the top that lists recent
+conversations and lets the user switch between them or start fresh.
+
+- New `conversation::list_for_switcher` (SQL) + Tauri command
+  `list_conversations_for_switcher(query, limit)`. Returns
+  `ConversationListItem` rows with title, first-user-message
+  preview (most threads don't have explicit titles, so the
+  preview snippet is what the user identifies the thread by),
+  message_count, status, updated_at.
+- Query does case-insensitive substring match against the title
+  AND against the body of any message. So searching "IS 217" or
+  "Wallace Ave" lands on the right thread even when the title is
+  empty.
+- New `ConversationSwitcher.tsx` — dropdown anchored to the chat
+  header, search input with 150ms debounce, "+ New chat" action,
+  recent-first list with relative-age timestamps (`just now`,
+  `5m`, `2h`, `3d`, `2w`, `4mo`).
+- AskTab now reloads its messages when `activeConversationId`
+  changes after the initial resume — clicking a row in the
+  switcher swaps the chat; selecting "+ New chat" sets the id
+  to null and clears the messages.
+
+### Reveal file in folder (#)
+
+Every file Travis ingests or generates is now traceable to its
+exact path on disk via a one-click action on the file card.
+
+- New `reveal_document_in_folder` Tauri command using the opener
+  plugin's `reveal_item_in_dir` — opens the OS file explorer
+  (Finder on macOS, Explorer on Windows, default file manager on
+  Linux) with the document selected.
+- New folder icon on every `FileCard` next to the "open" label.
+  Click reveals the file in your file manager; the surrounding
+  card click still opens it in the default viewer (PDF reader,
+  Excel, etc.) — different gestures, different intents.
+
+Files continue to live under
+`<app_data>/documents/<first-2-of-hash>/<hash>.<ext>` — content-
+addressed for dedup. A reorganised, human-browsable layout
+(grouped by conversation or by date) is queued for a later slice;
+the reveal-in-folder action covers the immediate "where is this
+file?" need.
+
+### Deferred to v0.19.0
+
+- Cross-conversation context pulling (`search_conversations` tool)
+- LTE pack auto-population from the capture pipeline
+- Reasoning-between-steps surfacing in the chat
+
 ## v0.18.2 — Step humanisation + chat truncation feel + cleaner file refs (2026-06-10)
 
 Three UX polish fixes from real-world use of v0.18.1.

@@ -28,6 +28,7 @@ import { DocumentExtractCard } from "../../overlay/DocumentExtractCard";
 import { ChatTurn } from "../../chat/ChatTurn";
 import { AutoGrowTextarea } from "../../chat/AutoGrowTextarea";
 import { CaseHeaderStrip } from "../../chat/CaseHeaderStrip";
+import { ConversationSwitcher } from "../../chat/ConversationSwitcher";
 import { useScrollAnchor } from "../../chat/useScrollAnchor";
 import { useAppStore } from "../../stores/app";
 
@@ -237,7 +238,10 @@ export default function AskTab() {
   // Resume a thread on mount. Prefer the persisted conversation id so
   // tab-switches always restore the same chat. Fall back to the
   // backend's "awaiting_user" heuristic only on first run.
+  const didInitialResume = useRef(false);
   useEffect(() => {
+    if (didInitialResume.current) return;
+    didInitialResume.current = true;
     let cancelled = false;
     (async () => {
       if (activeConversationId) {
@@ -265,6 +269,36 @@ export default function AskTab() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // v0.18.3 — when the user switches threads via the ConversationSwitcher
+  // (activeConversationId changes after the initial resume), reload the
+  // messages for the new thread. Null means "new chat" — clear state.
+  useEffect(() => {
+    if (!didInitialResume.current) return;
+    let cancelled = false;
+    if (activeConversationId == null) {
+      setMessages([]);
+      setSteps([]);
+      return () => {
+        cancelled = true;
+      };
+    }
+    (async () => {
+      try {
+        const t = await getThread(activeConversationId);
+        if (!cancelled) {
+          setMessages(t.messages);
+        }
+      } catch {
+        if (!cancelled) {
+          setMessages([]);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeConversationId]);
 
   const submit = async () => {
     const text = q.trim();
@@ -520,6 +554,13 @@ export default function AskTab() {
           </button>
         </div>
       )}
+
+      {/* v0.18.3 — chat-thread switcher. Sits above the case strip so
+          users can jump between conversations or start a fresh one
+          from the chat surface itself. */}
+      <div className="flex items-center justify-start pb-1">
+        <ConversationSwitcher />
+      </div>
 
       {/* v0.16.0 — case substrate. Renders only when this conversation
           is linked to an open case (auto-opened by journal_ingest when

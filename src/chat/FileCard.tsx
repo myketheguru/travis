@@ -5,6 +5,7 @@ import {
   getDocument,
   getDocumentPath,
   previewDocument,
+  revealDocumentInFolder,
   type Document,
 } from "../lib/documents";
 
@@ -67,6 +68,18 @@ export function FileCard({ documentId }: Props) {
     }
   };
 
+  // v0.18.3 — stopPropagation so the surrounding button's "open file"
+  // doesn't also fire when the user clicks the reveal icon.
+  const handleReveal = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    try {
+      await revealDocumentInFolder(documentId);
+    } catch {
+      /* ignore */
+    }
+  };
+
   if (isImage && imgSrc) {
     return (
       <button
@@ -114,6 +127,22 @@ export function FileCard({ documentId }: Props) {
       </div>
       <span className="text-bone-3 text-[11px] shrink-0">
         {opening ? "opening…" : "open"}
+      </span>
+      <span
+        role="button"
+        tabIndex={0}
+        onClick={handleReveal}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            handleReveal(e as unknown as React.MouseEvent);
+          }
+        }}
+        className="text-bone-3 text-[11px] shrink-0 ml-1 px-1.5 py-0.5 rounded hover:bg-white/[0.08] hover:text-bone-2 cursor-pointer"
+        title="Show in file manager"
+      >
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+        </svg>
       </span>
     </button>
   );

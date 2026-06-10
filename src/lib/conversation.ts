@@ -55,6 +55,26 @@ export const loadMoreMessages = (
     limit,
   });
 
+/// v0.18.3 — conversation switcher row shape.
+export type ConversationListItem = {
+  id: number;
+  title: string | null;
+  preview: string | null;
+  status: string;
+  kind: string;
+  messageCount: number;
+  updatedAt: string;
+  createdAt: string;
+};
+
+/// v0.18.3 — switcher backing API. Optional `query` does case-
+/// insensitive substring match on title OR any message body content.
+export const listConversationsForSwitcher = (query?: string, limit?: number) =>
+  invoke<ConversationListItem[]>("list_conversations_for_switcher", {
+    query: query || null,
+    limit,
+  });
+
 export const resolveConversation = (id: number) =>
   invoke<void>("resolve_conversation", { id });
 

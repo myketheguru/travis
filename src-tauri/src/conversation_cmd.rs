@@ -1,6 +1,8 @@
 use tauri::State;
 
-use crate::conversation::{self, Conversation, ConversationFilter, ConversationMessage, Thread};
+use crate::conversation::{
+    self, Conversation, ConversationFilter, ConversationListItem, ConversationMessage, Thread,
+};
 use crate::AppState;
 
 #[tauri::command]
@@ -35,6 +37,26 @@ pub async fn get_thread(
         conversation: conv,
         messages: msgs,
     })
+}
+
+/// v0.18.3 — switcher backing API. Returns recent conversations with
+/// preview snippets for the searchable dropdown UI. Optional `query`
+/// filters by title OR by any message body content.
+#[tauri::command]
+pub async fn list_conversations_for_switcher(
+    state: State<'_, AppState>,
+    query: Option<String>,
+    limit: Option<i64>,
+) -> Result<Vec<ConversationListItem>, String> {
+    let visible = state.workspace.read().await.visible_ids.clone();
+    conversation::list_for_switcher(
+        &state.db.pool,
+        &visible,
+        query.as_deref().filter(|s| !s.trim().is_empty()),
+        limit.unwrap_or(50),
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// v0.18.2 — paginate older messages on scroll-up. Returns at most
