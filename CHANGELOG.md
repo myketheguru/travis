@@ -1,5 +1,104 @@
 # Travis Changelog
 
+## v0.19.2 — LTE coach + engagement auto-create + user-facing file folder (2026-06-10)
+
+Three pieces — finishes everything queued in the v0.19.1 changelog
+except contract/invoice (those need confirmation UX).
+
+### Coach auto-create on mention
+
+Same pattern shipped for schools in v0.19.1, applied to coaches.
+- `coach::find_by_name` + `coach::ensure(workspace, name)` —
+  idempotent insert keyed on case-insensitive name.
+- Agent loop's entity-mention loop now silently calls
+  `coach::ensure` whenever the LLM extraction names a coach.
+  Notes column flags `"Auto-created from chat mention."`.
+
+### Engagement auto-create on mention
+
+New `domain::engagement` Rust module exposing `find_by_name` and
+`ensure(workspace, name, school_id_hint)`. Hooked into the same
+entity-mention loop. School_id hint is None for now — the user
+edits via the Manage tab when they want to link a freshly-named
+engagement to its school. Stage defaults to `'assessment'` (start
+of the 3 A's). Spine entity sync fires from the helper so cross-
+pack retrieval sees the row.
+
+Contracts (which are the same record as engagements in the schema
+since v0.7.0 collapse) and invoices stay behind the proposed-action
+confirmation gate — they commit to money and the user-facing
+auto-create UX needs a "show, ask, dismiss in one tap" pattern
+that's queued for v0.19.3.
+
+### User-facing file folder
+
+Hash-addressed storage stays for dedup; on top of that we now
+maintain a browseable mirror at:
+
+  `<user-documents>/Travis/files/<conversation-slug>/<original-name>`
+
+- New `storage::user_facing_root`,
+  `storage::conversation_slug`, and
+  `storage::mirror_into_user_folder` helpers. Hard link by default
+  (zero disk cost, single inode shared with hash storage); copy on
+  cross-volume / hardlink-not-supported failure.
+- Hooked into both `ingest_document` (user-dropped files) and
+  `register_generated_document` (Travis-generated outputs). Best-
+  effort — mirror failures log and don't unwind the document row.
+- Collision-safe filename suffix (`(2)`, `(3)`, …) when the same
+  display name lands in the same conversation.
+- The existing `reveal_document_in_folder` action still points at
+  the hash storage for now; v0.19.3 can flip it to reveal the
+  user-facing mirror once the layout's bedded in.
+
+## v0.19.1 — LTE school auto-population + Entity-scoped memory recall (2026-06-10)
+
+Two pieces queued from v0.19.0.
+
+### LTE school auto-population
+
+User's "radio silence" complaint about pack tabs is now fixed for
+the most visible case — schools. When the LLM extraction names a
+school (`extraction.entities["schools"] = ["IS 217"]`), the agent
+loop calls `lead_to_empower::domain::school::ensure(workspace, name)`
+which:
+
+- Checks `school` table for a case-insensitive name match in this
+  workspace via the new `find_by_name` helper.
+- Inserts a row with `notes = "Auto-created from chat mention."`
+  if none exists. Existing row is returned unchanged.
+- Spine entity sync fires from inside `school::upsert` so the
+  cross-pack retrieval index also picks it up.
+
+So next time the user mentions a school anywhere, the LTE school
+tab is no longer empty. Contracts / engagements / invoices stay
+behind a confirmation gate (they commit to money), but observational
+data (schools, coach mentions) flows in automatically per
+`feedback_track_everything`.
+
+### Entity-scoped pack memory recall
+
+v0.19.0 shipped pack memory but the recall only pulled pack-wide
+memories. Now `pack_memory` recall also includes memories scoped to
+entities currently in conversation — so a constraint about IS 217
+("never include March 17 dates") only fires in the system prompt
+when IS 217 is in the current thread.
+
+- New `spine::entity::in_conversation_scope(workspace, conv_id)` —
+  scans the last 20 conversation messages for substring matches
+  against entity display_names; returns up to 20 (kind, id) pairs.
+  Crude (substring) but fast and good enough until we wire
+  mentions-per-message at write time.
+- Agent loop passes those pairs to `recall_for_prompt` so the
+  recall query includes entity-scoped memories alongside the
+  pack-wide ones.
+
+### Deferred to v0.19.2
+
+- Contract / engagement / invoice auto-record (behind confirmation
+  policy — needs UX design first).
+- Organised file-folder symlink farm under `Documents/Travis/…`.
+
 ## v0.19.0 — Cross-conversation context tool + Reasoning-between-steps (2026-06-10)
 
 ### `search_conversations` — pull context from any prior thread

@@ -16,6 +16,7 @@
 
 pub mod coach;
 pub mod coach_hours;
+pub mod engagement;
 pub mod invoice;
 pub mod school;
 pub mod signing_sheet;

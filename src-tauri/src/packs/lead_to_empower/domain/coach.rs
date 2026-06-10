@@ -110,6 +110,56 @@ pub async fn upsert(
     Ok(row)
 }
 
+/// v0.19.2 — case-insensitive name lookup, scoped to a single
+/// workspace. Returns the first match.
+pub async fn find_by_name(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    name: &str,
+) -> Result<Option<Coach>, DomainError> {
+    let n = name.trim();
+    if n.is_empty() {
+        return Ok(None);
+    }
+    let row = sqlx::query_as::<_, Coach>(
+        "SELECT id, workspace_id, name, email, rate_cents, notes, created_at, updated_at
+         FROM coach
+         WHERE workspace_id = ?1 AND LOWER(name) = LOWER(?2)
+         LIMIT 1",
+    )
+    .bind(workspace_id)
+    .bind(n)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+/// v0.19.2 — silent auto-create on mention. Mirror of
+/// [`school::ensure`]. Called from the agent loop when the
+/// extraction names a coach so the coach table reflects who Travis
+/// has seen, not just what the user manually entered.
+pub async fn ensure(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    name: &str,
+) -> Result<Coach, DomainError> {
+    if let Some(existing) = find_by_name(pool, workspace_id, name).await? {
+        return Ok(existing);
+    }
+    upsert(
+        pool,
+        workspace_id,
+        CoachInput {
+            id: None,
+            name: name.trim().to_string(),
+            email: None,
+            rate_cents: None,
+            notes: Some("Auto-created from chat mention.".to_string()),
+        },
+    )
+    .await
+}
+
 pub async fn delete(pool: &SqlitePool, id: i64) -> Result<(), DomainError> {
     sqlx::query("DELETE FROM coach WHERE id=?1").bind(id).execute(pool).await?;
     Ok(())

@@ -1739,22 +1739,29 @@ pub async fn journal_ingest(
     .await;
 
     // v0.19.0 — pack memory recall. Loads user-stated rules /
-    // preferences scoped to the enabled packs. v0.19.1 will add
-    // entity-scoped filtering (memories tied to a specific school /
-    // contract surface only when that entity is in scope); for now
-    // we load pack-wide memories only — strictly additive, no
-    // risk of hiding relevant memories.
+    // preferences for the enabled packs.
+    // v0.19.1 — entity-scoped: also pull memories tied to entities
+    // currently in scope (mentioned in the last 20 messages of this
+    // conversation, looked up via spine entity name matching).
     let pack_memory_block = {
         let enabled_slugs: Vec<&str> = state
             .enabled_packs
             .iter()
             .map(|p| p.slug())
             .collect();
+        let in_scope: Vec<(String, i64)> =
+            crate::spine::entity::in_conversation_scope(
+                &state.db.pool,
+                ws_snapshot.active_id,
+                conv_id,
+            )
+            .await
+            .unwrap_or_default();
         match crate::packs::memory::recall_for_prompt(
             &state.db.pool,
             ws_snapshot.active_id,
             &enabled_slugs,
-            &[], // no entity scoping yet — pack-wide memories only
+            &in_scope,
             20,
         )
         .await
@@ -2519,6 +2526,69 @@ pub async fn journal_ingest(
                     let bucket = format!("{kind}s");
                     if let Some(names) = extraction.entities.0.get(&bucket) {
                         for name in names {
+                            // v0.19.1 / v0.19.2 — proactive LTE table
+                            // population. When the L2E pack is enabled
+                            // and the extraction names a school /
+                            // coach / engagement, silently ensure a
+                            // row exists in the matching pack table.
+                            // Idempotent by case-insensitive name.
+                            // The user's "radio silence" feedback was
+                            // that pack tabs stayed empty even though
+                            // the chat clearly knew about IS 217 /
+                            // PS 556 / etc. This wires the spine
+                            // mention into the pack table without
+                            // depending on the LLM to call the
+                            // find_or_create tool mid-task.
+                            #[cfg(feature = "pack-lead-to-empower")]
+                            if pack_slug == "lead-to-empower" {
+                                match kind {
+                                    "school" => {
+                                        if let Err(e) =
+                                            crate::packs::lead_to_empower::domain::school::ensure(
+                                                &state.db.pool,
+                                                dest_ws_id,
+                                                name,
+                                            )
+                                            .await
+                                        {
+                                            tracing::warn!(
+                                                "lte school auto-create failed for {name}: {e}"
+                                            );
+                                        }
+                                    }
+                                    "coach" => {
+                                        if let Err(e) =
+                                            crate::packs::lead_to_empower::domain::coach::ensure(
+                                                &state.db.pool,
+                                                dest_ws_id,
+                                                name,
+                                            )
+                                            .await
+                                        {
+                                            tracing::warn!(
+                                                "lte coach auto-create failed for {name}: {e}"
+                                            );
+                                        }
+                                    }
+                                    "engagement" => {
+                                        if let Err(e) =
+                                            crate::packs::lead_to_empower::domain::engagement::ensure(
+                                                &state.db.pool,
+                                                dest_ws_id,
+                                                name,
+                                                None,
+                                            )
+                                            .await
+                                        {
+                                            tracing::warn!(
+                                                "lte engagement auto-create failed for {name}: {e}"
+                                            );
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+
                             let entity_id = identity::record_mention(
                                 &state.db.pool,
                                 dest_ws_id,

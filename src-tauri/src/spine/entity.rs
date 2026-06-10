@@ -8,6 +8,67 @@
 use serde::Serialize;
 use sqlx::SqlitePool;
 
+/// v0.19.1 — entities likely "in scope" for the current conversation.
+/// Best-effort: scans the last 20 messages of this conversation for
+/// substring matches against entity display_names in this workspace.
+/// Returns up to 20 (kind, id) pairs, most-mentioned first. Used by
+/// the journal agent loop to scope `pack_memory` recall.
+///
+/// Trade-offs: substring match is fast (LIKE on indexed normalized
+/// name) but can produce false positives ("PS 498" matches "PS 4980"
+/// too). For now the dedup at the recall layer (pinned + relevance)
+/// absorbs that noise; a fuller fix would be to track entity
+/// mentions per-message at write time.
+pub async fn in_conversation_scope(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    conversation_id: i64,
+) -> anyhow::Result<Vec<(String, i64)>> {
+    // Pull recent message bodies.
+    let messages: Vec<(String,)> = sqlx::query_as(
+        "SELECT content FROM conversation_message
+         WHERE conversation_id = ?1
+         ORDER BY id DESC LIMIT 20",
+    )
+    .bind(conversation_id)
+    .fetch_all(pool)
+    .await?;
+    if messages.is_empty() {
+        return Ok(Vec::new());
+    }
+    let blob = messages
+        .iter()
+        .map(|(c,)| c.to_lowercase())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Candidate entities in this workspace. Cap at a high number;
+    // most workspaces have <500 entities total.
+    let candidates: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT id, kind, display_name FROM entity
+         WHERE workspace_id = ?1
+         ORDER BY last_seen DESC LIMIT 500",
+    )
+    .bind(workspace_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut out = Vec::new();
+    for (id, kind, name) in candidates {
+        let needle = name.to_lowercase();
+        if needle.is_empty() || needle.len() < 2 {
+            continue;
+        }
+        if blob.contains(&needle) {
+            out.push((kind, id));
+            if out.len() >= 20 {
+                break;
+            }
+        }
+    }
+    Ok(out)
+}
+
 use crate::identity::normalize;
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]

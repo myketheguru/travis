@@ -114,6 +114,62 @@ pub async fn upsert(
     Ok(row)
 }
 
+/// v0.19.1 — case-insensitive name lookup, scoped to a single
+/// workspace. Returns the first match (there should never be many
+/// since silent-create dedups). Powers the proactive auto-create
+/// path in the journal agent loop.
+pub async fn find_by_name(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    name: &str,
+) -> Result<Option<School>, DomainError> {
+    let n = name.trim();
+    if n.is_empty() {
+        return Ok(None);
+    }
+    let row = sqlx::query_as::<_, School>(
+        "SELECT id, workspace_id, name, district, contact_name, contact_email, notes, created_at, updated_at
+         FROM school
+         WHERE workspace_id = ?1 AND LOWER(name) = LOWER(?2)
+         LIMIT 1",
+    )
+    .bind(workspace_id)
+    .bind(n)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+/// v0.19.1 — auto-create a school silently if one doesn't already
+/// exist with that name in this workspace. Used by the journal agent
+/// loop to populate the LTE school table whenever an extraction
+/// names a school, regardless of whether the LLM remembered to call
+/// the find_or_create tool itself. Returns the resulting row (existing
+/// or freshly created). Errors are propagated but the caller is
+/// expected to log-and-continue, not fail the user's turn.
+pub async fn ensure(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    name: &str,
+) -> Result<School, DomainError> {
+    if let Some(existing) = find_by_name(pool, workspace_id, name).await? {
+        return Ok(existing);
+    }
+    upsert(
+        pool,
+        workspace_id,
+        SchoolInput {
+            id: None,
+            name: name.trim().to_string(),
+            district: None,
+            contact_name: None,
+            contact_email: None,
+            notes: Some("Auto-created from chat mention.".to_string()),
+        },
+    )
+    .await
+}
+
 pub async fn delete(pool: &SqlitePool, id: i64) -> Result<(), DomainError> {
     sqlx::query("DELETE FROM school WHERE id=?1").bind(id).execute(pool).await?;
     Ok(())

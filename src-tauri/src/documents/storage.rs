@@ -91,6 +91,97 @@ pub fn absolute_path(storage_root: &Path, relative: &Path) -> PathBuf {
     storage_root.join(relative)
 }
 
+/// v0.19.2 — friendly mirror layout under the OS Documents dir.
+///
+/// Hash-addressed storage is great for dedup but terrible for human
+/// browsing. We maintain a parallel tree at:
+///   <user-documents>/Travis/files/<conversation-slug>/<original-name>
+///
+/// Each entry is a hard link to the canonical hash file (one inode
+/// shared with the storage tree, so no disk duplication). On Windows
+/// hardlinks work without admin as long as both paths live on the
+/// same volume. On cross-volume failure or any other error we fall
+/// back to a plain copy.
+///
+/// Returns the absolute friendly path so callers can persist it on
+/// the document row for "reveal in folder" UX.
+pub fn user_facing_root(documents_dir: &Path) -> std::io::Result<PathBuf> {
+    let root = documents_dir.join("Travis").join("files");
+    std::fs::create_dir_all(&root)?;
+    Ok(root)
+}
+
+/// Build a filesystem-safe slug from a free-form conversation label.
+/// Keeps alphanumerics, hyphen, underscore, and space; everything else
+/// collapses to `_`. Empty/whitespace-only input → `"misc"`.
+pub fn conversation_slug(label: &str) -> String {
+    let cleaned: String = label
+        .chars()
+        .map(|c| match c {
+            c if c.is_alphanumeric() => c,
+            '-' | '_' | ' ' | '.' => c,
+            _ => '_',
+        })
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('_').to_string();
+    if trimmed.is_empty() {
+        "misc".to_string()
+    } else {
+        // Cap to keep paths reasonable on Windows (MAX_PATH).
+        trimmed.chars().take(80).collect()
+    }
+}
+
+/// Mirror a hash-stored file into the user-facing folder. Hardlink
+/// preferred (zero disk cost), copy on fallback. Returns the friendly
+/// absolute path or an error; the caller is expected to log-and-
+/// continue, not fail the user's flow.
+pub fn mirror_into_user_folder(
+    user_facing_root: &Path,
+    hash_path: &Path,
+    conversation_slug: &str,
+    original_filename: &str,
+) -> std::io::Result<PathBuf> {
+    let conv_dir = user_facing_root.join(conversation_slug);
+    std::fs::create_dir_all(&conv_dir)?;
+    // Avoid clobbering — if a file with the same name already exists,
+    // suffix with a counter ("name (2).ext").
+    let target = unique_path(&conv_dir, original_filename);
+    // Try hardlink first; fall back to copy on cross-volume / FS-not-
+    // supported / permission failures.
+    match std::fs::hard_link(hash_path, &target) {
+        Ok(()) => Ok(target),
+        Err(_) => {
+            std::fs::copy(hash_path, &target)?;
+            Ok(target)
+        }
+    }
+}
+
+fn unique_path(dir: &Path, basename: &str) -> PathBuf {
+    let candidate = dir.join(basename);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let stem = Path::new(basename)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("file");
+    let ext = Path::new(basename)
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|e| format!(".{e}"))
+        .unwrap_or_default();
+    for n in 2..=200 {
+        let try_name = format!("{stem} ({n}){ext}");
+        let try_path = dir.join(&try_name);
+        if !try_path.exists() {
+            return try_path;
+        }
+    }
+    candidate
+}
+
 fn hex_encode(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {

@@ -138,6 +138,11 @@ pub async fn ingest_document(
     .await
     .map_err(|e| format!("could not record document: {e}"))?;
 
+    // v0.19.2 — mirror into user-facing folder. Best-effort.
+    if let Err(e) = mirror_document_into_user_folder(&app, &doc, &storage_root, &relative).await {
+        tracing::warn!("user-facing mirror failed for doc#{}: {e}", doc.id);
+    }
+
     // Fire-and-forget extraction in the background. The frontend gets
     // the document back immediately (ingest succeeded); the extractor
     // refines extracted_json + ingest_status asynchronously. Failure
@@ -533,7 +538,54 @@ pub async fn register_generated_document(
         let _ = db::link_to_entity(&state.db.pool, doc.id, entity_id, "generated_for").await;
     }
 
+    // v0.19.2 — mirror into the user-facing folder. Hard link (or
+    // copy fallback) under <Documents>/Travis/files/<conv-slug>/.
+    // Best-effort: a failure here doesn't unwind the document
+    // creation — the file is still accessible via the existing
+    // reveal-in-folder path.
+    if let Err(e) = mirror_document_into_user_folder(app, &doc, &storage_root, &relative).await {
+        tracing::warn!(
+            "user-facing mirror failed for doc#{}: {e}",
+            doc.id
+        );
+    }
+
     db::get(&state.db.pool, doc.id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("generated document disappeared"))
+}
+
+/// v0.19.2 — write a hardlink (fallback copy) of a stored document
+/// into <Documents>/Travis/files/<conv-slug>/<original-name> so the
+/// user has a browseable view of every file Travis touches.
+async fn mirror_document_into_user_folder(
+    app: &AppHandle,
+    doc: &Document,
+    storage_root: &Path,
+    relative: &Path,
+) -> anyhow::Result<()> {
+    let documents_dir = app
+        .path()
+        .document_dir()
+        .map_err(|e| anyhow::anyhow!("documents dir: {e}"))?;
+    let user_root = storage::user_facing_root(&documents_dir)?;
+    let label = if let Some(conv_id) = doc.conversation_id {
+        format!("conversation-{conv_id}")
+    } else {
+        "loose".to_string()
+    };
+    let slug = storage::conversation_slug(&label);
+    let hash_path = storage::absolute_path(storage_root, relative);
+    let target = storage::mirror_into_user_folder(
+        &user_root,
+        &hash_path,
+        &slug,
+        &doc.original_filename,
+    )?;
+    tracing::debug!(
+        "doc#{} mirrored to {}",
+        doc.id,
+        target.display()
+    );
+    Ok(())
 }
