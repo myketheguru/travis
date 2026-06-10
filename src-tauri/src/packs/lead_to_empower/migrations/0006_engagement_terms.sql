@@ -1,7 +1,10 @@
 -- 0006_engagement_terms.sql
 --
--- v0.20.0 — promote period + ceiling from `summary` text-stash to
--- typed columns on `engagement`.
+-- v0.20.0 — promote period from `summary` text-stash to typed columns
+-- on `engagement`. v0.20.4 hotfix: ceiling_cents removed from this
+-- migration — it was already added by 0005_collapse_contract_engagement
+-- (NOT NULL DEFAULT 0), so re-adding it here crashed on first launch
+-- with "duplicate column name ceiling_cents".
 --
 -- v0.19.4 introduced the `engagement_enrichment` extraction field
 -- that the LLM emits whenever a PO/WO doc reveals business terms
@@ -16,7 +19,6 @@
 
 ALTER TABLE engagement ADD COLUMN period_start TEXT;
 ALTER TABLE engagement ADD COLUMN period_end   TEXT;
-ALTER TABLE engagement ADD COLUMN ceiling_cents INTEGER;
 
 CREATE INDEX IF NOT EXISTS idx_engagement_period
   ON engagement(period_start, period_end);

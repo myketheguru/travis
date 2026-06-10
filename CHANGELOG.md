@@ -1,5 +1,23 @@
 # Travis Changelog
 
+## v0.20.4 — Migration hotfix: duplicate ceiling_cents (2026-06-10)
+
+Startup crash fix. v0.20.0 introduced migration
+`0006_engagement_terms.sql` which added `ceiling_cents` to the
+engagement table — but the column was already added by
+`0005_collapse_contract_engagement.sql` (with `NOT NULL DEFAULT 0`).
+SQLite hard-errored with `duplicate column name ceiling_cents` and
+Travis refused to start on any DB built since v0.20.0.
+
+Fix: drop the redundant ALTER from 0006; 0005's column survives. The
+Rust code already used `COALESCE(ceiling_cents, 0)` and
+`p.ceiling_cents.unwrap_or(0)`, so the typed-column promotion goal of
+0006 still holds via 0005's column.
+
+No data loss possible — failed migrations roll back atomically; users
+whose Travis was wedged at startup never had period_start /
+period_end columns added either. v0.20.4 adds them cleanly.
+
 ## v0.20.3 — Doc-only mode + asset rename tool (2026-06-10)
 
 Two follow-ups on top of v0.20.2's split-window previewer and template
