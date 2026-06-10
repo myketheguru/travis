@@ -679,6 +679,7 @@ pub fn run() {
             template_assets::list_template_assets,
             template_assets::find_template_assets,
             template_assets::request_template_extraction,
+            template_assets::set_template_asset_label,
             packs_cmd::list_packs,
             packs_cmd::set_pack_enabled,
             packs_cmd::pack_schemas,

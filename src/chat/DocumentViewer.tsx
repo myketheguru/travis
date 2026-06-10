@@ -33,6 +33,8 @@ interface Props {
 
 export function DocumentViewer({ documentId }: Props) {
   const setViewerDocumentId = useAppStore((s) => s.setViewerDocumentId);
+  const docFullscreen = useAppStore((s) => s.docFullscreen);
+  const setDocFullscreen = useAppStore((s) => s.setDocFullscreen);
   const [doc, setDoc] = useState<Document | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [textBody, setTextBody] = useState<string | null>(null);
@@ -168,6 +170,24 @@ export function DocumentViewer({ documentId }: Props) {
                 <polyline points="15 3 21 3 21 9" />
                 <line x1="10" y1="14" x2="21" y2="3" />
               </svg>
+            </IconBtn>
+            <IconBtn
+              label={docFullscreen ? "Restore split layout" : "Hide chat (focus on document)"}
+              onClick={() => setDocFullscreen(!docFullscreen)}
+            >
+              {docFullscreen ? (
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <rect x="3" y="3" width="18" height="18" rx="2" />
+                  <line x1="12" y1="3" x2="12" y2="21" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M3 7V5a2 2 0 0 1 2-2h2" />
+                  <path d="M17 3h2a2 2 0 0 1 2 2v2" />
+                  <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+                  <path d="M7 21H5a2 2 0 0 1-2-2v-2" />
+                </svg>
+              )}
             </IconBtn>
           </>
         )}

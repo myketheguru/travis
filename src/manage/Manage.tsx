@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { DocumentViewer } from "../chat/DocumentViewer";
 import { ResizableSplit } from "../chat/ResizableSplit";
+import { FloatingChatOverlay } from "../chat/FloatingChatOverlay";
 import AskTab from "./tabs/AskTab";
 import TasksTab from "./tabs/TasksTab";
 import RemindersTab from "./tabs/RemindersTab";
@@ -74,6 +75,7 @@ export default function Manage({ onClose }: { onClose: () => void }) {
   const viewerDocumentId = useAppStore((s) => s.viewerDocumentId);
   const chatPaneFraction = useAppStore((s) => s.chatPaneFraction);
   const setChatPaneFraction = useAppStore((s) => s.setChatPaneFraction);
+  const docFullscreen = useAppStore((s) => s.docFullscreen);
   const [schemas, setSchemas] = useState<PackSchema[] | null>(null);
   const [tab, setTab] = useState<string>("ask");
 
@@ -179,8 +181,20 @@ export default function Manage({ onClose }: { onClose: () => void }) {
         </nav>
       </aside>
 
-      {/* Content — split when the document previewer is open. */}
-      {viewerDocumentId != null ? (
+      {/*
+        Content layout: when a doc is open AND docFullscreen is on, the
+        chat pane is hidden and a floating overlay handles input. When a
+        doc is open without fullscreen, we render the split layout. With
+        no doc open, single-pane.
+      */}
+      {viewerDocumentId != null && docFullscreen ? (
+        <>
+          <section className="flex-1 h-full">
+            <DocumentViewer documentId={viewerDocumentId} />
+          </section>
+          <FloatingChatOverlay />
+        </>
+      ) : viewerDocumentId != null ? (
         <ResizableSplit
           fraction={chatPaneFraction}
           onFractionChange={setChatPaneFraction}

@@ -25,6 +25,9 @@ type AppState = {
   /// v0.20.1 — chat-pane fraction (0..1) when viewer is open. Persists
   /// in localStorage so the resize sticks across launches.
   chatPaneFraction: number;
+  /// v0.20.3 — doc-only mode. When true, the chat pane is hidden and
+  /// a floating overlay handles input. Persisted across launches.
+  docFullscreen: boolean;
   setActivity: (a: Activity) => void;
   setStatus: (s: AppStatus) => void;
   setProfile: (p: UserProfile | null) => void;
@@ -32,6 +35,7 @@ type AppState = {
   setActiveConversationId: (id: number | null) => void;
   setViewerDocumentId: (id: number | null) => void;
   setChatPaneFraction: (f: number) => void;
+  setDocFullscreen: (v: boolean) => void;
   pulse: () => void;
 };
 
@@ -40,6 +44,7 @@ let pulseTimer: ReturnType<typeof setTimeout> | null = null;
 const DIAG_KEY = "travis.showDiagnostics";
 const ACTIVE_CONV_KEY = "travis.activeConversationId";
 const CHAT_PANE_FRACTION_KEY = "travis.chatPaneFraction";
+const DOC_FULLSCREEN_KEY = "travis.docFullscreen";
 
 const readDiag = (): boolean => {
   try {
@@ -102,6 +107,23 @@ const writeChatPaneFraction = (f: number) => {
   }
 };
 
+const readDocFullscreen = (): boolean => {
+  try {
+    return typeof localStorage !== "undefined" && localStorage.getItem(DOC_FULLSCREEN_KEY) === "true";
+  } catch {
+    return false;
+  }
+};
+
+const writeDocFullscreen = (v: boolean) => {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(DOC_FULLSCREEN_KEY, String(v));
+  } catch {
+    /* ignore */
+  }
+};
+
 export const useAppStore = create<AppState>((set, get) => ({
   activity: "idle",
   status: null,
@@ -110,6 +132,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeConversationId: readActiveConv(),
   viewerDocumentId: null,
   chatPaneFraction: readChatPaneFraction(),
+  docFullscreen: readDocFullscreen(),
   setActivity: (activity) => set({ activity }),
   setStatus: (status) => set({ status }),
   setProfile: (profile) => set({ profile }),
@@ -126,6 +149,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     const clamped = Math.max(0.15, Math.min(0.85, f));
     writeChatPaneFraction(clamped);
     set({ chatPaneFraction: clamped });
+  },
+  setDocFullscreen: (v) => {
+    writeDocFullscreen(v);
+    set({ docFullscreen: v });
   },
   pulse: () => {
     if (get().activity === "thinking" || get().activity === "listening") return;

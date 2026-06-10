@@ -837,3 +837,60 @@ pub async fn request_template_extraction(
     schedule_extraction(app, state.db.pool.clone(), document_id).await;
     Ok(())
 }
+
+/// Mutate an asset's label / category. Called by the LLM via the
+/// `set_template_asset_label` tool, or directly by Settings UI if/when
+/// surfaced there. `kind` is optional — passing None leaves it
+/// unchanged. Always bumps `updated_at`.
+pub async fn set_label(
+    pool: &SqlitePool,
+    asset_id: i64,
+    display_name: &str,
+    kind: Option<&str>,
+) -> anyhow::Result<()> {
+    if let Some(k) = kind {
+        sqlx::query(
+            "UPDATE template_asset
+             SET display_name = ?2, kind = ?3, updated_at = datetime('now')
+             WHERE id = ?1",
+        )
+        .bind(asset_id)
+        .bind(display_name)
+        .bind(k)
+        .execute(pool)
+        .await?;
+    } else {
+        sqlx::query(
+            "UPDATE template_asset
+             SET display_name = ?2, updated_at = datetime('now')
+             WHERE id = ?1",
+        )
+        .bind(asset_id)
+        .bind(display_name)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_template_asset_label(
+    state: State<'_, AppState>,
+    asset_id: i64,
+    display_name: String,
+    kind: Option<String>,
+) -> Result<(), String> {
+    set_label(&state.db.pool, asset_id, &display_name, kind.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Resolve the absolute path on disk for an asset by id.
+pub async fn asset_path(pool: &SqlitePool, asset_id: i64) -> anyhow::Result<Option<String>> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT abs_path FROM template_asset WHERE id = ?1")
+            .bind(asset_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|(p,)| p))
+}

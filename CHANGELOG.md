@@ -1,5 +1,42 @@
 # Travis Changelog
 
+## v0.20.3 — Doc-only mode + asset rename tool (2026-06-10)
+
+Two follow-ups on top of v0.20.2's split-window previewer and template
+asset library.
+
+### Tier 3: doc-only mode with floating chat overlay
+
+The DocumentViewer header gains a "Hide chat" toggle (corner-brackets
+icon). When on:
+- The split layout collapses; the doc fills the entire content area.
+- A floating "Chat with Travis" pill appears bottom-right, indicator
+  dot pulses when Travis is thinking.
+- Clicking expands a draggable 420×640 floating panel with the full
+  AskTab inside — same conversation, same attachments, same input.
+- "−" collapses back to the pill; corner-brackets returns to the split
+  layout.
+
+State persists across launches via `travis.docFullscreen` in
+localStorage.
+
+### Polish: user-/LLM-editable asset display_name
+
+- `set_template_asset_label` Rust command + matching `Tool` for the LLM.
+  When extraction's heuristic produces a generic name like
+  "L2E_Sample_Invoice – embedded image (page 1)" and Travis can tell
+  what the asset actually is (logo, signature, header banner), it can
+  rename it without a vision call. Future `find_template_assets`
+  searches grep against the better name.
+- Journal prompt teaches when to call it.
+
+### Deferred for next slice
+
+- Vision-based classification refinement (a Claude vision call per
+  freshly-extracted asset that overrides the heuristic `kind` +
+  `display_name`). Cost/latency wasn't worth bundling into this slice;
+  the heuristic + LLM-driven rename covers the common case.
+
 ## v0.20.2 — Travis Cloud + forced-upgrade gate + 1:1 template replication (2026-06-10)
 
 ### 1:1 template replication via binary asset extraction (Tier 4)

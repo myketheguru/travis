@@ -147,6 +147,7 @@ fn human_label_for_tool(tool_name: &str) -> String {
         "analyze_document_styling" => "Analyzing document styling",
         "list_template_assets" => "Loading template assets",
         "find_template_assets" => "Searching template library",
+        "set_template_asset_label" => "Naming template asset",
         "open_case" => "Opening case",
         "note_case" => "Recording case note",
         "close_case" => "Closing case",
@@ -245,6 +246,7 @@ pub fn read_only_registry(packs: &[&dyn crate::packs::PackHandle]) -> ToolRegist
     reg.register(Box::new(analyze_document_styling::AnalyzeDocumentStylingTool));
     reg.register(Box::new(list_template_assets::ListTemplateAssetsTool));
     reg.register(Box::new(list_template_assets::FindTemplateAssetsTool));
+    reg.register(Box::new(list_template_assets::SetTemplateAssetLabelTool));
     reg.register(Box::new(cases::OpenCaseTool));
     reg.register(Box::new(cases::NoteCaseTool));
     reg.register(Box::new(cases::CloseCaseTool));

@@ -121,6 +121,66 @@ impl Tool for ListTemplateAssetsTool {
     }
 }
 
+// ---------- set_template_asset_label ----------
+
+pub struct SetTemplateAssetLabelTool;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LabelInput {
+    asset_id: i64,
+    display_name: String,
+    #[serde(default)]
+    kind: Option<String>,
+}
+
+#[async_trait]
+impl Tool for SetTemplateAssetLabelTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "set_template_asset_label".into(),
+            description: "Rename a template asset and optionally re-categorize it. Heuristic \
+                classification at extraction time labels assets like \
+                'L2E_Sample_Invoice – embedded image (page 1)' — useful but generic. When you've \
+                identified what an asset actually represents (e.g. 'L2E round logo', \
+                'L2E header banner – navy + tan', 'Jacob Michelman signature'), call this tool \
+                so future `find_template_assets` searches by query find it cleanly.\n\n\
+                Kinds: logo, header_banner, signature, watermark, page_render, embedded_image. \
+                Only override `kind` when the heuristic was clearly wrong."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "assetId": { "type": "integer" },
+                    "displayName": {
+                        "type": "string",
+                        "description": "Human-friendly name, e.g. 'L2E round logo'."
+                    },
+                    "kind": {
+                        "type": "string",
+                        "description": "Optional re-categorization. Leave out to keep current kind."
+                    }
+                },
+                "required": ["assetId", "displayName"]
+            }),
+        }
+    }
+
+    async fn execute(&self, ctx: &ToolContext, input: Value) -> anyhow::Result<String> {
+        let p: LabelInput = serde_json::from_value(input)?;
+        let state = ctx.app.state::<AppState>();
+        crate::template_assets::set_label(
+            &state.db.pool,
+            p.asset_id,
+            &p.display_name,
+            p.kind.as_deref(),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("set_label failed: {e}"))?;
+        Ok(json!({"ok": true, "assetId": p.asset_id}).to_string())
+    }
+}
+
 // ---------- find_template_assets ----------
 
 pub struct FindTemplateAssetsTool;
