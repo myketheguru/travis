@@ -353,7 +353,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
             </Question>
           )}
 
-          {step === 6 && (
+          {step === 6 && !skipCloudSteps && (
             <Question
               index={6}
               prompt="Which mind should I think with?"
@@ -389,7 +389,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
             </Question>
           )}
 
-          {step === 7 && (
+          {step === 7 && !skipCloudSteps && (
             <Question
               index={7}
               prompt={

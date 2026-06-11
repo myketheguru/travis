@@ -1,5 +1,51 @@
 # Travis Changelog
 
+## v0.20.7 — Speed discipline + onboarding cloud-skip render guard (2026-06-11)
+
+### Hard rules against python flailing
+
+The IS 217 invoice test took ~15 minutes when it should have been
+under 5. Looking at the trace: 50+ `run_python` calls iterating on
+the same data — re-reading the spreadsheet, hunting for paths,
+re-parsing the sign-in log. Every call is 10-60s of user wall time.
+
+Prompt changes to enforce discipline (in `journal.rs` and the
+`run_python` tool description):
+- ONE read pass per turn. Bundle every spreadsheet read, filter, and
+  print step into a single script that returns the JSON the rest of
+  the turn needs.
+- Generate once, edit thereafter. First successful generation should
+  produce the final PDF. Tweaks go through `edit_python_artifact`,
+  not full regens.
+- Trust the wrapper. `INPUTS_DIR` is set; files are there. NEVER
+  probe with `os.path.exists` or "find the file" passes. If the file
+  is missing, surface once and ask — don't flail.
+- No exploratory code. Use `read_document` (instant) before writing
+  Python, not after.
+- Hard cap: 3 `run_python` calls per turn. Call 4 = "you are flailing,
+  stop and rethink."
+
+These don't make individual calls faster — but they cut the call
+COUNT, which is where the 15-minute tail came from.
+
+### Onboarding still showed the LLM picker when cloud is available
+
+The v0.20.2 skip-logic moved step pointers around steps 6 and 7 when
+`travisCloudAvailable` was true, but the step renderers didn't guard
+themselves. If anything (race, history-back, refresh) put step state
+at 6 or 7 with cloud available, the LLM picker still showed.
+
+Fix: render-guard steps 6 and 7 with `!skipCloudSteps`. With cloud
+available those steps cannot render even if `step === 6` somehow
+happens.
+
+(Note: separately, the user reported onboarding firing on every
+update. We couldn't reproduce — the DB at `<app_data>/travis.db`
+persists across updates by default and the `onboarded` check
+falls through to `user_profile IS NOT NULL`. Most likely cause is
+the DB getting wiped by manual cleanup or an installer setting. If
+it keeps happening, check the DB path on startup logs.)
+
 ## v0.20.6 — Tier 4 first-turn fix + stale invoice rows + run_python paths (2026-06-11)
 
 Three follow-ups from the v0.20.5 triage. Each one cost real time

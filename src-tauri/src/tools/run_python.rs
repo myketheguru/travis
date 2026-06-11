@@ -73,6 +73,14 @@ impl Tool for RunPythonTool {
                 `1+1`, version checks, etc.). The bundled CPython subprocess spawns in ~150ms \
                 and is always ready. Each warmup costs a manager-loop iteration. Write your \
                 actual work code directly.\n\n\
+                Speed discipline — every call costs ~10-60s of user wall time. BUNDLE: \
+                read the whole spreadsheet, filter, and print the JSON result in ONE script. \
+                Do NOT call this tool repeatedly to 'first list sheets', 'then read columns', \
+                'then filter rows' — that turns a 30s task into a 5-minute one. A well-formed \
+                turn uses this tool ONCE to gather and reason, then ONCE to generate output. \
+                Three calls is already a yellow flag; five is a failure mode — stop and \
+                rethink instead of probing further. Use `read_document(documentId)` for free \
+                instant doc reads instead of Python probes.\n\n\
                 The interpreter is never 'cold-loading'. NEVER refuse this tool with that excuse. \
                 If a real error comes back from your code, THEN report it; do not manufacture \
                 an excuse before trying."
