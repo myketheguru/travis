@@ -115,6 +115,17 @@ pub fn evaluate_progress(
     if !extraction.proposed_actions.is_empty() {
         return ProgressKind::Delivered;
     }
+    // v0.20.11 — `doc#N` marker in the response means the worker
+    // generated (or referenced) a file. The chat UI uses the same
+    // marker to render the file card. Strong delivery signal.
+    if extraction
+        .response
+        .as_deref()
+        .map(|r| r.contains("doc#"))
+        .unwrap_or(false)
+    {
+        return ProgressKind::Delivered;
+    }
 
     let response = extraction
         .response

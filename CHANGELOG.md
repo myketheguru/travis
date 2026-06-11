@@ -1,5 +1,48 @@
 # Travis Changelog
 
+## v0.20.11 — Successful turns were being reported as errors (2026-06-11)
+
+User showed a trace where Travis generated `LTE2026217002 → doc#9`,
+emitted a clean prose summary referencing the doc marker, and the
+chat surface still showed:
+
+> `Travis hit an error while thinking through that turn.`
+> `err_msg: model didn't call any tool: expected value at line 1 column 1`
+> `content: "Invoice LTE2026217002 generated — doc#9 ..."`
+
+That's a successful completion being reported as failure. Two places
+needed fixing:
+
+### Worker agent loop — text-only completion is not an error
+
+In `journal.rs`, when the LLM returned text with no tool calls, the
+code tried `parse_extraction(&content)` (expects structured JSON),
+failed because the response is natural language, and returned
+`ok=false` with "model didn't call any tool" — even though `doc#N`
+was right there in the text. The manager loop then "forced progress"
+for 60-200s of wasted iterations before giving up.
+
+Fix: when text-only AND content is substantive (≥20 chars) or
+contains a `doc#N` marker, accept it as a Delivered turn. The
+content becomes the `response` field; intent is `deliver`.
+
+### Manager — `doc#N` is a strong delivery signal
+
+`evaluate_progress` already short-circuits to `Delivered` when
+`generated_doc_ids` is non-empty or `proposed_actions` is non-empty.
+Added a third short-circuit: when `response` contains `doc#`, treat
+as Delivered regardless of length or handoff-phrase count. The
+chat UI uses the same marker to render the file card — if it's good
+enough for the UI, it's good enough for the manager.
+
+Combined effect: a successful run_python → "here's your file:
+doc#9" turn now lands as Delivered on the first manager pass
+instead of triggering 60+ seconds of forcing and an error toast.
+
+(Separately, the user's second turn in that session failed with
+"error sending request for https://api.anthropic.com/v1/messages" —
+that's a network/API error, not a Travis bug. Transient.)
+
 ## v0.20.10 — Onboarding-loop root-cause hunt (2026-06-11)
 
 User report: "Update Travis, restart, end up on onboarding even though

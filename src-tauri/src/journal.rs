@@ -2417,10 +2417,36 @@ pub async fn journal_ingest(
                     }
 
                     if turn.tool_calls.is_empty() {
-                        // Model returned only text — try to salvage it as JSON.
+                        // Model returned only text. Try to salvage it as JSON
+                        // first (legacy path — the prompt asks for structured
+                        // extraction). If parse fails but the content is a
+                        // legit natural-language completion (substantive text,
+                        // or contains a doc#N marker indicating a file
+                        // reference), treat it as a Delivered turn rather
+                        // than an error. v0.20.11 — without this, the worker
+                        // completing successfully but answering in prose
+                        // (e.g. "Invoice generated — doc#9, here's what's on
+                        // it...") was reported back as
+                        // "model didn't call any tool", the manager forced
+                        // 60-200s of extra iterations, and the user saw an
+                        // error trace despite the work being done.
                         match parse_extraction(&turn.content) {
                             Ok(ex) => break 'outer (ex, true, None, last_dump),
                             Err(e) => {
+                                let trimmed = turn.content.trim();
+                                let has_doc_marker = trimmed.contains("doc#");
+                                let is_substantial = trimmed.chars().count() >= 20;
+                                if has_doc_marker || is_substantial {
+                                    let mut ex = Extraction::default();
+                                    ex.response = Some(trimmed.to_string());
+                                    ex.intent = "deliver".into();
+                                    tracing::info!(
+                                        "worker emitted text-only completion ({} chars, doc_marker={}); accepting as delivered",
+                                        trimmed.len(),
+                                        has_doc_marker
+                                    );
+                                    break 'outer (ex, true, None, last_dump);
+                                }
                                 break 'outer (
                                     fallback_extraction(&raw),
                                     false,
