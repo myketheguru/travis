@@ -7123,7 +7123,7 @@ dependencies = [
 
 [[package]]
 name = "travis"
-version = "0.20.11"
+version = "0.20.12"
 dependencies = [
  "anyhow",
  "async-trait",

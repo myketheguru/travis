@@ -1,5 +1,90 @@
 # Travis Changelog
 
+## v0.20.12 — Plans, file cards, payload aggregation, Windows asset paths (2026-06-11)
+
+A grab-bag with one substantive new feature (plans) and three fixes
+addressing pain points from the IS 217 invoice trace.
+
+### Plans + step caching — the real fix for "50 run_python calls per turn"
+
+`run_python` re-reading the same sign-in log five times in one turn,
+then doing it AGAIN on the next turn when the user asked for a small
+tweak. The agent loop had no concept of "this step was completed; use
+the cached output."
+
+New substrate:
+- Migration `0042_plans.sql` introduces `plan` (goal-scoped) and
+  `plan_step` (keyed, with cached `result_json` + `document_ids`).
+- New module `src/plans.rs` with the typed API: `create_plan`,
+  `record_step`, `get_step`, `list_steps`, `active_plan_for_conversation`.
+- Four new LLM tools — `create_plan`, `record_step_result`,
+  `get_step_result`, `list_plan_steps`.
+
+Pattern: at the start of any multi-step turn the LLM calls
+`create_plan({goal, steps:[{key, purpose}, ...]})`. Before doing each
+step it calls `get_step_result(planId, key)` — if cached, skip the
+work. After completing a step it calls `record_step_result(planId,
+key, {result, documentIds})` to cache for next time. On follow-up
+turns the same plan resumes; unchanged steps return instantly.
+
+Journal prompt updated: "ALWAYS open a plan for any task with ≥3
+logical steps." That's the #1 lever against the 50-call failure mode.
+
+### File cards for `doc#N` in assistant text
+
+The chat surface was supposed to render a clickable FileCard whenever
+Travis wrote `doc#11` after generating a PDF. It didn't — `doc#11`
+appeared as plain text. Two layers fixed:
+
+- **Backend**: every `run_python` and `edit_python_artifact` result
+  is now scanned for `generatedDocumentIds` and the union is folded
+  into the assistant payload. The chat reads it and renders cards.
+- **Frontend**: `ChatTurn` also scans assistant prose for `doc#N`
+  markers, unions with the payload field, strips the marker from
+  displayed text, and renders FileCards underneath. Works whether
+  the doc was generated this turn or referenced from a prior turn.
+
+Belt + suspenders so a missing marker in the LLM's prose doesn't lose
+the card AND a missing payload field doesn't lose it either.
+
+### Windows asset paths
+
+User report from a successful regeneration: "the logo asset from the
+PS 556 sample couldn't be re-embedded (path issue on Windows)."
+`absPath` strings come back with backslashes; the LLM was wrapping
+them in f-strings or hardcoding them with single backslashes that
+Python parsed as escape sequences.
+
+Fix in `find_template_assets` description: explicit guidance — pass
+`absPath` to PIL / pathlib as-is, never re-escape, never write
+literal paths with single backslashes. Concrete `pathlib.Path(...)`
+example included.
+
+## v0.20.11 — Successful turns were being reported as errors (2026-06-11)
+
+Travis writes "here it is — doc#11" after generating a PDF. The
+chat UI was supposed to render a clickable FileCard in place of the
+marker. It didn't — the user saw "doc#11" as plain text.
+
+Why: ChatTurn looked at `message.payloadJson.generatedDocumentIds`
+to decide which cards to render. The `Extraction` struct doesn't
+carry that field, so `assistant_payload` never had it populated. The
+field was set on every `run_python` tool RESULT but discarded as
+soon as the tool result was fed back to the LLM.
+
+Fix (frontend, immediate): assistant messages now ALSO get scanned
+for `doc#N` markers, unioned with `generatedDocumentIds` from the
+payload, and rendered as FileCards. The literal markers get
+stripped from the displayed text so the card replaces them visually,
+mirroring how user-side attachments already render. Works the same
+whether the doc was just generated this turn or referenced from a
+prior turn.
+
+A more thorough backend fix — aggregate every run_python's
+`generatedDocumentIds` into the assistant payload — is still worth
+doing for the case where the LLM forgets the marker. Frontend scan
+catches it in the common case where the prompt instruction lands.
+
 ## v0.20.11 — Successful turns were being reported as errors (2026-06-11)
 
 User showed a trace where Travis generated `LTE2026217002 → doc#9`,

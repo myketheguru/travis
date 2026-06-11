@@ -50,6 +50,7 @@ mod packs_cmd;
 mod platform_cmd;
 mod force_upgrade;
 mod template_assets;
+mod plans;
 mod proactive;
 mod reminders;
 mod reminders_cmd;
@@ -680,6 +681,9 @@ pub fn run() {
             template_assets::find_template_assets,
             template_assets::request_template_extraction,
             template_assets::set_template_asset_label,
+            plans::plan_create_cmd,
+            plans::plan_status_cmd,
+            plans::plan_active_cmd,
             packs_cmd::list_packs,
             packs_cmd::set_pack_enabled,
             packs_cmd::pack_schemas,

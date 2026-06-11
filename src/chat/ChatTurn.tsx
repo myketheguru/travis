@@ -56,9 +56,26 @@ export function ChatTurn({
         Number(m[1]),
       )
     : [];
+  // v0.20.12 — assistant messages also reference docs via `doc#N`
+  // markers. Until v0.20.11 we only rendered FileCards for the
+  // backend-tracked `generatedDocumentIds` payload field — but that
+  // field was effectively never populated on the assistant payload,
+  // so the marker rode through as plain text and no card appeared.
+  // Scan assistant text for the marker, union with generatedDocumentIds,
+  // and render a card for each.
+  const inlineAssistantIds: number[] = isAssistant
+    ? Array.from(message.content.matchAll(/doc#(\d+)/g)).map((m) =>
+        Number(m[1]),
+      )
+    : [];
+  const assistantFileCardIds = isAssistant
+    ? Array.from(new Set([...generatedDocumentIds, ...inlineAssistantIds]))
+    : [];
   // Strip the marker from displayed text — files render below
   const visibleContent = isUser
     ? message.content.replace(/\n*\[Attached:[^\]]*\]\s*$/i, "").trim()
+    : isAssistant && assistantFileCardIds.length > 0
+    ? message.content.replace(/doc#\d+/g, "").replace(/[ \t]+\n/g, "\n").trim()
     : message.content;
 
   // Build parent → children tree for steps
@@ -162,9 +179,9 @@ export function ChatTurn({
 
           {errorDetail && <ErrorTraceDetail detail={errorDetail} />}
 
-          {generatedDocumentIds.length > 0 && (
+          {assistantFileCardIds.length > 0 && (
             <div className="mt-2 space-y-1">
-              {generatedDocumentIds.map((id) => (
+              {assistantFileCardIds.map((id) => (
                 <FileCard key={id} documentId={id} />
               ))}
             </div>

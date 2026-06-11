@@ -227,7 +227,14 @@ impl Tool for FindTemplateAssetsTool {
                 Returned fields per asset: `id`, `kind`, `displayName`, `absPath` (use \
                 with PIL.Image.open), `widthPx`, `heightPx`. Filter by `kind` for \
                 category, `query` for name substring, `sourceDocumentId` to constrain to \
-                one sample. Empty result = nothing in the library yet for that filter."
+                one sample. Empty result = nothing in the library yet for that filter.\n\n\
+                Windows path handling: the `absPath` strings come with backslashes (e.g. \
+                `C:\\\\Users\\\\...\\\\template_assets\\\\ab\\\\abc.png`). Pass them to \
+                PIL.Image.open or pathlib.Path AS-IS — DO NOT wrap them in an f-string or \
+                hand-write the path with single backslashes (those get parsed as escape \
+                sequences). If you need a Path object: \
+                `from pathlib import Path; p = Path(asset['absPath'])`. \
+                That's it."
                 .into(),
             input_schema: json!({
                 "type": "object",

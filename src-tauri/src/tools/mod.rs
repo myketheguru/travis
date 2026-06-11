@@ -9,6 +9,7 @@ use crate::llm::ToolDef;
 
 pub mod analyze_document_styling;
 pub mod list_template_assets;
+pub mod plan_tools;
 pub mod cases;
 pub mod clipboard;
 pub mod find_documents;
@@ -148,6 +149,10 @@ fn human_label_for_tool(tool_name: &str) -> String {
         "list_template_assets" => "Loading template assets",
         "find_template_assets" => "Searching template library",
         "set_template_asset_label" => "Naming template asset",
+        "create_plan" => "Sketching the plan",
+        "record_step_result" => "Caching step result",
+        "get_step_result" => "Checking the cache",
+        "list_plan_steps" => "Reviewing the plan",
         "open_case" => "Opening case",
         "note_case" => "Recording case note",
         "close_case" => "Closing case",
@@ -247,6 +252,10 @@ pub fn read_only_registry(packs: &[&dyn crate::packs::PackHandle]) -> ToolRegist
     reg.register(Box::new(list_template_assets::ListTemplateAssetsTool));
     reg.register(Box::new(list_template_assets::FindTemplateAssetsTool));
     reg.register(Box::new(list_template_assets::SetTemplateAssetLabelTool));
+    reg.register(Box::new(plan_tools::CreatePlanTool));
+    reg.register(Box::new(plan_tools::RecordStepResultTool));
+    reg.register(Box::new(plan_tools::GetStepResultTool));
+    reg.register(Box::new(plan_tools::ListPlanStepsTool));
     reg.register(Box::new(cases::OpenCaseTool));
     reg.register(Box::new(cases::NoteCaseTool));
     reg.register(Box::new(cases::CloseCaseTool));
