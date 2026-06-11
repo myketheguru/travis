@@ -1,5 +1,59 @@
 # Travis Changelog
 
+## v0.20.14 — DAG-style step pipes + v0.20.13 build hotfix (2026-06-12)
+
+Two things in one release: the build-breaking format-string bug that
+killed both CI and release for v0.20.13, and the next planner
+feature — DAG-style data flow between steps.
+
+### Hotfix — v0.20.13 didn't compile
+
+`format!(r#"..."#)` interpreted unescaped `{key:'read_log'}` as a
+format placeholder ("expected `}` in format string"). All three
+release builds and CI failed at the same step. The plans prompt
+section I added in v0.20.12 had literal curly braces inside an
+example payload. Escaped to `{{` `}}`. Same bug class as the earlier
+`{kind:'logo'}` fix — adding a CI guard against it is queued.
+
+### DAG-style step pipes
+
+v0.20.13 made step output retrievable via `get_step_result`, but the
+data still flowed through the LLM's context: Step B asked for Step A's
+result, the LLM saw it, the LLM inlined it into Step B's code. That
+inflates context cost and loses fidelity on big data.
+
+v0.20.14 adds direct pipes:
+
+- `run_python` and `edit_python_artifact` accept `stepInputs:
+  [{fromStepKey, asFile}]`.
+- Before invoking Python, the tool fetches each referenced step's
+  cached `result_json` and mounts it at `INPUTS_DIR/<asFile>` (with
+  the convention `_step_<key>.json` when `asFile` is omitted).
+- The Python script reads it with `json.load(open(os.path.join(
+  INPUTS_DIR, 'dates.json')))`. The data NEVER goes through the LLM.
+- `extra_input_files: HashMap<String, Vec<u8>>` plumbed through
+  `interpreter::cmd::RunPythonParams` so the bundled CPython wrapper
+  drops the files into the per-call inputs directory alongside
+  user-supplied docs.
+
+**Upstream invalidation cascades.** The downstream step's
+`input_hash` folds in each referenced step's `result_hash` via
+`extend_hash_with_step_inputs`. If `read_signin_log` re-runs (new
+spreadsheet uploaded, code edited), its hash changes; every
+downstream step that depends on it via `stepInputs` sees its own
+hash flip too, so caches invalidate top-down automatically. No
+manual invalidation, no TTL.
+
+### Net effect
+
+A multi-step LTE workflow now has:
+- O(1) data flow between steps (mounted files, not LLM context)
+- O(1) re-execution after edits (only changed steps + their
+  descendants re-run, everyone else is cache-hit)
+- Zero "remember to check cache first" discipline required
+
+Journal prompt updated with the DAG pattern.
+
 ## v0.20.13 — Plans become enforced, not optional (2026-06-11)
 
 v0.20.12 shipped the plan substrate but the discipline was LLM-driven

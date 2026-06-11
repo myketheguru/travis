@@ -278,6 +278,35 @@ pub async fn input_hash(
     Ok(s)
 }
 
+/// v0.20.14 — fold prior-step references into a downstream step's
+/// input hash so when an upstream cached result changes (different
+/// `result_hash`), the downstream step's hash flips too. Upstream
+/// invalidation cascades automatically.
+pub fn extend_hash_with_step_inputs(
+    base_hash: &str,
+    refs: &[(String, String, Option<String>)],
+) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(base_hash.as_bytes());
+    let mut sorted = refs.to_vec();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    for (key, as_file, hash) in sorted {
+        h.update(b"\nstep_input:");
+        h.update(key.as_bytes());
+        h.update(b"::");
+        h.update(as_file.as_bytes());
+        h.update(b"::");
+        h.update(hash.as_deref().unwrap_or("none").as_bytes());
+    }
+    let digest = h.finalize();
+    let mut s = String::with_capacity(digest.len() * 2);
+    for b in digest.iter() {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
 /// v0.20.13 — cache-aware lookup. Returns the cached payload only
 /// when the step is `done` AND the recorded `result_hash` matches
 /// `input_hash`. Anything else (missing step, running step, stale

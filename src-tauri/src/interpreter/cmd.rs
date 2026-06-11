@@ -43,6 +43,14 @@ pub struct RunPythonParams {
     /// Execution timeout. Default 60s, capped at 300s.
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    /// v0.20.14 — DAG-style pipe. Extra in-memory files to mount
+    /// alongside document_ids. Map of safe filename → raw bytes.
+    /// The plan tools use this to inject a prior step's
+    /// `result_json` as a file like `_step_read_log.json` so the
+    /// Python script can `json.load` it directly without the data
+    /// passing through the LLM's context window.
+    #[serde(default, skip_serializing)]
+    pub extra_input_files: HashMap<String, Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +104,13 @@ pub async fn run_python(
 
     // Load + base64-encode requested documents
     let mut input_files: HashMap<String, String> = HashMap::new();
+    // v0.20.14 — mount any extra in-memory files (step result JSON
+    // injected by the plan tools, for example) first so user-document
+    // names always win on collision.
+    for (name, bytes) in &params.extra_input_files {
+        let safe = sanitize_filename(name, 0);
+        input_files.insert(safe, B64.encode(bytes));
+    }
     if !params.document_ids.is_empty() {
         let data_dir = app
             .path()

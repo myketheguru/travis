@@ -38,6 +38,21 @@ struct Input {
     plan_id: Option<i64>,
     #[serde(default)]
     plan_step_key: Option<String>,
+    /// v0.20.14 — DAG-style pipe. Mount the cached `result_json`
+    /// from prior plan steps as JSON files under INPUTS_DIR.
+    /// Each entry says "fetch the result of step X, drop it at
+    /// INPUTS_DIR/<asFile>". The Python script reads them with
+    /// `json.load(open(os.path.join(INPUTS_DIR, '<asFile>')))`.
+    #[serde(default)]
+    step_inputs: Vec<StepInputRef>,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct StepInputRef {
+    from_step_key: String,
+    #[serde(default)]
+    as_file: Option<String>,
 }
 
 #[async_trait]
@@ -133,6 +148,18 @@ impl Tool for RunPythonTool {
                     "planStepKey": {
                         "type": "string",
                         "description": "v0.20.13 — paired with planId. The step key you assigned in create_plan (e.g. 'read_signin_log', 'generate_invoice_pdf'). Required for cache-aware execution; both planId AND planStepKey must be set."
+                    },
+                    "stepInputs": {
+                        "type": "array",
+                        "description": "v0.20.14 — DAG-style pipe. Mount cached results from prior plan steps as JSON files under INPUTS_DIR. Saves wall time AND LLM-context cost — a step that read a 380KB sheet doesn't need to pass its result through your prompt to reach the next step. Each entry: {fromStepKey: 'read_signin_log', asFile: 'dates.json' (optional, defaults to '_step_<key>.json')}. The Python script reads the file with `json.load(open(os.path.join(INPUTS_DIR, 'dates.json')))`. Upstream invalidation cascades: if the referenced step's cache invalidates, this step's hash flips too.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "fromStepKey": { "type": "string" },
+                                "asFile": { "type": "string" }
+                            },
+                            "required": ["fromStepKey"]
+                        }
                     }
                 },
                 "required": ["code", "purpose"]
@@ -144,6 +171,50 @@ impl Tool for RunPythonTool {
         let p: Input = serde_json::from_value(input)?;
         let state = ctx.app.state::<AppState>();
 
+        // v0.20.14 — DAG-style pipe. Resolve any prior-step references
+        // BEFORE the cache hash so the hash incorporates the upstream
+        // step's result_hash. If a referenced step's hash changes,
+        // this step's input hash changes too — invalidating downstream
+        // automatically.
+        let mut extra_input_files: std::collections::HashMap<String, Vec<u8>> =
+            std::collections::HashMap::new();
+        let mut step_input_summary: Vec<(String, String, Option<String>)> = Vec::new();
+        if !p.step_inputs.is_empty() {
+            if let Some(plan_id) = p.plan_id {
+                for inp in &p.step_inputs {
+                    let key = inp.from_step_key.trim();
+                    if key.is_empty() {
+                        continue;
+                    }
+                    let as_file = inp
+                        .as_file
+                        .clone()
+                        .unwrap_or_else(|| format!("_step_{key}.json"));
+                    match crate::plans::get_step(&state.db.pool, plan_id, key).await {
+                        Ok(Some(step)) => {
+                            let body = step.result_json.clone().unwrap_or_else(|| "null".into());
+                            extra_input_files.insert(as_file.clone(), body.into_bytes());
+                            step_input_summary.push((
+                                key.to_string(),
+                                as_file,
+                                step.result_hash.clone(),
+                            ));
+                        }
+                        Ok(None) => {
+                            return Err(anyhow::anyhow!(
+                                "step_inputs: referenced step '{key}' not found in plan {plan_id}"
+                            ));
+                        }
+                        Err(e) => return Err(anyhow::anyhow!("step_inputs: {e}")),
+                    }
+                }
+            } else {
+                return Err(anyhow::anyhow!(
+                    "step_inputs requires planId — pass the plan id this call belongs to"
+                ));
+            }
+        }
+
         // v0.20.13 — planner integration. If the LLM tied this call
         // to a (planId, stepKey), check the cache BEFORE doing any
         // Python work. Cache hit on matching input hash skips the
@@ -151,7 +222,7 @@ impl Tool for RunPythonTool {
         // auto-records the result on success.
         let plan_cache = match (p.plan_id, p.plan_step_key.as_deref()) {
             (Some(plan_id), Some(key)) if !key.trim().is_empty() => {
-                let hash = match crate::plans::input_hash(
+                let mut hash = match crate::plans::input_hash(
                     &state.db.pool,
                     &p.code,
                     &p.document_ids,
@@ -165,6 +236,15 @@ impl Tool for RunPythonTool {
                         String::new()
                     }
                 };
+                // Fold each referenced step's identity + result_hash
+                // into this step's hash so upstream changes invalidate
+                // this cache automatically.
+                if !hash.is_empty() && !step_input_summary.is_empty() {
+                    hash = crate::plans::extend_hash_with_step_inputs(
+                        &hash,
+                        &step_input_summary,
+                    );
+                }
                 if !hash.is_empty() {
                     match crate::plans::cache_hit_payload(
                         &state.db.pool,
@@ -270,6 +350,7 @@ impl Tool for RunPythonTool {
                 conversation_id,
                 workflow_state_id: None,
                 timeout_secs: None,
+                extra_input_files,
             },
         )
         .await

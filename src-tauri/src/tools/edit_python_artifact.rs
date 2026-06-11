@@ -64,6 +64,18 @@ struct Input {
     plan_id: Option<i64>,
     #[serde(default)]
     plan_step_key: Option<String>,
+    /// v0.20.14 — DAG-style pipe. Same shape as run_python's
+    /// step_inputs: mount cached step results as JSON files.
+    #[serde(default)]
+    step_inputs: Vec<StepInputRef>,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct StepInputRef {
+    from_step_key: String,
+    #[serde(default)]
+    as_file: Option<String>,
 }
 
 #[async_trait]
@@ -125,6 +137,18 @@ impl Tool for EditPythonArtifactTool {
                     "planStepKey": {
                         "type": "string",
                         "description": "v0.20.13 — paired with planId. The step key the edited script implements (e.g. 'generate_invoice_pdf')."
+                    },
+                    "stepInputs": {
+                        "type": "array",
+                        "description": "v0.20.14 — DAG-style pipe. Same as run_python's stepInputs: mount cached results from prior plan steps as files under INPUTS_DIR.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "fromStepKey": { "type": "string" },
+                                "asFile": { "type": "string" }
+                            },
+                            "required": ["fromStepKey"]
+                        }
                     }
                 },
                 "required": ["supersedesArtifactId", "purpose", "code"]
@@ -166,10 +190,51 @@ impl Tool for EditPythonArtifactTool {
         let input_doc_ids_snapshot = p.document_ids.clone();
         let libraries_snapshot = p.libraries.clone();
 
+        // v0.20.14 — resolve step_inputs (DAG-style pipe). Mirrors
+        // the run_python flow.
+        let mut edit_extra_input_files: std::collections::HashMap<String, Vec<u8>> =
+            std::collections::HashMap::new();
+        let mut step_input_summary: Vec<(String, String, Option<String>)> = Vec::new();
+        if !p.step_inputs.is_empty() {
+            if let Some(plan_id) = p.plan_id {
+                for inp in &p.step_inputs {
+                    let key = inp.from_step_key.trim();
+                    if key.is_empty() {
+                        continue;
+                    }
+                    let as_file = inp
+                        .as_file
+                        .clone()
+                        .unwrap_or_else(|| format!("_step_{key}.json"));
+                    match crate::plans::get_step(&pool_for_artifact, plan_id, key).await {
+                        Ok(Some(step)) => {
+                            let body = step.result_json.clone().unwrap_or_else(|| "null".into());
+                            edit_extra_input_files.insert(as_file.clone(), body.into_bytes());
+                            step_input_summary.push((
+                                key.to_string(),
+                                as_file,
+                                step.result_hash.clone(),
+                            ));
+                        }
+                        Ok(None) => {
+                            return Err(anyhow::anyhow!(
+                                "step_inputs: referenced step '{key}' not found in plan {plan_id}"
+                            ));
+                        }
+                        Err(e) => return Err(anyhow::anyhow!("step_inputs: {e}")),
+                    }
+                }
+            } else {
+                return Err(anyhow::anyhow!(
+                    "step_inputs requires planId"
+                ));
+            }
+        }
+
         // v0.20.13 — planner cache check (same as run_python).
         let plan_cache = match (p.plan_id, p.plan_step_key.as_deref()) {
             (Some(plan_id), Some(key)) if !key.trim().is_empty() => {
-                let hash = match crate::plans::input_hash(
+                let mut hash = match crate::plans::input_hash(
                     &pool_for_artifact,
                     &script_for_artifact,
                     &input_doc_ids_snapshot,
@@ -183,6 +248,12 @@ impl Tool for EditPythonArtifactTool {
                         String::new()
                     }
                 };
+                if !hash.is_empty() && !step_input_summary.is_empty() {
+                    hash = crate::plans::extend_hash_with_step_inputs(
+                        &hash,
+                        &step_input_summary,
+                    );
+                }
                 if !hash.is_empty() {
                     match crate::plans::cache_hit_payload(
                         &pool_for_artifact,
@@ -245,6 +316,7 @@ impl Tool for EditPythonArtifactTool {
                 conversation_id,
                 workflow_state_id: None,
                 timeout_secs: None,
+                extra_input_files: edit_extra_input_files,
             },
         )
         .await
