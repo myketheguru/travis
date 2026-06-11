@@ -1,5 +1,59 @@
 # Travis Changelog
 
+## v0.20.10 — Onboarding-loop root-cause hunt (2026-06-11)
+
+User report: "Update Travis, restart, end up on onboarding even though
+the DB wasn't cleared." Reproduced in code review even though I
+couldn't reproduce locally. Two paths could falsely route a returning
+user to onboarding:
+
+### app_status — full-row SELECT was too sensitive
+
+`profile_exists` was computed via `state.db.user_profile().await?.is_some()`
+which fetches all 10 user_profile columns. If ANY of those columns
+deserialized unexpectedly (a type mismatch, an unexpected NULL where
+sqlx expected `String`, a migration that left a column in a weird
+state), the SELECT failed, the Result was Err, and the `?` propagated
+the error all the way out — `app_status` returned 500.
+
+That triggered the frontend catch which set fake `onboarded: false`
+and rendered Onboarding.
+
+Fix: probe with `SELECT COUNT(*) FROM user_profile WHERE id = 1`
+instead. We only care whether the row exists; column shape doesn't
+matter.
+
+### App.tsx refresh() conflated two failures
+
+```ts
+try {
+  const s = await getAppStatus();
+  if (s.onboarded) {
+    const p = await getUserProfile();  // ← if THIS throws...
+  }
+} catch {
+  setStatus({ onboarded: false, ... });  // ← ...you land here
+}
+```
+
+If `getAppStatus` succeeded with `onboarded: true` but
+`getUserProfile` then failed, the unified catch set
+`onboarded: false` and Onboarding rendered. The profile fetch was
+gating the entire decision.
+
+Fix: split the two `try`s. `getAppStatus` decides `onboarded`.
+Profile fetch is a separate best-effort pass; failing it leaves the
+user at Splash with no name displayed but they're not bounced back
+to onboarding.
+
+### Diagnostic logging
+
+The `tracing::debug!` line in `app_status` was promoted to
+`tracing::info!` so it shows in default logs without bumping log
+level. Now you can grep the log for
+`app_status: flag=... profile_exists=... -> onboarded=...` to see
+exactly what the backend decided.
+
 ## v0.20.9 — CI hotfix: protocol-asset feature in Cargo.toml (2026-06-11)
 
 The `ci.yml` workflow's `cargo check` step has been failing since

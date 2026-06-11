@@ -42,15 +42,30 @@ function AppInner() {
   const [updateInstalling, setUpdateInstalling] = useState(false);
 
   const refresh = useCallback(async () => {
+    // v0.20.10 — split the two calls so a getUserProfile() failure
+    // doesn't fall through and falsely route the user to onboarding.
+    // app_status decides onboarded; profile fetch is a separate
+    // best-effort pass.
+    let s;
     try {
-      const s = await getAppStatus();
+      s = await getAppStatus();
       setStatus(s);
-      if (s.onboarded) {
+    } catch (e) {
+      console.error("getAppStatus failed", e);
+      setStatus({ version: "?", dbReady: false, onboarded: false, enabledPacks: [] });
+      return;
+    }
+    if (s.onboarded) {
+      try {
         const p = await getUserProfile();
         setProfile(p);
+      } catch (e) {
+        // Don't reset onboarded — the user is onboarded per the
+        // app_status probe; the profile fetch is just for prompt
+        // templating. Failing it leaves the user at Splash with no
+        // name, which is still better than re-onboarding.
+        console.error("getUserProfile failed (non-fatal)", e);
       }
-    } catch {
-      setStatus({ version: "?", dbReady: false, onboarded: false, enabledPacks: [] });
     }
   }, [setStatus, setProfile]);
 

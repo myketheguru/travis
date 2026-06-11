@@ -27,15 +27,23 @@ pub async fn app_status(state: State<'_, AppState>) -> Result<AppStatus, String>
         .map(|v| v == "true")
         .unwrap_or(false);
 
-    // Defensive: if a user_profile row already exists, treat as onboarded even
-    // if the meta flag is missing/wrong. Guards against any migration or
-    // partial write that leaves the flag inconsistent. Also self-heals.
-    let profile_exists = state
-        .db
-        .user_profile()
-        .await
-        .map_err(|e| e.to_string())?
-        .is_some();
+    // v0.20.10 — was: `state.db.user_profile().await?.is_some()`.
+    // That fetched the whole row and the SELECT could fail on any
+    // column-type mismatch or unexpected NULL — silently routing a
+    // returning user back into onboarding. Use a row-count probe
+    // instead so we only care whether the row exists at all.
+    let profile_exists: bool = match sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM user_profile WHERE id = 1",
+    )
+    .fetch_one(&state.db.pool)
+    .await
+    {
+        Ok(n) => n > 0,
+        Err(e) => {
+            tracing::warn!("app_status: user_profile count probe failed: {e}");
+            false
+        }
+    };
 
     let onboarded = onboarded_flag || profile_exists;
 
@@ -46,8 +54,8 @@ pub async fn app_status(state: State<'_, AppState>) -> Result<AppStatus, String>
         }
     }
 
-    tracing::debug!(
-        "app_status: flag={onboarded_flag} profile={profile_exists} -> onboarded={onboarded}"
+    tracing::info!(
+        "app_status: flag={onboarded_flag} profile_exists={profile_exists} -> onboarded={onboarded}"
     );
 
     let enabled_packs: Vec<String> = state
