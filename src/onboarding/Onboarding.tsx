@@ -1,13 +1,9 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { invoke } from "@tauri-apps/api/core";
 import { PresenceOrb } from "../components/PresenceOrb";
 import { useAppStore } from "../stores/app";
 import {
   completeOnboarding,
-  testProvider,
-  type OnboardingPayload,
-  type PingResult,
   type Provider,
 } from "../lib/ipc";
 import { listPacks, setPackEnabled, type PackInfo } from "../lib/packs";
@@ -33,7 +29,9 @@ const initialDraft: Draft = {
   org: "",
   contextBlurb: "",
   communicationStyle: "",
-  provider: "claude",
+  // v0.20.8 — every user defaults to Travis Cloud. Bringing your own
+  // LLM is a Settings concern, not an onboarding one.
+  provider: "travis_cloud",
   apiKey: "",
   ollamaUrl: "http://localhost:11434",
   model: "",
@@ -41,45 +39,29 @@ const initialDraft: Draft = {
 
 // Steps:
 // 0 welcome · 1 name · 2 role · 3 org · 4 context (opt) · 5 voice (opt)
-// 6 provider · 7 api key · 8 pack picker · 9 workspace (opt) · 10 done
+// 8 pack picker · 9 workspace (opt) · 10 done
+//
+// Steps 6 (provider picker) and 7 (api key) are GONE as of v0.20.8 —
+// every user defaults to Travis Cloud. The old indices stay reserved
+// so we don't have to renumber every transition; next() just jumps
+// from 5 to 8 unconditionally now. Advanced users wanting to bring
+// their own LLM go through Settings post-onboarding.
 const TOTAL_STEPS = 11;
-
-const providers: { id: Provider; name: string; blurb: string; needsKey: boolean }[] = [
-  { id: "claude", name: "Claude",  blurb: "Anthropic — best reasoning, prompt caching",  needsKey: true },
-  { id: "openai", name: "OpenAI",  blurb: "GPT-class models, broadly compatible",         needsKey: true },
-  { id: "ollama", name: "Ollama",  blurb: "Run locally, private, no API key",             needsKey: false },
-];
-
-const defaultModels: Record<Provider, string> = {
-  travis_cloud: "claude-sonnet-4-6",
-  claude: "claude-sonnet-4-6",
-  openai: "gpt-4o",
-  ollama: "llama3.1:8b",
-};
 
 export default function Onboarding({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState(0);
   const [draft, setDraft] = useState<Draft>(initialDraft);
-  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<PingResult | null>(null);
   const [packs, setPacks] = useState<PackInfo[] | null>(null);
-  // v0.20.2 — when this build ships with a Travis Cloud key, the
-  // provider + api-key steps are skipped entirely. New users default
-  // to "travis_cloud" without touching anything.
-  const [cloudAvailable, setCloudAvailable] = useState<boolean | null>(null);
-  useEffect(() => {
-    invoke<{ travisCloudAvailable: boolean }>("platform_info")
-      .then((info) => setCloudAvailable(info.travisCloudAvailable))
-      .catch(() => setCloudAvailable(false));
-  }, []);
+  // v0.20.8 — onboarding is cloud-only. We no longer probe
+  // platform_info, run testProvider, or call submit explicitly — the
+  // 5 → 8 transition fires completeOnboarding on its own. Bringing
+  // your own LLM is a Settings concern.
   const [savingPacks, setSavingPacks] = useState(false);
   const [extraWorkspaceName, setExtraWorkspaceName] = useState("");
   const [extraWorkspaceCategory, setExtraWorkspaceCategory] =
     useState<WorkspaceCategory>("work");
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
-  const setActivity = useAppStore((s) => s.setActivity);
   const pulse = useAppStore((s) => s.pulse);
 
   // Load the pack list once we cross into the pack-picker step.
@@ -92,78 +74,35 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
   }, [step, packs]);
 
   const update = (patch: Partial<Draft>) => {
-    setTestResult(null);
     setDraft((d) => ({ ...d, ...patch }));
   };
 
-  const runTest = async () => {
-    setTesting(true);
-    setTestResult(null);
-    setActivity("thinking");
-    try {
-      const r = await testProvider({
-        provider: draft.provider,
-        apiKey: draft.provider === "ollama" ? undefined : draft.apiKey || undefined,
-        ollamaUrl: draft.provider === "ollama" ? draft.ollamaUrl : undefined,
-        model: draft.model || undefined,
-      });
-      setTestResult(r);
-    } catch (e) {
-      setTestResult({
-        ok: false,
-        model: draft.model || defaultModels[draft.provider],
-        latencyMs: 0,
-        message: e instanceof Error ? e.message : String(e),
-      });
-    } finally {
-      setActivity("idle");
-      setTesting(false);
-    }
-  };
-
-  const provider = providers.find((p) => p.id === draft.provider)!;
-
-  const submit = async () => {
-    setError(null);
-    setSubmitting(true);
-    setActivity("thinking");
-    try {
-      const payload: OnboardingPayload = {
-        name: draft.name.trim(),
-        role: draft.role.trim(),
-        org: draft.org.trim(),
-        contextBlurb: draft.contextBlurb.trim() || undefined,
-        communicationStyle: draft.communicationStyle.trim() || undefined,
-        provider: draft.provider,
-        apiKey: draft.provider === "ollama" ? undefined : draft.apiKey || undefined,
-        ollamaUrl: draft.provider === "ollama" ? draft.ollamaUrl : undefined,
-        model: draft.model || undefined,
-      };
-      await completeOnboarding(payload);
-      setStep(8);
-      setActivity("idle");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setActivity("idle");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  // v0.20.2 — skip provider + api-key steps when Travis Cloud is
-  // available. Going forward from 5 jumps to 8; going back from 8
-  // jumps to 5. The two skipped steps stay rendered for the dev/
-  // fallback path so nothing breaks when cloud isn't shipped.
-  const skipCloudSteps = cloudAvailable === true;
+  // v0.20.8 — onboarding is cloud-only now. Steps 6 (provider) and 7
+  // (api key) are not shown to any user, regardless of build. Going
+  // forward from 5 jumps to 8; going back from 8 jumps to 5.
+  // Bringing your own LLM is a Settings concern, not an onboarding one.
+  //
+  // completeOnboarding fires at the 5 → 8 boundary so the profile +
+  // onboarded flag are persisted before the user reaches optional
+  // post-steps (pack picker, workspace). Closing the app at any of
+  // those still leaves you onboarded.
   const next = () =>
     setStep((s) => {
       const candidate = Math.min(s + 1, TOTAL_STEPS - 1);
-      if (skipCloudSteps && (candidate === 6 || candidate === 7)) {
-        // Default to travis_cloud the moment we skip past the provider
-        // selection.
+      if (candidate === 6 || candidate === 7) {
         if (draft.provider !== ("travis_cloud" as Provider)) {
           setDraft((d) => ({ ...d, provider: "travis_cloud" as Provider }));
         }
+        void completeOnboarding({
+          name: draft.name.trim(),
+          role: draft.role.trim(),
+          org: draft.org.trim(),
+          contextBlurb: draft.contextBlurb.trim() || undefined,
+          communicationStyle: draft.communicationStyle.trim() || undefined,
+          provider: "travis_cloud" as Provider,
+        }).catch((e) => {
+          console.error("travis_cloud onboarding persist failed", e);
+        });
         return 8;
       }
       return candidate;
@@ -171,7 +110,7 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
   const back = () =>
     setStep((s) => {
       const candidate = Math.max(s - 1, 0);
-      if (skipCloudSteps && (candidate === 6 || candidate === 7)) {
+      if (candidate === 6 || candidate === 7) {
         return 5;
       }
       return candidate;
@@ -180,7 +119,13 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
   return (
     <main className="relative h-full w-full overflow-y-auto">
       <div className="sticky top-0 z-10 pt-6 pb-2 flex items-center justify-center gap-1.5 pointer-events-none">
-        {Array.from({ length: TOTAL_STEPS }).map((_, i) => (
+        {/* v0.20.8 — skip the dots for steps 6 and 7 (LLM picker + api
+            key) since those steps are no longer shown. Otherwise the
+            user sees a 9-step flow but an 11-dot progress bar. */}
+        {Array.from({ length: TOTAL_STEPS })
+          .map((_, i) => i)
+          .filter((i) => i !== 6 && i !== 7)
+          .map((i) => (
           <motion.div
             key={i}
             className="h-[3px] rounded-full"
@@ -353,144 +298,11 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
             </Question>
           )}
 
-          {step === 6 && !skipCloudSteps && (
-            <Question
-              index={6}
-              prompt="Which mind should I think with?"
-              hint="You can switch this any time in settings."
-              canAdvance={true}
-              onAdvance={next}
-            >
-              <div className="flex flex-col gap-2">
-                {providers.map((p) => {
-                  const active = draft.provider === p.id;
-                  return (
-                    <button
-                      key={p.id}
-                      onClick={() => update({ provider: p.id })}
-                      className={
-                        "text-left rounded-xl border px-4 py-3 transition-all " +
-                        (active
-                          ? "border-pulse/60 bg-pulse/[0.07]"
-                          : "border-ink-3 bg-ink-2/30 hover:border-ink-3/80 hover:bg-ink-2/50")
-                      }
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="text-bone font-medium">{p.name}</span>
-                        {active && (
-                          <span className="h-1.5 w-1.5 rounded-full bg-pulse-2 shadow-[0_0_8px_rgba(110,196,232,0.7)]" />
-                        )}
-                      </div>
-                      <p className="text-bone-3 text-xs mt-0.5">{p.blurb}</p>
-                    </button>
-                  );
-                })}
-              </div>
-            </Question>
-          )}
-
-          {step === 7 && !skipCloudSteps && (
-            <Question
-              index={7}
-              prompt={
-                provider.needsKey
-                  ? `Drop your ${provider.name} key.`
-                  : "Where's your Ollama running?"
-              }
-              hint={
-                provider.needsKey
-                  ? "Stored in your OS keychain — never written to disk in plain text."
-                  : "The default works for most local installs."
-              }
-              canAdvance={
-                provider.needsKey
-                  ? draft.apiKey.trim().length > 0
-                  : draft.ollamaUrl.trim().length > 0
-              }
-              onAdvance={submit}
-              advanceLabel={submitting ? "Setting up…" : "Finish"}
-            >
-              <div className="flex flex-col gap-5">
-                {provider.needsKey ? (
-                  <input
-                    autoFocus
-                    type="password"
-                    value={draft.apiKey}
-                    onChange={(e) => {
-                      pulse();
-                      update({ apiKey: e.target.value });
-                    }}
-                    placeholder={draft.provider === "claude" ? "sk-ant-..." : "sk-..."}
-                    className={inputClass + " font-mono text-base"}
-                  />
-                ) : (
-                  <input
-                    autoFocus
-                    value={draft.ollamaUrl}
-                    onChange={(e) => {
-                      pulse();
-                      update({ ollamaUrl: e.target.value });
-                    }}
-                    className={inputClass + " font-mono text-base"}
-                  />
-                )}
-
-                <details className="group">
-                  <summary className="text-bone-3 text-xs cursor-pointer hover:text-bone-2 transition-colors list-none flex items-center gap-2">
-                    <span className="text-pulse-2/70 transition-transform group-open:rotate-90">›</span>
-                    <span>Specific model? (optional, default {defaultModels[draft.provider]})</span>
-                  </summary>
-                  <div className="mt-3 ml-4">
-                    <input
-                      value={draft.model}
-                      onChange={(e) => {
-                        pulse();
-                        update({ model: e.target.value });
-                      }}
-                      placeholder={defaultModels[draft.provider]}
-                      className={inputClass + " font-mono text-base"}
-                    />
-                  </div>
-                </details>
-
-                <div className="flex items-center gap-3 text-xs">
-                  <button
-                    type="button"
-                    onClick={runTest}
-                    disabled={
-                      testing ||
-                      (provider.needsKey
-                        ? draft.apiKey.trim().length === 0
-                        : draft.ollamaUrl.trim().length === 0)
-                    }
-                    className="text-pulse-2 hover:text-bone disabled:opacity-30 disabled:cursor-not-allowed underline-offset-4 hover:underline transition-colors"
-                  >
-                    {testing ? "Testing…" : "Test connection"}
-                  </button>
-                  {testResult && (
-                    <span
-                      className={
-                        "flex items-center gap-1.5 " +
-                        (testResult.ok ? "text-pulse-2" : "text-warn")
-                      }
-                    >
-                      <span
-                        className={
-                          "h-1.5 w-1.5 rounded-full " +
-                          (testResult.ok ? "bg-pulse-2" : "bg-warn")
-                        }
-                      />
-                      {testResult.ok
-                        ? `connected · ${testResult.model} · ${testResult.latencyMs}ms`
-                        : testResult.message ?? "failed"}
-                    </span>
-                  )}
-                </div>
-
-                {error && <p className="text-warn text-xs">{error}</p>}
-              </div>
-            </Question>
-          )}
+          {/* v0.20.8 — steps 6 (provider picker) and 7 (api key) are
+              removed. Every user is on Travis Cloud by default; bringing
+              your own LLM is a Settings concern, not an onboarding one.
+              The step indices stay reserved so the back/next transitions
+              don't need renumbering. */}
 
           {step === 8 && (
             <Question

@@ -1,5 +1,40 @@
 # Travis Changelog
 
+## v0.20.8 — Onboarding is cloud-only + persistence fix (2026-06-11)
+
+Two related fixes for the "every launch re-fires onboarding" report.
+
+### Root cause: completeOnboarding was never called for cloud users
+
+`completeOnboarding` (which writes the `user_profile` row + sets
+`meta.onboarded = 'true'`) was bound to step 7's submit handler — the
+api-key page. v0.20.2's cloud skip jumped users from step 5 directly
+to step 8 (pack picker), bypassing step 7 entirely. So cloud users
+walked through pack-picker → workspace → done visually, but the DB
+stayed empty. Next launch, `app_status.onboarded` returned false and
+Travis routed back to onboarding. Forever.
+
+Fix: when `next()` crosses the 5 → 8 boundary, fire
+`completeOnboarding` with the current draft and provider='travis_cloud'.
+Best-effort — errors don't block step progression.
+
+### Onboarding is now cloud-only
+
+Per direction: "every user should default to travis cloud — remove the
+model selection and api-key steps from onboarding entirely."
+
+- Steps 6 (provider picker) and 7 (api key) no longer render to any
+  user, regardless of build. The step indices stay reserved so we
+  don't have to renumber every transition.
+- Progress bar shows 9 dots instead of 11 — the skipped steps don't
+  get rendered as ghost dots.
+- `initialDraft.provider` defaults to `"travis_cloud"`.
+- `platform_info` probe + `cloudAvailable` state removed from the
+  onboarding component — every user is on Travis Cloud, no branching.
+
+Advanced users wanting to bring their own LLM still have the full
+toggle in Settings → Model (Travis Cloud / Use my own LLM).
+
 ## v0.20.7 — Speed discipline + onboarding cloud-skip render guard (2026-06-11)
 
 ### Hard rules against python flailing
