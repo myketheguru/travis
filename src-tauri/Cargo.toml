@@ -1,6 +1,6 @@
 [package]
 name = "travis"
-version = "0.20.12"
+version = "0.20.13"
 description = "Travis — local-first AI operations assistant"
 authors = ["myketheguru"]
 edition = "2021"

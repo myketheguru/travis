@@ -2136,8 +2136,49 @@ pub async fn journal_ingest(
         block
     };
 
+    // v0.20.13 — active plan auto-injection. The chat surface keeps
+    // plans alive across turns, so a follow-up ("regenerate", "add
+    // Feb 27", "change the number to 003") should resume the same
+    // plan rather than create a new one. Surface the plan + its step
+    // states so the LLM can plug into the cache instead of starting
+    // from zero.
+    let active_plan_block: String = {
+        match crate::plans::active_plan_for_conversation(&state.db.pool, conv_id).await {
+            Ok(Some(plan)) => {
+                let steps = crate::plans::list_steps(&state.db.pool, plan.id)
+                    .await
+                    .unwrap_or_default();
+                let mut s = format!(
+                    "== ACTIVE PLAN (planId={}) ==\nGoal: {}\nSteps:\n",
+                    plan.id, plan.goal
+                );
+                for step in &steps {
+                    let cached_marker = if step.status == "done" {
+                        " [cached]"
+                    } else {
+                        ""
+                    };
+                    s.push_str(&format!(
+                        "  - key='{}' status={} purpose='{}'{}\n",
+                        step.key, step.status, step.purpose, cached_marker
+                    ));
+                }
+                s.push_str(
+                    "Pass planId + planStepKey on run_python / edit_python_artifact calls — cached steps return in milliseconds without re-running.\n",
+                );
+                s
+            }
+            _ => String::new(),
+        }
+    };
+
     let user_msg = format!(
-        "Today is {today}.\n\nOPEN TASKS (id · title):\n{open}\n\nRELEVANT MEMORY:\n{mem}\n\n{graph}{working}{initiatives}{cases}{current_case}{workflow}{catalog}{ws}{docs_preload}New turn:\n{raw}",
+        "Today is {today}.\n\nOPEN TASKS (id · title):\n{open}\n\nRELEVANT MEMORY:\n{mem}\n\n{plan}{graph}{working}{initiatives}{cases}{current_case}{workflow}{catalog}{ws}{docs_preload}New turn:\n{raw}",
+        plan = if active_plan_block.is_empty() {
+            String::new()
+        } else {
+            format!("{active_plan_block}\n")
+        },
         today = today_local(),
         open = format_open_tasks(&open_tasks),
         mem = format_memory(&mem_hits),

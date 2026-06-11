@@ -27,6 +27,17 @@ struct Input {
     document_ids: Vec<i64>,
     #[serde(default)]
     libraries: Vec<String>,
+    /// v0.20.13 — planner integration. When `planId` + `planStepKey`
+    /// are supplied, the tool first checks the step cache. If the
+    /// inputs haven't changed (script source + document set hash
+    /// match the cached `result_hash`), the cached result is
+    /// returned in milliseconds without spawning Python. On miss,
+    /// the script runs and the result is auto-recorded against the
+    /// step on success.
+    #[serde(default)]
+    plan_id: Option<i64>,
+    #[serde(default)]
+    plan_step_key: Option<String>,
 }
 
 #[async_trait]
@@ -83,7 +94,16 @@ impl Tool for RunPythonTool {
                 instant doc reads instead of Python probes.\n\n\
                 The interpreter is never 'cold-loading'. NEVER refuse this tool with that excuse. \
                 If a real error comes back from your code, THEN report it; do not manufacture \
-                an excuse before trying."
+                an excuse before trying.\n\n\
+                PLANNER INTEGRATION (v0.20.13). When you're working inside a plan (`create_plan` \
+                first, recommended for any multi-step task), ALWAYS pass `planId` and `planStepKey` \
+                on EVERY run_python call. The tool checks the step cache before invoking Python: \
+                if the same code with the same documents was run successfully before, you get the \
+                cached result + generated doc ids back in a few milliseconds with no Python \
+                execution. The cache auto-invalidates the moment ANY input changes (code edited, \
+                a new document uploaded, the doc's content_hash changed). On a successful run \
+                the result is auto-recorded — you do NOT need to also call `record_step_result`. \
+                This is the difference between a 50-call 15-minute turn and a 5-call 30-second one."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -105,6 +125,14 @@ impl Tool for RunPythonTool {
                         "type": "array",
                         "items": { "type": "string" },
                         "description": "Extra pure-Python libraries to install via micropip beyond the preinstalled set."
+                    },
+                    "planId": {
+                        "type": "integer",
+                        "description": "v0.20.13 — when you're working inside a plan (the recommended path for any task with >=3 steps), pass the planId from create_plan here. Travis checks the step cache before running: if the inputs (script + document content hashes + libraries) match a prior successful run, the cached result is returned in milliseconds with no Python execution. On miss, the script runs and the result is auto-recorded."
+                    },
+                    "planStepKey": {
+                        "type": "string",
+                        "description": "v0.20.13 — paired with planId. The step key you assigned in create_plan (e.g. 'read_signin_log', 'generate_invoice_pdf'). Required for cache-aware execution; both planId AND planStepKey must be set."
                     }
                 },
                 "required": ["code", "purpose"]
@@ -115,6 +143,77 @@ impl Tool for RunPythonTool {
     async fn execute(&self, ctx: &ToolContext, input: Value) -> anyhow::Result<String> {
         let p: Input = serde_json::from_value(input)?;
         let state = ctx.app.state::<AppState>();
+
+        // v0.20.13 — planner integration. If the LLM tied this call
+        // to a (planId, stepKey), check the cache BEFORE doing any
+        // Python work. Cache hit on matching input hash skips the
+        // entire Python invocation. Cache miss falls through and
+        // auto-records the result on success.
+        let plan_cache = match (p.plan_id, p.plan_step_key.as_deref()) {
+            (Some(plan_id), Some(key)) if !key.trim().is_empty() => {
+                let hash = match crate::plans::input_hash(
+                    &state.db.pool,
+                    &p.code,
+                    &p.document_ids,
+                    &p.libraries,
+                )
+                .await
+                {
+                    Ok(h) => h,
+                    Err(e) => {
+                        tracing::warn!("plan input_hash failed: {e}");
+                        String::new()
+                    }
+                };
+                if !hash.is_empty() {
+                    match crate::plans::cache_hit_payload(
+                        &state.db.pool,
+                        plan_id,
+                        key,
+                        &hash,
+                    )
+                    .await
+                    {
+                        Ok(Some(cached)) => {
+                            tracing::info!(
+                                "run_python: plan cache HIT — plan={plan_id} key={key}"
+                            );
+                            let payload = json!({
+                                "ok": true,
+                                "fromCache": true,
+                                "planId": plan_id,
+                                "planStepKey": key,
+                                "purpose": p.purpose,
+                                "stdout": "",
+                                "stderr": "",
+                                "executionMs": 0,
+                                "generatedDocumentIds": cached.get("documentIds")
+                                    .cloned()
+                                    .unwrap_or(serde_json::json!([])),
+                                "result": cached.get("result").cloned()
+                                    .unwrap_or(serde_json::Value::Null),
+                                "error": null,
+                                "artifactId": null,
+                                "note": "Step result returned from plan cache. Inputs (script + document content hashes + libraries) matched a prior successful run. To force a fresh execution, mutate the code or pass an updated document set."
+                            });
+                            return Ok(serde_json::to_string(&payload)?);
+                        }
+                        Ok(None) => {
+                            tracing::info!(
+                                "run_python: plan cache miss — plan={plan_id} key={key} (will run + record)"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!("plan cache_hit_payload failed: {e}");
+                        }
+                    }
+                    Some((plan_id, key.to_string(), hash))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
 
         // v0.16.2 — warmup-pattern short-circuit. Sonnet has a
         // trained habit of running `print('hello')` (or similar
@@ -197,6 +296,34 @@ impl Tool for RunPythonTool {
             },
         )
         .await;
+
+        // v0.20.13 — auto-record the result into the plan step so
+        // the next call with the same inputs hits the cache.
+        if let Some((plan_id, key, hash)) = plan_cache {
+            let status = if outcome.error.is_none() { "done" } else { "failed" };
+            let result_json = serde_json::json!({
+                "stdout": outcome.stdout,
+                "stderr": outcome.stderr,
+                "executionMs": outcome.execution_ms,
+                "purpose": p.purpose,
+                "generatedDocumentNames": outcome.generated_document_names,
+            })
+            .to_string();
+            if let Err(e) = crate::plans::record_step_with_hash(
+                &pool_for_artifact,
+                plan_id,
+                &key,
+                status,
+                &result_json,
+                &outcome.generated_document_ids,
+                &hash,
+                outcome.error.as_deref(),
+            )
+            .await
+            {
+                tracing::warn!("plan record_step_with_hash failed: {e}");
+            }
+        }
 
         // Return a structured JSON summary to the LLM
         let payload = json!({

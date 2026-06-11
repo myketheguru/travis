@@ -55,6 +55,15 @@ struct Input {
     /// Extra pure-Python libraries (rare for an edit).
     #[serde(default)]
     libraries: Vec<String>,
+    /// v0.20.13 — planner integration. Same semantics as run_python:
+    /// when (planId, planStepKey) are set, the tool checks the step
+    /// cache before re-running. If the edited script + inputs
+    /// produce the same hash as a cached run, the cached result is
+    /// returned in milliseconds. On miss, runs and auto-records.
+    #[serde(default)]
+    plan_id: Option<i64>,
+    #[serde(default)]
+    plan_step_key: Option<String>,
 }
 
 #[async_trait]
@@ -108,6 +117,14 @@ impl Tool for EditPythonArtifactTool {
                         "type": "array",
                         "items": { "type": "string" },
                         "description": "Extra pure-Python libraries beyond the preinstalled set. Usually empty for an edit."
+                    },
+                    "planId": {
+                        "type": "integer",
+                        "description": "v0.20.13 — when working inside a plan, pass the planId so the edit is cache-aware. Same semantics as run_python's planId."
+                    },
+                    "planStepKey": {
+                        "type": "string",
+                        "description": "v0.20.13 — paired with planId. The step key the edited script implements (e.g. 'generate_invoice_pdf')."
                     }
                 },
                 "required": ["supersedesArtifactId", "purpose", "code"]
@@ -147,6 +164,75 @@ impl Tool for EditPythonArtifactTool {
         let purpose_for_artifact = p.purpose.clone();
         let script_for_artifact = p.code.clone();
         let input_doc_ids_snapshot = p.document_ids.clone();
+        let libraries_snapshot = p.libraries.clone();
+
+        // v0.20.13 — planner cache check (same as run_python).
+        let plan_cache = match (p.plan_id, p.plan_step_key.as_deref()) {
+            (Some(plan_id), Some(key)) if !key.trim().is_empty() => {
+                let hash = match crate::plans::input_hash(
+                    &pool_for_artifact,
+                    &script_for_artifact,
+                    &input_doc_ids_snapshot,
+                    &libraries_snapshot,
+                )
+                .await
+                {
+                    Ok(h) => h,
+                    Err(e) => {
+                        tracing::warn!("plan input_hash failed: {e}");
+                        String::new()
+                    }
+                };
+                if !hash.is_empty() {
+                    match crate::plans::cache_hit_payload(
+                        &pool_for_artifact,
+                        plan_id,
+                        key,
+                        &hash,
+                    )
+                    .await
+                    {
+                        Ok(Some(cached)) => {
+                            tracing::info!(
+                                "edit_python_artifact: plan cache HIT — plan={plan_id} key={key}"
+                            );
+                            let payload = json!({
+                                "ok": true,
+                                "fromCache": true,
+                                "planId": plan_id,
+                                "planStepKey": key,
+                                "purpose": p.purpose,
+                                "stdout": "",
+                                "stderr": "",
+                                "executionMs": 0,
+                                "generatedDocumentIds": cached.get("documentIds")
+                                    .cloned()
+                                    .unwrap_or(serde_json::json!([])),
+                                "result": cached.get("result").cloned()
+                                    .unwrap_or(serde_json::Value::Null),
+                                "error": null,
+                                "artifactId": null,
+                                "supersedesArtifactId": p.supersedes_artifact_id,
+                                "note": "Result returned from plan cache. Edit re-ran would have produced the same output."
+                            });
+                            return Ok(serde_json::to_string(&payload)?);
+                        }
+                        Ok(None) => {
+                            tracing::info!(
+                                "edit_python_artifact: plan cache miss — plan={plan_id} key={key}"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!("plan cache_hit_payload failed: {e}");
+                        }
+                    }
+                    Some((plan_id, key.to_string(), hash))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
 
         let outcome = run_python_cmd(
             ctx.app.clone(),
@@ -181,6 +267,34 @@ impl Tool for EditPythonArtifactTool {
             },
         )
         .await;
+
+        // v0.20.13 — auto-record into the plan step on success.
+        if let Some((plan_id, key, hash)) = plan_cache {
+            let status = if outcome.error.is_none() { "done" } else { "failed" };
+            let result_json = serde_json::json!({
+                "stdout": outcome.stdout,
+                "stderr": outcome.stderr,
+                "executionMs": outcome.execution_ms,
+                "purpose": p.purpose,
+                "generatedDocumentNames": outcome.generated_document_names,
+                "supersedesArtifactId": p.supersedes_artifact_id,
+            })
+            .to_string();
+            if let Err(e) = crate::plans::record_step_with_hash(
+                &pool_for_artifact,
+                plan_id,
+                &key,
+                status,
+                &result_json,
+                &outcome.generated_document_ids,
+                &hash,
+                outcome.error.as_deref(),
+            )
+            .await
+            {
+                tracing::warn!("plan record_step_with_hash failed: {e}");
+            }
+        }
 
         let payload = json!({
             "ok": outcome.error.is_none(),

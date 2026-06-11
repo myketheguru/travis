@@ -1,5 +1,72 @@
 # Travis Changelog
 
+## v0.20.13 — Plans become enforced, not optional (2026-06-11)
+
+v0.20.12 shipped the plan substrate but the discipline was LLM-driven
+("remember to call `get_step_result` before running"). v0.20.13 moves
+the discipline INTO the tools — the LLM doesn't have to remember,
+the cache check happens automatically.
+
+### Auto-caching on `run_python` + `edit_python_artifact`
+
+Both tools now accept optional `planId` + `planStepKey`. When set:
+
+1. **Cache check first.** The tool computes an input hash over
+   (script source + sorted documentIds with their `content_hash` from
+   the `document` table + sorted libraries), then asks the plan if
+   there's a `done` step with a matching `result_hash`. Hit → return
+   the cached `result_json` and `documentIds` in milliseconds without
+   spawning Python. No subprocess. No agent-loop wall time.
+2. **Auto-record on miss.** On a cache miss the script runs, and the
+   result is recorded against the step with the new input hash. Next
+   call with the same inputs hits the cache.
+3. **Auto-invalidate on input change.** Edit the code, change the
+   document set, or upload a fresh version of a doc (the doc's
+   `content_hash` changes), and the input hash flips. Cache miss,
+   fresh run. There's no manual "invalidate" step — input change is
+   the invalidation.
+
+The LLM no longer needs the discipline of "check cache first." The
+tool does it. Forgetting to pass `planStepKey` just means you opt out
+of the cache — falls back to the prior behavior.
+
+### Active plan auto-injection into the prompt
+
+Every turn, before the LLM sees the user message, the system pulls
+the conversation's active plan (if any) and prepends a block:
+
+```
+== ACTIVE PLAN (planId=7) ==
+Goal: Generate IS 217 invoice LTE2026217002
+Steps:
+  - key='read_signin_log' status=done purpose='Parse the sign-in log' [cached]
+  - key='filter_dates' status=done purpose='Filter for IS 217' [cached]
+  - key='generate_pdf' status=pending purpose='Render the invoice'
+Pass planId + planStepKey on run_python / edit_python_artifact calls — cached steps return in milliseconds without re-running.
+```
+
+So a follow-up like "regenerate with Feb 27 added" sees: planId=7 is
+live, two steps are cached, only `generate_pdf` needs to re-run. The
+LLM doesn't have to call `plan_active` to discover this — it's right
+there in the context.
+
+### Recap of the planner's full shape now
+
+- `create_plan(goal, steps)` — declare at the top of a complex turn.
+  Reuses an active plan with the same goal instead of fanning out.
+- `run_python(code, ..., planId, planStepKey)` — cache-aware execute.
+  Hit returns cached result; miss runs + auto-records.
+- `edit_python_artifact(...)` — same cache semantics.
+- `get_step_result` / `record_step_result` — still available for
+  steps that aren't a Python invocation (e.g. caching the result of
+  `read_document` for a 50MB sheet so the next turn doesn't re-parse).
+- `list_plan_steps(planId)` — review state.
+- Active plan auto-injected into the user message so follow-up turns
+  resume without explicit lookup.
+
+The 50-call IS 217 trace from yesterday should now look like 6 calls
+on the first turn and 1-2 calls on every follow-up.
+
 ## v0.20.12 — Plans, file cards, payload aggregation, Windows asset paths (2026-06-11)
 
 A grab-bag with one substantive new feature (plans) and three fixes
