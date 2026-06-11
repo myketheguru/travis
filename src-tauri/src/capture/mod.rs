@@ -162,20 +162,35 @@ pub async fn run_background(snap: CaptureSnapshot) {
                     None => continue,
                 };
                 // Resolve parent_hint from the same extraction's
-                // anchor entities. For now we only pass through a
-                // hint when the kind is engagement-shaped and a
-                // school is in scope; packs are free to ignore.
+                // anchor entities. For non-anchor kinds, look up
+                // the first school name's id and pass it so the
+                // pack's ensure_entity can wire the FK. v0.20.5:
+                // previously this was a TODO that always returned
+                // None, leaving engagement.school_id NULL and
+                // breaking the drill-down's invoice/hours/doc
+                // queries.
                 let parent_hint: Option<(&str, i64)> = if !is_anchor {
-                    snap.entities_snapshot
+                    if let Some(school_name) = snap
+                        .entities_snapshot
                         .get("schools")
                         .and_then(|s| s.first())
-                        .and_then(|sname| {
-                            // Best-effort lookup of the spine entity.
-                            // Sync-friendly: we already await per name
-                            // below so do it then.
-                            let _ = sname;
-                            None
-                        })
+                    {
+                        let row: Option<(i64,)> = sqlx::query_as(
+                            "SELECT id FROM school
+                             WHERE workspace_id = ?1
+                               AND LOWER(name) = LOWER(?2)
+                             ORDER BY id ASC LIMIT 1",
+                        )
+                        .bind(ws_id)
+                        .bind(school_name)
+                        .fetch_optional(&snap.pool)
+                        .await
+                        .ok()
+                        .flatten();
+                        row.map(|(id,)| ("school", id))
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 };

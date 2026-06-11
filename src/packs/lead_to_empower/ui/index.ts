@@ -9,3 +9,4 @@ export { default as InvoicesTab } from "./InvoicesTab";
 export { default as SchoolDetail } from "./SchoolDetail";
 export { default as EngagementDetail } from "./EngagementDetail";
 export { default as CoachDetail } from "./CoachDetail";
+export { PurchaseOrdersTab, WorkOrdersTab } from "./DocsByKindTab";

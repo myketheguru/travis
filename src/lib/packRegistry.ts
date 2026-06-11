@@ -73,6 +73,21 @@ const OVERRIDES: OverrideDecl[] = [
     view: "detail",
     component: "CoachDetail",
   },
+  // v0.20.5 — typed PO/WO tables don't auto-populate from classified
+  // docs yet, so the auto-CRUD list shows "no rows" even after upload.
+  // These overrides render the underlying documents instead.
+  {
+    packSlug: "lead-to-empower",
+    tableSlug: "purchase_order",
+    view: "list",
+    component: "PurchaseOrdersTab",
+  },
+  {
+    packSlug: "lead-to-empower",
+    tableSlug: "work_order",
+    view: "list",
+    component: "WorkOrdersTab",
+  },
 ];
 
 /// Look up a custom UI component for a given (pack, table, view) trio.

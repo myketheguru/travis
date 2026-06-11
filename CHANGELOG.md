@@ -1,5 +1,63 @@
 # Travis Changelog
 
+## v0.20.5 — Drill-down + previewer + chat-card fixes (2026-06-11)
+
+A grab-bag bundle from the first real LTE workflow test. Six small but
+high-impact fixes spotted while generating an IS 217 invoice end-to-end.
+
+### Document previewer "asset.localhost refused to connect"
+
+Tauri 2 disables the `asset://` protocol by default; without it
+`convertFileSrc()` URLs return ERR_CONNECTION_REFUSED inside the
+iframe. The previewer always showed the cloud-icon failure page on
+PDF/image rows.
+
+Fix: `tauri.conf.json` → `app.security.assetProtocol = { enable: true,
+scope: ["**"] }`. PDFs/images now render inline as designed.
+
+### Coach detail crashed with REAL vs INTEGER mismatch
+
+`SELECT IFNULL(SUM(hours), 0)` returns INTEGER 0 when there are no
+rows; sqlx bound the column to f64 and panicked. One-char fix: `0.0`.
+
+### Engagement drill-down showed 0 everywhere
+
+`engagement.school_id` was always NULL because `capture/mod.rs` had a
+TODO-marker `parent_hint` resolver that always returned None. With no
+school FK, the engagement detail's invoice / hours / docs queries
+couldn't find anything to show.
+
+Fixes:
+- The resolver now actually looks up the school by name from the
+  current extraction's anchor entities and passes
+  `Some(("school", id))` as the parent_hint.
+- `engagement::ensure` backfills `school_id` on existing rows whose
+  FK was NULL when a hint is now available. Old engagements created
+  before this fix get patched on the next chat turn that mentions
+  them.
+
+### Generated invoice never showed a file card
+
+The `run_python` / `edit_python_artifact` tool descriptions told the
+LLM to skip filename mentions because "the UI auto-renders cards" —
+but the chat surface actually parses `doc#N` markers from the
+message text to know which cards to render. The LLM, following the
+prompt, never wrote `doc#N`, so no card appeared.
+
+Fix: prompt rewrite. The new instruction is explicit — when
+`generatedDocumentIds` is returned, the reply MUST include each id as
+a `doc#N` marker. UI hides the literal marker and renders the card.
+
+### PO / WO tabs empty after dropping POs and WOs in chat
+
+The typed `purchase_order` / `work_order` tables require engagement
+FKs + parsed fields the LLM doesn't yet extract, so they stayed
+empty even though doc rows existed with `kind='po'` / `kind='wo'`.
+The auto-CRUD list view then read "no rows".
+
+Fix: two new pack UI overrides (`PurchaseOrdersTab`, `WorkOrdersTab`)
+render the underlying documents directly until typed extraction lands.
+
 ## v0.20.4 — Migration hotfix: duplicate ceiling_cents (2026-06-10)
 
 Startup crash fix. v0.20.0 introduced migration

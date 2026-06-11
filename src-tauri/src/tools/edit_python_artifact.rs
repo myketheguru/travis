@@ -77,7 +77,12 @@ impl Tool for EditPythonArtifactTool {
                  lineage is diff-able. Output files appear in the chat as new \
                  FileCards. Prefer this over `run_python` from scratch whenever the \
                  user's request is a tweak to existing work — it's faster, cheaper, \
-                 and preserves the lineage."
+                 and preserves the lineage.\n\n\
+                 IMPORTANT — chat presentation: when this tool returns \
+                 `generatedDocumentIds: [N1, N2, ...]`, you MUST include each id as a \
+                 `doc#N` marker in your final reply. That's what triggers the UI to \
+                 render the clickable file card. Example: 'Updated — doc#16'. Without \
+                 the marker the user sees no card."
                 .into(),
             input_schema: json!({
                 "type": "object",

@@ -466,7 +466,7 @@ pub async fn lte_coach_detail(
     .map_err(|e| e.to_string())?;
 
     let (total_hours, sessions_count): (f64, i64) = sqlx::query_as(
-        "SELECT IFNULL(SUM(hours),0), COUNT(*)
+        "SELECT IFNULL(SUM(hours),0.0), COUNT(*)
          FROM coach_hours
          WHERE coach_id = ?1 AND workspace_id = ?2",
     )

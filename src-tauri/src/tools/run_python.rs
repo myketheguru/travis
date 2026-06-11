@@ -54,13 +54,15 @@ impl Tool for RunPythonTool {
                 spreadsheet'. Avoid technical jargon: don't say 'parse xlsx' — say 'reading \
                 the sign-in sheet'.\n\n\
                 IMPORTANT — chat presentation:\n\
-                When you've generated a file with this tool, your final text reply to the user \
-                should DESCRIBE WHAT YOU DID and what's in the file — but DO NOT include the \
-                filename inline in plaintext (Travis renders a clickable file card for it \
-                automatically below your text). Just say 'Done — here's the invoice for IS 217:' \
-                or 'I built the sign-in sheet for the PO window:' and let the card carry the \
-                file identity. Never write the path or filename in a code block or as bare text \
-                — that's redundant with the card the UI shows.\n\n\
+                When you've generated a file with this tool, the tool result returns \
+                `generatedDocumentIds: [N1, N2, ...]`. In your final reply to the user, you MUST \
+                include each generated id as a `doc#N` marker — that's what triggers the UI to \
+                render a clickable file card. Example: 'Done — here's the invoice: doc#15'. The \
+                UI hides the literal marker and shows the card in its place. Do NOT also write \
+                the filename or path as plaintext or in a code block — the card carries the \
+                identity, so the marker alone is enough. If you generated two files, include \
+                both markers (`doc#15` and `doc#16`). Without these markers, the user can't see \
+                what you produced.\n\n\
                 CRITICAL: Do NOT call this with no-op warmup code (`print('hello')`, `pass`, \
                 `1+1`, version checks, etc.). The bundled CPython subprocess spawns in ~150ms \
                 and is always ready. Each warmup costs a manager-loop iteration. Write your \

@@ -72,6 +72,25 @@ pub async fn ensure(
     school_id_hint: Option<i64>,
 ) -> Result<Engagement, DomainError> {
     if let Some(existing) = find_by_name(pool, workspace_id, name).await? {
+        // v0.20.5 — backfill school_id if the existing row was created
+        // before the parent_hint resolver landed and the hint is now
+        // available. Never overwrites an existing non-null FK.
+        if existing.school_id.is_none() {
+            if let Some(sid) = school_id_hint {
+                let _ = sqlx::query(
+                    "UPDATE engagement SET school_id = ?2, updated_at = CURRENT_TIMESTAMP
+                     WHERE id = ?1 AND school_id IS NULL",
+                )
+                .bind(existing.id)
+                .bind(sid)
+                .execute(pool)
+                .await;
+                return Ok(Engagement {
+                    school_id: Some(sid),
+                    ..existing
+                });
+            }
+        }
         return Ok(existing);
     }
     let id = sqlx::query(
