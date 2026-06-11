@@ -1,6 +1,6 @@
 [package]
 name = "travis"
-version = "0.20.8"
+version = "0.20.9"
 description = "Travis — local-first AI operations assistant"
 authors = ["myketheguru"]
 edition = "2021"
@@ -27,7 +27,7 @@ tauri-build = { version = "~2.5", features = [] }
 # All tauri/plugin crates pinned to ~2.10 (matching the JS @tauri-apps/api
 # 2.10.1 in package.json) so Tauri's mandatory same-major.minor preflight
 # check passes. Lift when we coordinate the whole-stack jump to 2.11.
-tauri = { version = "~2.10", features = ["tray-icon", "macos-private-api"] }
+tauri = { version = "~2.10", features = ["tray-icon", "macos-private-api", "protocol-asset"] }
 # tauri-runtime / wry are loose transitive deps from tauri itself.
 # Without explicit pins, cargo lifts them to 2.11.x and breaks the
 # tauri 2.10.x crate compile (trait Send vs Send + Sync mismatch).

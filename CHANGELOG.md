@@ -1,5 +1,25 @@
 # Travis Changelog
 
+## v0.20.9 — CI hotfix: protocol-asset feature in Cargo.toml (2026-06-11)
+
+The `ci.yml` workflow's `cargo check` step has been failing since
+v0.20.5 with:
+
+> The `tauri` dependency features on the `Cargo.toml` file does not
+> match the allowlist defined under `tauri.conf.json`.
+> Please run `tauri dev` or `tauri build` or add the `protocol-asset`
+> feature.
+
+v0.20.5 enabled `assetProtocol` in `tauri.conf.json` to fix the
+PDF previewer's "asset.localhost refused" error, but the matching
+`protocol-asset` feature on the `tauri` crate dependency was never
+added. `tauri-action` adds it implicitly so the release workflow kept
+publishing — but plain `cargo check` (and any local `cargo build`)
+hit the allowlist check.
+
+Fix: `tauri` features now includes `protocol-asset`. Both CI workflows
+green.
+
 ## v0.20.8 — Onboarding is cloud-only + persistence fix (2026-06-11)
 
 Two related fixes for the "every launch re-fires onboarding" report.
