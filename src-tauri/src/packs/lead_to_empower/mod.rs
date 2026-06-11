@@ -469,43 +469,104 @@ impl PackHandle for LeadToEmpowerPack {
                             .get("amountCents")
                             .and_then(|v| v.as_i64())
                             .unwrap_or(0);
-                        let amount_changed = new_amount != existing_amount;
                         let already_sent = matches!(
                             existing_status.as_str(),
                             "sent" | "paid"
                         );
-                        if amount_changed || already_sent {
-                            let params = serde_json::json!({
-                                "invoiceId": existing_id,
-                                "number": number,
-                                "field": "amount_cents",
-                                "oldValue": existing_amount,
-                                "newValue": new_amount,
-                                "existingStatus": existing_status,
-                            })
-                            .to_string();
-                            let rationale = if already_sent {
-                                format!(
+                        if already_sent {
+                            // Sensitive: confirm before overwriting a
+                            // sent/paid invoice. Don't silently apply.
+                            let amount_changed = new_amount != existing_amount;
+                            if amount_changed {
+                                let params = serde_json::json!({
+                                    "invoiceId": existing_id,
+                                    "number": number,
+                                    "field": "amount_cents",
+                                    "oldValue": existing_amount,
+                                    "newValue": new_amount,
+                                    "existingStatus": existing_status,
+                                })
+                                .to_string();
+                                let rationale = format!(
                                     "Invoice #{number} is already marked '{existing_status}' — re-emission would overwrite a sent / paid record. Confirm explicitly to revise."
+                                );
+                                let _ = crate::actions::record(
+                                    pool,
+                                    conversation_id,
+                                    "lte_invoice_critical_change",
+                                    Some(&rationale),
+                                    &params,
                                 )
-                            } else {
-                                format!(
-                                    "Invoice #{number} amount would change from ${:.2} to ${:.2}. Confirm to revise the draft.",
-                                    existing_amount as f64 / 100.0,
-                                    new_amount as f64 / 100.0,
-                                )
-                            };
-                            let _ = crate::actions::record(
-                                pool,
-                                conversation_id,
-                                "lte_invoice_critical_change",
-                                Some(&rationale),
-                                &params,
+                                .await;
+                            }
+                            continue;
+                        }
+                        // v0.20.6 — draft row: silently update with the
+                        // latest emission. Matches the newer-wins
+                        // policy ([[feedback-track-everything]]) — a
+                        // draft hasn't been sent so it's safe to track
+                        // the most recent state. Critical fields would
+                        // be flagged here only if status were beyond
+                        // 'draft', which is handled above.
+                        let school_id = if let Some(s) = d.get("schoolName").and_then(|v| v.as_str()) {
+                            domain::school::find_by_name(pool, workspace_id, s)
+                                .await
+                                .ok()
+                                .flatten()
+                                .map(|r| r.id)
+                        } else {
+                            None
+                        };
+                        let coach_id = if let Some(c) = d.get("coachName").and_then(|v| v.as_str()) {
+                            domain::coach::find_by_name(pool, workspace_id, c)
+                                .await
+                                .ok()
+                                .flatten()
+                                .map(|r| r.id)
+                        } else {
+                            None
+                        };
+                        let hours_total =
+                            d.get("hoursTotal").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        let rate_cents =
+                            d.get("rateCents").and_then(|v| v.as_i64()).unwrap_or(0);
+                        let notes = d.get("notes").and_then(|v| v.as_str());
+                        let _ = sqlx::query(
+                            "UPDATE invoice SET
+                                recipient = ?2,
+                                coach_id = COALESCE(?3, coach_id),
+                                school_id = COALESCE(?4, school_id),
+                                period_start = ?5,
+                                period_end = ?6,
+                                hours_total = ?7,
+                                rate_cents = ?8,
+                                amount_cents = ?9,
+                                notes = COALESCE(?10, notes),
+                                updated_at = CURRENT_TIMESTAMP
+                             WHERE id = ?1",
+                        )
+                        .bind(existing_id)
+                        .bind(recipient)
+                        .bind(coach_id)
+                        .bind(school_id)
+                        .bind(period_start)
+                        .bind(period_end)
+                        .bind(hours_total)
+                        .bind(rate_cents)
+                        .bind(new_amount)
+                        .bind(notes)
+                        .execute(pool)
+                        .await;
+                        // Re-link the new generated PDF if provided.
+                        if let (Some(doc_id), Some(sid)) = (
+                            d.get("generatedDocId").and_then(|v| v.as_i64()),
+                            school_id,
+                        ) {
+                            let _ = crate::documents::db::link_to_entity(
+                                pool, doc_id, sid, "invoice_for",
                             )
                             .await;
                         }
-                        // Critical or not, don't silently overwrite —
-                        // user confirmation drives the actual update.
                         continue;
                     }
                     let school_id = if let Some(s) = d.get("schoolName").and_then(|v| v.as_str()) {

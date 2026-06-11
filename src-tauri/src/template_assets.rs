@@ -728,6 +728,39 @@ pub async fn get_extraction(
     Ok(row)
 }
 
+/// v0.20.6 — wait up to `max_wait_ms` for an extraction to finish when
+/// the LLM tool surface is asked about a doc whose extraction is still
+/// in flight. Polls every 400ms. Returns whatever the row says at
+/// timeout — caller decides what to do with `pending` / `extracting`.
+///
+/// The Tier 4 first-turn gap: a freshly-classified sample doc kicks
+/// off background extraction the moment classification fires, but the
+/// next chat turn may hit list_template_assets while extraction is
+/// still going. Without this wait, Travis sees `status=extracting`,
+/// falls back to styling-only, and the 1:1 fidelity benefit is lost
+/// on first generation. Blocking up to ~25s lets the wrapper catch
+/// most short extractions before Travis gives up.
+pub async fn wait_for_extraction(
+    pool: &SqlitePool,
+    document_id: i64,
+    max_wait_ms: u64,
+) -> anyhow::Result<Option<TemplateExtractionRow>> {
+    use tokio::time::{sleep, Duration, Instant};
+    let started = Instant::now();
+    let deadline = Duration::from_millis(max_wait_ms);
+    loop {
+        let row = get_extraction(pool, document_id).await?;
+        let still_running = matches!(
+            row.as_ref().map(|r| r.status.as_str()),
+            Some("pending") | Some("extracting")
+        );
+        if !still_running || started.elapsed() >= deadline {
+            return Ok(row);
+        }
+        sleep(Duration::from_millis(400)).await;
+    }
+}
+
 /// Library-wide asset search. `kind` filters by category; `query`
 /// is a case-insensitive substring match against display_name; both
 /// optional. Caller can scope to a single source doc via `document_id`.

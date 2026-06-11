@@ -46,8 +46,14 @@ impl Tool for RunPythonTool {
                 reportlab, pdfplumber, pillow, python-docx, numpy, lxml, beautifulsoup4, \
                 requests, jinja2, num2words, qrcode, xlsxwriter, fpdf2, markdown, pyyaml, \
                 python-dateutil, pytz. Extra libraries can be requested via `libraries`.\n\n\
-                Input documents are mounted at /inputs/<safe_filename>. Write generated files \
-                to /outputs/ — anything there becomes a Document.\n\n\
+                Input documents are mounted under a per-call directory exposed as the \
+                `INPUTS_DIR` Python constant — your script can do `open(os.path.join(INPUTS_DIR, \
+                'IS 217.pdf'))` or `pd.read_excel(os.path.join(INPUTS_DIR, 'log.xlsx'))`. The \
+                wrapper already cd's into `OUTPUTS_DIR` and exposes that as a constant too; any \
+                file you write there becomes a Document. DO NOT search the filesystem for \
+                `/inputs/` or hardcode paths like `C:\\Users\\...` — both fail on Windows. \
+                INPUTS_DIR and OUTPUTS_DIR are guaranteed to exist and contain exactly what you \
+                need. (`/inputs/` and `/outputs/` symlinks exist on POSIX only, as back-compat.)\n\n\
                 Always supply a clear `purpose` string — it's surfaced to the user as a \
                 plain-English step name. Examples that read well: 'Generating IS 217 invoice', \
                 'Filtering sign-in sheet for the PO window', 'Pulling line items from the \

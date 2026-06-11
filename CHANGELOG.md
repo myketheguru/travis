@@ -1,5 +1,56 @@
 # Travis Changelog
 
+## v0.20.6 — Tier 4 first-turn fix + stale invoice rows + run_python paths (2026-06-11)
+
+Three follow-ups from the v0.20.5 triage. Each one cost real time
+during the IS 217 test and was worth shipping ahead of the bigger
+multi-file inline-preview work.
+
+### Tier 4 misses the first-turn benefit
+
+`list_template_assets` returned `status=extracting` synchronously
+because background extraction kicks off on classification but doesn't
+complete before the next chat turn. Travis correctly fell back to
+styling-only, losing the 1:1 fidelity that's the whole point of
+Tier 4.
+
+Fix: new `wait_for_extraction(pool, document_id, max_wait_ms)` that
+polls the extraction row every 400 ms until status leaves
+`pending` / `extracting`. The `list_template_assets` tool now waits
+up to 25 s — long enough for most extractions (page raster +
+embedded-image crops) on real samples.
+
+### Invoice row went stale after regeneration
+
+The pack policy was: if an existing invoice row exists with the same
+`number`, propose-action and skip. That made sense for sent / paid
+records but blocked the much more common case — the LLM regenerates
+a draft invoice (PDF v2 with corrected dates, v3 with the right day
+count) and the typed `invoice` row in Manage stayed pinned to v1's
+numbers. School drill-down showed the wrong amount and missing dates.
+
+Fix: split policy by status.
+- `sent` / `paid` → unchanged. Propose-action; no silent overwrite.
+- `draft` → silently UPDATE with the latest emission. Matches the
+  [[feedback-track-everything]] / newer-wins memory: a draft isn't
+  sensitive enough to gate.
+
+Paired prompt change in `journal.rs`: the `invoiceDrafts` extraction
+field description now says explicitly "RE-EMIT this every time you
+regenerate, even with the same number" so the LLM doesn't stop after
+the first draft.
+
+### run_python kept hunting for `/inputs/` on Windows
+
+The wrapper exposes `INPUTS_DIR` and `OUTPUTS_DIR` Python constants,
+but the tool description still said "documents mounted at /inputs/".
+On Windows the `/inputs/` symlinks don't exist (the wrapper only
+creates them on POSIX), so Travis spent multiple python iterations
+hunting for the right path before falling back.
+
+Fix: tool description rewritten to lead with `INPUTS_DIR` and
+`OUTPUTS_DIR`, and explicitly warn off `/inputs/` + hardcoded paths.
+
 ## v0.20.5 — Drill-down + previewer + chat-card fixes (2026-06-11)
 
 A grab-bag bundle from the first real LTE workflow test. Six small but

@@ -90,7 +90,14 @@ impl Tool for ListTemplateAssetsTool {
             .await;
         }
 
-        let row = crate::template_assets::get_extraction(&state.db.pool, p.document_id)
+        // v0.20.6 — block up to 25s for an in-flight extraction so the
+        // LLM doesn't fall back to styling-only on the first turn after
+        // a sample is dropped.
+        let row = crate::template_assets::wait_for_extraction(
+            &state.db.pool,
+            p.document_id,
+            25_000,
+        )
             .await
             .map_err(|e| anyhow::anyhow!("template_assets lookup failed: {e}"))?;
 
