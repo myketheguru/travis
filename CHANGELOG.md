@@ -1,5 +1,35 @@
 # Travis Changelog
 
+## v0.20.17 — render_html_to_pdf path placeholder hotfix (2026-06-13)
+
+User dropped a transcript showing v0.20.16's `render_html_to_pdf`
+firing but no `doc#N` card appearing. Travis kept reporting "the
+file writes to /outputs but doesn't get a doc ID" — file existed
+but the cmd's post-processing wasn't seeing it.
+
+Root cause: brace-count mismatch in the driver script.
+`format!("{{OUTPUTS_DIR}}/{}", output_name)` escapes to
+`{OUTPUTS_DIR}/...` (SINGLE braces) in the JSON spec. But the
+driver had:
+
+```rust
+SPEC['outputPath'].replace('{{{{OUTPUTS_DIR}}}}', OUTPUTS_DIR)
+```
+
+Four Rust braces escape to TWO output braces. So Python looked for
+literal `{{OUTPUTS_DIR}}` (double) in a string containing
+`{OUTPUTS_DIR}` (single). No match → output path stayed as
+`{OUTPUTS_DIR}/LTE2026217002.pdf` → weasyprint wrote to nowhere
+useful → the cmd never found a file in OUTPUTS_DIR to register.
+
+Fix: collapse to two Rust braces (`{{OUTPUTS_DIR}}`) so the Python
+source becomes `.replace('{OUTPUTS_DIR}', ...)`. Now single brace
+matches single brace, path resolves to the per-call outputs dir,
+file gets registered, FileCard renders.
+
+Verified `replicate_from_sample` uses the correct 2-brace pattern
+already — only `render_html_to_pdf` had the bug.
+
 ## v0.20.16 — HTML+CSS → PDF rendering (the path Claude.ai uses) (2026-06-13)
 
 User feedback: "Asked Claude.ai to replicate an invoice — 95% perfect.

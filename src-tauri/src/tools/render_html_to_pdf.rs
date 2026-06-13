@@ -220,7 +220,7 @@ impl Tool for RenderHtmlToPdfTool {
             r#"
 import os, json, sys, traceback
 SPEC = {spec_literal}
-SPEC['outputPath'] = SPEC['outputPath'].replace('{{{{OUTPUTS_DIR}}}}', OUTPUTS_DIR)
+SPEC['outputPath'] = SPEC['outputPath'].replace('{{OUTPUTS_DIR}}', OUTPUTS_DIR)
 # Build a file:// base URL from the per-call INPUTS_DIR so the HTML's
 # `<img src="file://.../INPUTS_DIR/logo.png">` style references resolve.
 import pathlib
