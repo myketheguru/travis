@@ -1,5 +1,107 @@
 # Travis Changelog
 
+## v0.20.15 — Pixel-perfect template replication via PDF overlay (2026-06-12)
+
+The Tier 4 asset library got the LLM logos + page renders, but the
+underlying problem stayed: anything redrawn with reportlab is an
+APPROXIMATION of the sample. The LLM has to guess every coordinate,
+font metric, and line stroke. Even with perfect images, the layout
+drifts and the user sees "close enough but not right."
+
+This release stops redrawing.
+
+### New tool: `replicate_from_sample`
+
+Opens the sample PDF as the canvas, white-masks each variable
+region the LLM supplies, stamps the new text at the same coords,
+saves the result as a new Travis document. The structural pixels
+(letterhead, table rules, signature lines, footer, watermark) NEVER
+MOVE because they're never redrawn. Output is byte-identical to the
+sample except where the LLM intentionally changed something.
+
+```
+replicate_from_sample({
+  sampleDocumentId: 1,
+  outputName: "LTE2026217002_IS217_Invoice.pdf",
+  overlays: [
+    {page:0, bbox:[x0,top,x1,bottom], value:"LTE2026217002"},
+    {page:0, bbox:[...], value:"IS 217 School of Performing Arts..."},
+    {page:0, bbox:[...], value:"$15,000.00"},
+    ...
+  ]
+})
+```
+
+Defaults: `bboxOrigin: "top-left"` (matches pdfplumber +
+`analyze_document_styling` output), `font: "Helvetica"`, `fontSize:
+10`, `color: [0,0,0]`, `align: "left"`, `maskOriginal: true`.
+Color accepts both 0-1 floats and 0-255 ints; the tool normalizes.
+
+Under the hood: embedded Python script (uses already-bundled `pypdf`
++ `reportlab`) builds an overlay PDF with the same page count and
+dimensions as the source, draws masks and text per overlay entry,
+then merges via `PageMerge`. Runs in the same sandbox as
+`run_python` — same cache integration, same plan support, same
+`generatedDocumentIds` payload so the FileCard renders.
+
+### Journal prompt rewrite for "match this sample" requests
+
+The "user gave you a sample" section now leads with:
+
+> FIRST: if the sample is a PDF AND the user wants pixel-perfect
+> visual fidelity, USE replicate_from_sample — DO NOT redraw with
+> reportlab.
+
+Fallback to `run_python` + reportlab only when the sample isn't a
+PDF or when structural changes (added columns, different line
+counts) can't be expressed as bbox stamps.
+
+### Why this beats redrawing
+
+- Logo: stays exactly where it is, bit-for-bit identical, because
+  it's part of the sample's content stream. We don't re-encode it.
+- Fonts: the sample's text uses whatever font the original PDF
+  embedded. We overlay with the closest reportlab built-in — fine
+  for variable values, never touches the fixed text.
+- Table rules + signature lines: same vector strokes, no
+  reapproximation.
+- Margins + padding: never recomputed.
+
+### Two modes — Travis picks based on the workflow
+
+- `mode: 'overlay'` (default): vector overlay. White-mask + stamp. Tiny
+  file, instant render. Original text stays in the content stream under
+  the mask — a select-copy of the output PDF would reveal it. Right for
+  invoices and forms going to humans (printed, viewed, filed). Almost no
+  one select-copies an invoice.
+- `mode: 'raster'`: rasterize each page at `dpi` (default 300) first, so
+  the background is now pixels with no text layer at all. New text drawn
+  as vector on top. Original text is GONE, not just hidden. Right for
+  regulated documents, contract diffs, anything going to legal where the
+  scrub has to be real. Tradeoff: larger file, background's crisp vector
+  graphics become 300-DPI raster (invisible to the eye but present in
+  metadata).
+
+Prompt teaches Travis to default to overlay and switch to raster when
+the user says "make sure the old values are completely gone" / "scrub
+the old data" / "this is going public."
+
+Implementation note: I initially proposed bundling pikepdf to do
+content-stream-level text removal. Walking the PDF content stream to
+identify and surgically delete the right Tj/TJ operators turns out to
+be genuinely hard for arbitrary regions. Rasterize-then-overlay is
+simpler, uses libraries we already bundle (pypdfium2 + PIL + reportlab
++ pypdf), and delivers the same "no underlying text" guarantee. Cleaner
+path even though it's not what I named earlier.
+
+### Planned UI follow-up (v0.21)
+
+The chat-side previewer gets a canvas mode that lets the user click
+any field, edit the value, drag the bbox. The corrected coordinates
+flow back via `record_step_result` so the next overlay stamp is
+already calibrated. Implementation is non-trivial (PDF.js render +
+hit testing) but composes cleanly with what's shipping today.
+
 ## v0.20.14 — DAG-style step pipes + v0.20.13 build hotfix (2026-06-12)
 
 Two things in one release: the build-breaking format-string bug that
