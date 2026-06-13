@@ -135,6 +135,11 @@ const WHEELS = [
   "pypdf",
   "fpdf2",
   "pdfplumber",      // C-ext: was unavailable in Pyodide; works native
+  // v0.20.16 — HTML/CSS -> PDF. The LLM is far better trained at
+  // HTML+CSS than reportlab; render_html_to_pdf gives 90-95% layout
+  // fidelity on first try where reportlab gets 60-70%. Pure-Python,
+  // no headless browser dep, ~15MB.
+  "weasyprint",
   // Word
   "python-docx",
   // Imaging

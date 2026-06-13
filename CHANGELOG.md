@@ -1,5 +1,66 @@
 # Travis Changelog
 
+## v0.20.16 — HTML+CSS → PDF rendering (the path Claude.ai uses) (2026-06-13)
+
+User feedback: "Asked Claude.ai to replicate an invoice — 95% perfect.
+Travis's reportlab output is 60-70%." The gap isn't model capability;
+the SAME model family powers both. The difference is the rendering
+substrate. Reportlab forces the model to hand-position every element
+and guess font metrics. HTML+CSS gives proper text flow, table
+layout, alignment, padding — all the things the model is trained on
+deeply.
+
+This release adds the HTML+CSS path.
+
+### New tool: `render_html_to_pdf`
+
+LLM writes the doc as a self-contained HTML template; weasyprint
+renders to PDF. Input: `html`, optional `css`, `outputName`,
+optional `assetDocumentIds` (logos/fonts mounted under INPUTS_DIR
+and referenced via `file://...` URLs in the HTML), `pageSize`
+(default Letter), `margins` (default 0.5in). Output is registered
+as a Travis Document and returned in `generatedDocumentIds` like
+every other PDF tool.
+
+weasyprint added to `scripts/fetch-python.mjs`: pure-Python, ~15MB,
+no headless browser dep. All three platform builds pick it up on
+next CI fetch.
+
+### Journal prompt rewritten with the three-path hierarchy
+
+```
+1. EXACT REPLICA with new data   → replicate_from_sample   (95-100%)
+2. FRESH DOC / "match this style" → render_html_to_pdf      (90-95%)
+3. COMPLEX PROGRAMMATIC LOGIC     → run_python + reportlab  (60-70%)
+```
+
+Travis defaults to Path 2 for any new doc generation. Path 1 wins
+when there's a sample to overlay onto. Path 3 is the last resort —
+constraint solving, dynamic line counts HTML can't express,
+custom-layout edge cases.
+
+Honest expectation: invoice fidelity goes from current ~70% (when
+the LLM picks run_python despite earlier prompt nudges) to ~95% on
+first try once the LLM defaults to render_html_to_pdf.
+
+### Why this beats reportlab specifically
+
+- **Text flow**: HTML wraps, breaks, hyphenates the right way. Reportlab
+  doesn't unless you do it yourself.
+- **Tables**: `<table>` + CSS layout handles column widths,
+  row striping, header repetition. Reportlab Table requires
+  per-cell positioning.
+- **Fonts**: HTML resolves system + brand fonts via `@font-face`.
+  Reportlab requires embedding TTF/OTF binaries explicitly.
+- **Margins / page boxes**: `@page { size; margin; }` in one line.
+  Reportlab requires SimpleDocTemplate + paragraph styles + flowables.
+- **Color, padding, borders**: CSS one-liners. Reportlab three calls
+  each.
+
+The model emits HTML naturally because that's where its training data
+density is. Reportlab output is always one step removed from what the
+model "knows."
+
 ## v0.20.15 — Pixel-perfect template replication via PDF overlay (2026-06-12)
 
 The Tier 4 asset library got the LLM logos + page renders, but the

@@ -11,6 +11,7 @@ pub mod analyze_document_styling;
 pub mod list_template_assets;
 pub mod plan_tools;
 pub mod replicate_from_sample;
+pub mod render_html_to_pdf;
 pub mod cases;
 pub mod clipboard;
 pub mod find_documents;
@@ -155,6 +156,7 @@ fn human_label_for_tool(tool_name: &str) -> String {
         "get_step_result" => "Checking the cache",
         "list_plan_steps" => "Reviewing the plan",
         "replicate_from_sample" => "Stamping the sample with new values",
+        "render_html_to_pdf" => "Rendering the document from HTML",
         "open_case" => "Opening case",
         "note_case" => "Recording case note",
         "close_case" => "Closing case",
@@ -259,6 +261,7 @@ pub fn read_only_registry(packs: &[&dyn crate::packs::PackHandle]) -> ToolRegist
     reg.register(Box::new(plan_tools::GetStepResultTool));
     reg.register(Box::new(plan_tools::ListPlanStepsTool));
     reg.register(Box::new(replicate_from_sample::ReplicateFromSampleTool));
+    reg.register(Box::new(render_html_to_pdf::RenderHtmlToPdfTool));
     reg.register(Box::new(cases::OpenCaseTool));
     reg.register(Box::new(cases::NoteCaseTool));
     reg.register(Box::new(cases::CloseCaseTool));
