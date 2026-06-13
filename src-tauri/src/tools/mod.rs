@@ -12,6 +12,7 @@ pub mod list_template_assets;
 pub mod plan_tools;
 pub mod replicate_from_sample;
 pub mod render_html_to_pdf;
+pub mod verify_replication_match;
 pub mod cases;
 pub mod clipboard;
 pub mod find_documents;
@@ -157,6 +158,7 @@ fn human_label_for_tool(tool_name: &str) -> String {
         "list_plan_steps" => "Reviewing the plan",
         "replicate_from_sample" => "Stamping the sample with new values",
         "render_html_to_pdf" => "Rendering the document from HTML",
+        "verify_replication_match" => "Comparing the output to the sample",
         "open_case" => "Opening case",
         "note_case" => "Recording case note",
         "close_case" => "Closing case",
@@ -262,6 +264,7 @@ pub fn read_only_registry(packs: &[&dyn crate::packs::PackHandle]) -> ToolRegist
     reg.register(Box::new(plan_tools::ListPlanStepsTool));
     reg.register(Box::new(replicate_from_sample::ReplicateFromSampleTool));
     reg.register(Box::new(render_html_to_pdf::RenderHtmlToPdfTool));
+    reg.register(Box::new(verify_replication_match::VerifyReplicationMatchTool));
     reg.register(Box::new(cases::OpenCaseTool));
     reg.register(Box::new(cases::NoteCaseTool));
     reg.register(Box::new(cases::CloseCaseTool));

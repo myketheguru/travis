@@ -92,8 +92,12 @@ Document editing and generation is a universal capability — every professional
 
 **Document generation hierarchy — three paths, ranked by fidelity. ALWAYS prefer the highest-fidelity path that fits.**
 
+**Decision rule when a sample PDF is attached or in scope:** the user's request is "make one like this." DEFAULT TO PATH 1 (`replicate_from_sample`). The user has SHOWN you exactly what they want — your job is to reproduce that geometry, not to invent a layout that "looks like an invoice." Only switch to Path 2 if the sample is fundamentally incompatible (multi-page layout you need to collapse, or the user explicitly asked for a new design).
+
+If a sample is attached, you'll see its rendered page image in the user message (vision content). STUDY IT CAREFULLY: note the exact decorative elements (double underlines, color bands, watermark text, signature line styles), label phrasing ("To:" vs "Bill To:", "Invoice #:" position), empty-row preservation in tables, and font weight choices. Then replicate them precisely — do not normalize them to a generic invoice template.
+
 **Path 1: Exact replica of a sample PDF with new data → `replicate_from_sample`. Fidelity 95-100%.**
-Opens the sample as the canvas, white-masks each variable region you supply, stamps the new value at the same coordinates. The structural pixels never move because they're never redrawn. Use when the user has a sample PDF AND just wants the same layout with new values.
+Opens the sample as the canvas, white-masks each variable region you supply, stamps the new value at the same coordinates. The structural pixels never move because they're never redrawn. Use when the user has a sample PDF AND just wants the same layout with new values — which is the COMMON CASE. Most "regenerate this invoice" / "make this for another school" requests fall here.
 
 Flow:
 1. `analyze_document_styling(sampleDocId)` for the structural map (text elements with bbox, font, color).
@@ -101,14 +105,17 @@ Flow:
 3. `replicate_from_sample({{sampleDocumentId, outputName, overlays: [{{page, bbox, value}}, ...]}})`.
 4. Modes: `overlay` (default, vector overlay, fast, old text hidden under masks); `raster` (rasterizes page first, old text truly gone — pick when user wants the original values SCRUBBED, regulated docs).
 
-**Path 2: Fresh document — generate from scratch or "match this style" → `render_html_to_pdf`. Fidelity 90-95%.**
-You write the doc as a self-contained HTML+CSS template; weasyprint renders to PDF. THIS IS YOUR DEFAULT for any new document generation. You are FAR better at HTML+CSS than at reportlab — HTML gives you proper text flow, table layout, alignment, padding, font handling. Reportlab forces hand-positioning every element and guessing font metrics, which is why reportlab output looks 60-70% right at best.
+**Path 2: Fresh document — generate from scratch or no sample available → `render_html_to_pdf`. Fidelity 90-95%.**
+You write the doc as a self-contained HTML+CSS template; weasyprint renders to PDF. Use this when there's no sample to overlay onto, OR when the user explicitly asked for a new layout. You are FAR better at HTML+CSS than at reportlab. But: HTML+CSS is still SECOND-CHOICE when a sample exists — `replicate_from_sample` (Path 1) is always more faithful.
 
 Flow:
-1. If a sample exists, `analyze_document_styling(sampleDocId)` for color/font/layout cues. If logos are needed, `list_template_assets(sampleDocId)` and mount the PNG paths via `assetDocumentIds`.
-2. Write a self-contained HTML template with inline CSS or a separate stylesheet. Reference mounted assets as `file:///<INPUTS_DIR>/<filename>` (weasyprint resolves them).
-3. `render_html_to_pdf({{html, css, outputName, assetDocumentIds, pageSize, margins}})`.
-4. Default `pageSize: 'Letter'`, `margins: '0.5in'`.
+1. If a sample exists, `analyze_document_styling(sampleDocId)` for color/font/layout cues — but ALSO study the sample image attached to the user message. The JSON catches colors/fonts, the image catches decorative elements (double rules, watermarks, signature line styles, empty-row preservation in tables) that JSON can't capture.
+2. If logos are needed, `list_template_assets(sampleDocId)` and mount the PNG paths via `assetDocumentIds`.
+3. Write a self-contained HTML template with inline CSS. REPLICATE THE SAMPLE'S EXACT DECORATIVE LANGUAGE: same label phrasing, same color bands, same table empty rows, same watermark style — don't normalize to a generic invoice template. The user is matching THIS sample, not "what an invoice looks like."
+4. Reference mounted assets as `file:///<INPUTS_DIR>/<filename>` (weasyprint resolves them).
+5. `render_html_to_pdf({{html, css, outputName, assetDocumentIds, pageSize, margins}})`.
+6. AFTER generation, call `verify_replication_match(generatedDocId, sampleDocId)` to get a structured comparison from Claude vision. If the report flags mismatches, edit your HTML and re-call render_html_to_pdf.
+7. Default `pageSize: 'Letter'`, `margins: '0.5in'`.
 
 **Path 3: Last resort — complex programmatic logic → `run_python` + reportlab. Fidelity 60-70%.**
 Only when the doc requires constraint solving, dynamic line counts you can't compute beforehand, weird custom layouts HTML can't express, or numerical optimization. The output WILL look imperfect; surface that to the user if it matters.
@@ -2244,7 +2251,81 @@ pub async fn journal_ingest(
         docs_preload = doc_preload_block,
         raw = raw
     );
-    messages.push(Message::user(user_msg));
+
+    // v0.20.18 — attach rendered page images for any inbound doc the
+    // template-extraction pipeline has classified as sample/template.
+    // The LLM gets visual context, not just JSON descriptions from
+    // analyze_document_styling. Closes the gap with Claude.ai's
+    // invoice replication by giving the model what it actually needs
+    // to match a sample 1:1.
+    //
+    // Selection rule: include the FIRST page_render per doc, capped at
+    // 3 images per turn. Each ~300DPI render is ~1500 tokens; the
+    // budget stays sane without us doing aggressive thumbnailing.
+    let mut sample_images: Vec<crate::llm::MessageImage> = Vec::new();
+    {
+        use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+        const MAX_VISION_IMAGES: usize = 3;
+        for id in &inbound_doc_ids {
+            if sample_images.len() >= MAX_VISION_IMAGES {
+                break;
+            }
+            // Only attach when the doc's classification is sample-shaped.
+            let kind: Option<(String,)> =
+                sqlx::query_as("SELECT kind FROM document WHERE id = ?1")
+                    .bind(id)
+                    .fetch_optional(&state.db.pool)
+                    .await
+                    .ok()
+                    .flatten();
+            let kind_str = kind
+                .as_ref()
+                .map(|(k,)| k.to_ascii_lowercase())
+                .unwrap_or_default();
+            let is_sample = kind_str.starts_with("sample")
+                || kind_str.starts_with("template")
+                || kind_str == "po"
+                || kind_str == "wo"
+                || kind_str == "invoice"
+                || kind_str == "signed_sheet";
+            if !is_sample {
+                continue;
+            }
+            // Find an extracted page_render asset for this doc.
+            let asset_path: Option<(String,)> = sqlx::query_as(
+                "SELECT a.abs_path
+                 FROM template_asset a
+                 JOIN template_asset_source s ON s.asset_id = a.id
+                 WHERE s.document_id = ?1 AND a.kind = 'page_render'
+                 ORDER BY s.page ASC LIMIT 1",
+            )
+            .bind(id)
+            .fetch_optional(&state.db.pool)
+            .await
+            .ok()
+            .flatten();
+            let Some((path,)) = asset_path else { continue };
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!("sample vision read {path}: {e}");
+                    continue;
+                }
+            };
+            sample_images.push(crate::llm::MessageImage {
+                mime_type: "image/png".into(),
+                base64_data: B64.encode(&bytes),
+            });
+            tracing::info!(
+                "attached page_render of doc#{id} ({} bytes) as vision context",
+                bytes.len()
+            );
+        }
+    }
+
+    let mut user_message = Message::user(user_msg);
+    user_message.images = sample_images;
+    messages.push(user_message);
 
     // Heuristic fast-path: short greetings, acks, and direct task
     // completions skip the LLM entirely. Returns None on anything
@@ -2543,6 +2624,7 @@ pub async fn journal_ingest(
                         content: turn.content,
                         tool_calls: turn.tool_calls.clone(),
                         tool_call_id: None,
+                        images: Vec::new(),
                     });
                     for call in turn.tool_calls {
                         // v0.17.1 — per-tool-call step so the chat
@@ -2687,6 +2769,7 @@ pub async fn journal_ingest(
                     content: prior_response,
                     tool_calls: vec![],
                     tool_call_id: None,
+                    images: Vec::new(),
                 });
                 working_messages.push(Message::user(directive));
                 manager_iter += 1;

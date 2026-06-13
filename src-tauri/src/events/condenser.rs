@@ -107,8 +107,7 @@ pub async fn condense(
     let messages = vec![Message {
         role: Role::User,
         content: prompt,
-        tool_calls: vec![],
-        tool_call_id: None,
+        ..Default::default()
     }];
     let opts = ChatOptions {
         system: Some(

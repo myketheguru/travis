@@ -1,5 +1,77 @@
 # Travis Changelog
 
+## v0.20.18 — Visual fidelity loop: sample-as-vision + verify_replication_match (2026-06-13)
+
+Three coordinated changes that close the "Claude.ai's invoice is 95%
+perfect, Travis's is 70%" gap. Side-by-side comparison the user
+provided showed Travis matching "what an invoice looks like" instead
+of "what THIS sample looks like" — specifically missing the double
+underline rules, the solid blue "INVOICE" header text, "To:" vs
+"Bill To:" phrasing, and empty-row preservation in the table. All
+the things JSON descriptions from `analyze_document_styling` can't
+capture.
+
+### 1. Sample renders auto-attached as Claude vision
+
+The `Message` struct grows an `images: Vec<MessageImage>` field
+honored by the Claude provider as multimodal content blocks (`type:
+image`, base64-encoded PNG). In `journal.rs`, the user message
+builder now scans `inbound_doc_ids` for any doc classified as a
+sample/template/po/wo/invoice/signed_sheet, looks up its
+`page_render` template asset from Tier 4, and attaches the PNG bytes
+as a vision block. Cap of 3 images per turn (~4500 tokens total —
+sane budget).
+
+Now the LLM SEES the sample while writing HTML instead of reading
+JSON descriptions of it. That's the lever.
+
+### 2. Stronger Path 1 bias + "replicate, don't normalize" prompt
+
+The doc-generation hierarchy section in `journal.rs` now opens with
+an explicit decision rule: "when a sample is attached, DEFAULT TO
+PATH 1 (`replicate_from_sample`). The user has SHOWN you exactly
+what they want — your job is to reproduce that geometry, not to
+invent a layout that 'looks like an invoice.'"
+
+Path 2 (`render_html_to_pdf`) gets a "replicate the sample's exact
+decorative language" instruction — same label phrasing, same color
+bands, same empty rows, same watermark style. No normalizing to a
+generic template.
+
+### 3. New tool: `verify_replication_match`
+
+After Travis generates a doc, it can call:
+
+```
+verify_replication_match({generatedDocumentId, sampleDocumentId})
+```
+
+The tool renders both PDFs to 200-DPI PNGs via the bundled
+pypdfium2, dispatches a multimodal chat call to the user's
+configured provider with both images attached + a structured
+comparison prompt, and returns a mismatch report. Each mismatch
+includes WHAT differs, WHERE, and a concrete CSS fix. Ends with
+`CLOSE_ENOUGH` (ship) or `NEEDS_REFINEMENT` (top 3 fixes).
+
+Pattern: generate → verify → if NEEDS_REFINEMENT, edit the HTML
+applying the fixes → re-render → verify again. 2-3 iterations
+should converge.
+
+### Combined effect
+
+For the IS 217 invoice case from the user's side-by-side:
+- Sample image is in the LLM's vision context throughout generation
+  (was: only JSON descriptions). The double underlines, "INVOICE"
+  font, "To:" phrasing, empty rows are all visible.
+- Prompt biases toward `replicate_from_sample` rather than
+  `render_html_to_pdf` because a sample exists.
+- If the LLM uses `render_html_to_pdf` anyway and the result drifts,
+  `verify_replication_match` surfaces the exact mismatches with CSS
+  fixes — refinement loop becomes self-correcting.
+
+Honest expectation: invoice fidelity goes from 70% to 90%+ on first
+try, and convergence to 95%+ within 2-3 verify/edit cycles.
+
 ## v0.20.17 — render_html_to_pdf path placeholder hotfix (2026-06-13)
 
 User dropped a transcript showing v0.20.16's `render_html_to_pdf`

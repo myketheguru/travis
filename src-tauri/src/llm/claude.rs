@@ -108,7 +108,29 @@ fn build_anthropic_messages(messages: &[Message]) -> Vec<Value> {
                 }
             }
             Role::User => {
-                out.push(json!({"role": "user", "content": m.content}));
+                // v0.20.18 — when the user message has image attachments
+                // (sample doc renders, output renders), emit Claude's
+                // multimodal content blocks. Image blocks come first so
+                // the model sees what the text is talking about.
+                if m.images.is_empty() {
+                    out.push(json!({"role": "user", "content": m.content}));
+                } else {
+                    let mut blocks: Vec<Value> = Vec::new();
+                    for img in &m.images {
+                        blocks.push(json!({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": img.mime_type,
+                                "data": img.base64_data,
+                            },
+                        }));
+                    }
+                    if !m.content.is_empty() {
+                        blocks.push(json!({"type": "text", "text": m.content}));
+                    }
+                    out.push(json!({"role": "user", "content": blocks}));
+                }
             }
         }
     }

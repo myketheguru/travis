@@ -30,6 +30,21 @@ pub struct Message {
     /// Set for Role::Tool messages — references the call this is responding to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// v0.20.18 — image attachments rendered as Claude vision content
+    /// blocks. Used to inject sample doc renders so the LLM has visual
+    /// context, not just JSON descriptions from analyze_document_styling.
+    /// Only honored on Role::User messages today.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<MessageImage>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageImage {
+    /// e.g. "image/png" or "image/jpeg".
+    pub mime_type: String,
+    /// Base64-encoded raw image bytes (no data: URI prefix).
+    pub base64_data: String,
 }
 
 impl Message {
