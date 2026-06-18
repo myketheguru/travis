@@ -159,7 +159,8 @@ impl Tool for VerifyReplicationMatchTool {
                     system: Some(COMPARISON_PROMPT.to_string()),
                     max_tokens: Some(1800),
                     temperature: Some(0.2),
-                    cache_system: false,
+                    cache_system: true,
+                    cache_conversation: false,
                     json_mode: false,
                 },
             )

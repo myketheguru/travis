@@ -117,7 +117,8 @@ pub async fn condense(
         ),
         max_tokens: Some(1200),
         temperature: Some(0.2),
-        cache_system: false,
+        cache_system: true,
+        cache_conversation: false,
         json_mode: false,
     };
     let response = provider.chat(messages, opts).await?;

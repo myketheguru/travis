@@ -55,6 +55,7 @@ struct AnthropicUsage {
     input_tokens: Option<u32>,
     output_tokens: Option<u32>,
     cache_read_input_tokens: Option<u32>,
+    cache_creation_input_tokens: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -66,10 +67,44 @@ struct AnthropicErrorBody {
     message: String,
 }
 
+/// Mark the last content block in `msg` with `cache_control: ephemeral`.
+/// Anthropic caches everything up to and including the marked block — so
+/// marking the last assistant turn's last block caches the entire prior
+/// conversation. If the content is still a string we promote it to a
+/// single-element array so we have a block to attach the marker to.
+fn mark_block_cache_breakpoint(msg: &mut Value) {
+    let content = match msg.get_mut("content") {
+        Some(c) => c,
+        None => return,
+    };
+    if let Some(s) = content.as_str() {
+        let text = s.to_string();
+        *content = json!([{
+            "type": "text",
+            "text": text,
+            "cache_control": {"type": "ephemeral"},
+        }]);
+        return;
+    }
+    if let Some(arr) = content.as_array_mut() {
+        if let Some(last) = arr.last_mut() {
+            if let Some(obj) = last.as_object_mut() {
+                obj.insert("cache_control".to_string(), json!({"type": "ephemeral"}));
+            }
+        }
+    }
+}
+
 /// Convert our internal Message list into Anthropic's `messages` array. Tool
 /// results ride as a user-role message with a `tool_result` content block;
 /// assistant messages with tool_calls become content arrays of text + tool_use.
-fn build_anthropic_messages(messages: &[Message]) -> Vec<Value> {
+///
+/// When `cache_conversation` is true and there's at least one assistant
+/// message, the last assistant message's final content block is tagged
+/// with `cache_control: ephemeral`. That extends the cached prefix
+/// through the whole prior conversation; only the new user message at
+/// the tail is fresh input the next time we call with cache_read.
+fn build_anthropic_messages(messages: &[Message], cache_conversation: bool) -> Vec<Value> {
     let mut out = Vec::new();
     for m in messages {
         match m.role {
@@ -132,6 +167,11 @@ fn build_anthropic_messages(messages: &[Message]) -> Vec<Value> {
                     out.push(json!({"role": "user", "content": blocks}));
                 }
             }
+        }
+    }
+    if cache_conversation {
+        if let Some(idx) = out.iter().rposition(|m| m["role"] == "assistant") {
+            mark_block_cache_breakpoint(&mut out[idx]);
         }
     }
     out
@@ -235,7 +275,7 @@ impl LlmProvider for ClaudeProvider {
         let mut body = json!({
             "model": self.model,
             "max_tokens": opts.max_tokens.unwrap_or(1024),
-            "messages": build_anthropic_messages(&messages),
+            "messages": build_anthropic_messages(&messages, opts.cache_conversation),
         });
 
         if let Some(t) = opts.temperature {
@@ -284,6 +324,7 @@ impl LlmProvider for ClaudeProvider {
             input_tokens: parsed.usage.input_tokens,
             output_tokens: parsed.usage.output_tokens,
             cache_read_tokens: parsed.usage.cache_read_input_tokens,
+            cache_write_tokens: parsed.usage.cache_creation_input_tokens,
         })
     }
 
@@ -295,7 +336,7 @@ impl LlmProvider for ClaudeProvider {
         let mut body = json!({
             "model": self.model,
             "max_tokens": opts.max_tokens.unwrap_or(1024),
-            "messages": build_anthropic_messages(&messages),
+            "messages": build_anthropic_messages(&messages, opts.cache_conversation),
         });
 
         if let Some(t) = opts.temperature {
@@ -315,7 +356,7 @@ impl LlmProvider for ClaudeProvider {
         }
 
         if !opts.tools.is_empty() {
-            body["tools"] = json!(opts
+            let mut tools_arr: Vec<Value> = opts
                 .tools
                 .iter()
                 .map(|t| json!({
@@ -323,7 +364,23 @@ impl LlmProvider for ClaudeProvider {
                     "description": t.description,
                     "input_schema": t.input_schema,
                 }))
-                .collect::<Vec<_>>());
+                .collect();
+            // Cache the tools block. Anthropic caches everything up to
+            // and including the marked tool, so tagging the LAST tool
+            // extends the cached prefix to cover the whole tools array.
+            // Cheap when the tools list is stable across calls — which
+            // it is for the planner / workflow loop.
+            if opts.cache_tools {
+                if let Some(last) = tools_arr.last_mut() {
+                    if let Some(obj) = last.as_object_mut() {
+                        obj.insert(
+                            "cache_control".to_string(),
+                            json!({"type": "ephemeral"}),
+                        );
+                    }
+                }
+            }
+            body["tools"] = json!(tools_arr);
         }
 
         // v0.15.2 — Extended thinking. When set, Anthropic returns
@@ -422,6 +479,7 @@ impl LlmProvider for ClaudeProvider {
             input_tokens: parsed.usage.input_tokens,
             output_tokens: parsed.usage.output_tokens,
             cache_read_tokens: parsed.usage.cache_read_input_tokens,
+            cache_write_tokens: parsed.usage.cache_creation_input_tokens,
             stop_reason: parsed.stop_reason,
             thinking_blocks,
         })

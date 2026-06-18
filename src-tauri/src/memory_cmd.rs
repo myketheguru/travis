@@ -293,6 +293,7 @@ offer to log it.",
             ChatOptions {
                 system: Some(system),
                 cache_system: true,
+                cache_conversation: false,
                 json_mode: false,
                 temperature: Some(0.4),
                 max_tokens: Some(1024),

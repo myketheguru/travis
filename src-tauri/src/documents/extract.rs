@@ -451,6 +451,7 @@ async fn run_llm_extraction(
                 max_tokens: Some(2_000),
                 temperature: Some(0.0),
                 cache_system: true,
+                cache_conversation: false,
                 json_mode: true,
             },
         )

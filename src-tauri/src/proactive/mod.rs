@@ -611,6 +611,8 @@ async fn tick(
                     build_system_prompt(&profile, &pack_fragment, &workspace_block)
                 }),
                 cache_system: true,
+                cache_tools: false,
+                cache_conversation: false,
                 temperature: Some(0.5),
                 max_tokens: Some(400),
                 tools: vec![tool],

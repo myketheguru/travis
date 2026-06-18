@@ -132,7 +132,8 @@ impl Tool for DelegateTool {
                     system: Some(system.to_string()),
                     max_tokens: Some(p.max_tokens.unwrap_or(800)),
                     temperature: Some(0.3),
-                    cache_system: false,
+                    cache_system: true,
+                    cache_conversation: false,
                     json_mode: false,
                 },
             )

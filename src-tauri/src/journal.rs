@@ -2469,6 +2469,8 @@ pub async fn journal_ingest(
                     &pack_memory_block,
                 )),
                 cache_system: true,
+                cache_tools: true,
+                cache_conversation: true,
                 // v0.15.2: with extended thinking enabled, temperature
                 // must be unset (or 1). The Claude provider strips it
                 // automatically when `thinking_budget` is set; leaving
@@ -3486,6 +3488,8 @@ pub async fn journal_ingest(
                 &pack_memory_block,
             )),
             cache_system: true,
+            cache_tools: true,
+            cache_conversation: true,
             temperature: Some(0.3),
             max_tokens: Some(4000),
             tools: tool_defs.clone(),

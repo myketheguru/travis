@@ -82,8 +82,19 @@ pub struct ChatOptions {
     pub system: Option<String>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
+    /// Cache the system prompt. Set true whenever the system prompt is
+    /// stable across calls (which is almost always). The Anthropic
+    /// provider attaches `cache_control: {type: "ephemeral"}` to the
+    /// system block; first call writes the cache (1.25x input cost),
+    /// subsequent calls within the 5min TTL read it (0.1x input cost).
     #[serde(default)]
     pub cache_system: bool,
+    /// Cache the conversation history up through the last assistant
+    /// turn. The new user message is the only uncached fresh input.
+    /// Set true for multi-turn chat loops, false for one-shot calls
+    /// (condense, verify, sub-agent) where conversation reuse is moot.
+    #[serde(default)]
+    pub cache_conversation: bool,
     #[serde(default)]
     pub json_mode: bool,
 }
@@ -95,7 +106,12 @@ pub struct ChatResponse {
     pub model: String,
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
+    /// Tokens billed at cache-read rate (10x cheaper than fresh input).
     pub cache_read_tokens: Option<u32>,
+    /// Tokens billed at cache-write rate (1.25x fresh input). One-time
+    /// charge per prompt-prefix that gets cached; surfaces so we can
+    /// distinguish "first call of a session" from "subsequent calls."
+    pub cache_write_tokens: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -144,7 +160,14 @@ pub struct ChatWithToolsOptions {
     pub system: Option<String>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
+    /// See ChatOptions::cache_system.
     pub cache_system: bool,
+    /// Cache the tools array. Travis ships large tools blocks
+    /// (planner + workflow + file tools) — caching the last tool
+    /// extends the cached prefix through the whole tools array.
+    pub cache_tools: bool,
+    /// See ChatOptions::cache_conversation.
+    pub cache_conversation: bool,
     pub tools: Vec<ToolDef>,
     pub tool_choice: Option<ToolChoice>,
     /// v0.15.2 — extended thinking. When set, the Claude provider
@@ -166,6 +189,7 @@ pub struct ChatTurn {
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
     pub cache_read_tokens: Option<u32>,
+    pub cache_write_tokens: Option<u32>,
     /// Provider-specific stop reason: "end_turn" | "tool_use" | "max_tokens" | etc.
     pub stop_reason: Option<String>,
     /// v0.15.2 — Anthropic extended-thinking content blocks (text only,
@@ -226,6 +250,7 @@ pub trait LlmProvider: Send + Sync {
                     max_tokens: opts.max_tokens,
                     temperature: opts.temperature,
                     cache_system: opts.cache_system,
+                    cache_conversation: opts.cache_conversation,
                     json_mode: false,
                 },
             )
@@ -237,6 +262,7 @@ pub trait LlmProvider: Send + Sync {
             input_tokens: resp.input_tokens,
             output_tokens: resp.output_tokens,
             cache_read_tokens: resp.cache_read_tokens,
+            cache_write_tokens: resp.cache_write_tokens,
             stop_reason: None,
             thinking_blocks: Vec::new(),
         })

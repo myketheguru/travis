@@ -184,6 +184,7 @@ impl LlmProvider for OpenAiProvider {
             input_tokens: parsed.usage.as_ref().and_then(|u| u.prompt_tokens),
             output_tokens: parsed.usage.as_ref().and_then(|u| u.completion_tokens),
             cache_read_tokens: cache_read,
+            cache_write_tokens: None,
         })
     }
 
@@ -281,6 +282,7 @@ impl LlmProvider for OpenAiProvider {
             input_tokens: parsed.usage.as_ref().and_then(|u| u.prompt_tokens),
             output_tokens: parsed.usage.as_ref().and_then(|u| u.completion_tokens),
             cache_read_tokens: cache_read,
+            cache_write_tokens: None,
             stop_reason,
             thinking_blocks: Vec::new(),
         })
