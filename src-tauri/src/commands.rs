@@ -126,8 +126,13 @@ async fn write_profile_and_key(
         derived_model_at: None,
     };
 
-    if profile.name.is_empty() || profile.role.is_empty() || profile.org.is_empty() {
-        return Err("name, role, and org are required".into());
+    // v2 Phase 1.5 — only `name` is required. `role` and `org` are
+    // legacy fields kept on the schema for now but no longer asked
+    // for in onboarding (users juggle multiple companies; pre-scoping
+    // them to one would be wrong). They'll be removed from the schema
+    // in a future migration. Until then, empty strings are accepted.
+    if profile.name.is_empty() {
+        return Err("name is required".into());
     }
 
     state
