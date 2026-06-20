@@ -33,6 +33,13 @@ import {
 } from "../lib/workspaces";
 import { VoiceDropdown } from "../components/VoiceDropdown";
 import { useAppStore } from "../stores/app";
+import {
+  cloudPolicy,
+  cloudSignOut,
+  cloudStatus,
+  type CloudPolicy,
+  type CloudUser,
+} from "../lib/cloud";
 
 const providers: { id: Provider; name: string; blurb: string; needsKey: boolean }[] = [
   { id: "travis_cloud", name: "Travis Cloud", blurb: "Managed by Travis — no API key needed",  needsKey: false },
@@ -70,8 +77,38 @@ export default function Settings({ onClose }: { onClose: () => void }) {
   const [savedHint, setSavedHint] = useState<string | null>(null);
   const [cloudAvailable, setCloudAvailable] = useState<boolean>(false);
   const [useOwnLlm, setUseOwnLlm] = useState<boolean>(false);
+  const [cloudUser, setCloudUser] = useState<CloudUser | null>(null);
+  const [policy, setPolicy] = useState<CloudPolicy | null>(null);
+  const [signingOut, setSigningOut] = useState(false);
   const setActivity = useAppStore((s) => s.setActivity);
   const setProfile = useAppStore((s) => s.setProfile);
+
+  // Load the cloud account + policy in parallel with the local profile.
+  useEffect(() => {
+    cloudStatus()
+      .then((s) => {
+        if (s.signedIn && s.user) setCloudUser(s.user);
+      })
+      .catch(() => {});
+    cloudPolicy()
+      .then(setPolicy)
+      .catch(() => {});
+  }, []);
+
+  async function handleSignOut() {
+    if (signingOut) return;
+    setSigningOut(true);
+    try {
+      await cloudSignOut();
+      // App.tsx's cloud gate re-checks on next render; reload window
+      // forces it back to the SignIn screen cleanly.
+      window.location.reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSigningOut(false);
+    }
+  }
 
   useEffect(() => {
     (async () => {
@@ -200,9 +237,104 @@ export default function Settings({ onClose }: { onClose: () => void }) {
         <div>
           <h1 className="text-3xl font-light tracking-tight text-bone">Settings</h1>
           <p className="text-bone-3 text-xs mt-1.5">
-            Provider, model, and identity. API keys live in your OS keychain.
+            Account, provider, model, and identity.
           </p>
         </div>
+
+        {cloudUser && (
+          <Section title="Account">
+            <div className="rounded-xl border border-ink-3 bg-ink-2/40 p-4 flex flex-col gap-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-bone text-sm font-medium truncate">
+                    {cloudUser.name || cloudUser.email}
+                  </div>
+                  {cloudUser.name && (
+                    <div className="text-bone-3 text-[11px] mt-0.5 truncate">
+                      {cloudUser.email}
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2 mt-2">
+                    <span
+                      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[10px] uppercase tracking-[0.14em]"
+                      style={{
+                        borderColor:
+                          cloudUser.tier === "free"
+                            ? "rgba(108,108,124,0.3)"
+                            : "rgba(124,92,255,0.4)",
+                        background:
+                          cloudUser.tier === "free"
+                            ? "rgba(108,108,124,0.08)"
+                            : "rgba(124,92,255,0.07)",
+                        color:
+                          cloudUser.tier === "free"
+                            ? "rgb(168, 168, 184)"
+                            : "rgb(189, 158, 255)",
+                      }}
+                    >
+                      <span
+                        className="h-1.5 w-1.5 rounded-full"
+                        style={{
+                          background:
+                            cloudUser.tier === "free"
+                              ? "rgba(168, 168, 184, 0.7)"
+                              : "rgba(189, 158, 255, 0.95)",
+                        }}
+                      />
+                      {cloudUser.tier}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  onClick={handleSignOut}
+                  disabled={signingOut}
+                  className="shrink-0 text-bone-3 hover:text-bone-2 text-xs px-3 py-1.5 rounded-md border border-ink-3 hover:border-ink-3/80 transition-colors disabled:opacity-50"
+                >
+                  {signingOut ? "Signing out…" : "Sign out"}
+                </button>
+              </div>
+
+              {policy && (
+                <div className="border-t border-ink-3 pt-3 flex flex-col gap-2 text-[11px] text-bone-3">
+                  <div className="flex items-center justify-between">
+                    <span>Today's usage</span>
+                    <span className="font-mono text-bone-2">
+                      ${(policy.usedToday.costCents / 100).toFixed(2)} of $
+                      {(policy.dailyCostCapCents / 100).toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="h-1 rounded-full bg-ink-3 overflow-hidden">
+                    <div
+                      className="h-full bg-pulse-2 transition-all"
+                      style={{
+                        width: `${Math.min(
+                          100,
+                          (policy.usedToday.costCents /
+                            Math.max(1, policy.dailyCostCapCents)) *
+                            100,
+                        )}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span>Calls</span>
+                    <span className="font-mono text-bone-2">
+                      {policy.usedToday.calls} of {policy.dailyCallCap}
+                    </span>
+                  </div>
+                  {policy.allowedModels.length > 0 && (
+                    <div className="flex items-center justify-between">
+                      <span>Models on this plan</span>
+                      <span className="font-mono text-bone-2">
+                        {policy.allowedModels.join(", ")}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </Section>
+        )}
 
         <Section title="Identity">
           <Field label="Name">
