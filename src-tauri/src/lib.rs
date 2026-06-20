@@ -467,6 +467,25 @@ pub fn run() {
                 });
             }
 
+            // v0.21.4 Tier 1 — inbox observer.
+            //
+            // Background loop that pulls recent inbox messages from
+            // whichever provider the user has connected (Gmail / Outlook),
+            // classifies each one via the LLM, and persists urgent +
+            // important rows to inbox_triage. The splash feed reads
+            // from there to render "since you last checked" on open.
+            //
+            // Best-effort: tolerates provider auth gaps (user hasn't
+            // connected an inbox = no-op tick). 5 min cadence; sleeps
+            // the same on missing-auth as on success.
+            {
+                let pool = db_arc.pool.clone();
+                let http = http.clone();
+                // Default workspace 1 for the v1 release. When
+                // multi-workspace becomes a thing we wire in active_id.
+                crate::email::inbox_observer::spawn(pool, http, 1);
+            }
+
             // v2 Phase 1.5+ — world model refresh.
             //
             // Synthesizes the entity graph (orgs, people, projects)
@@ -697,7 +716,11 @@ pub fn run() {
             cloud::cmd::cloud_status,
             cloud::cmd::cloud_sign_in_with_google,
             cloud::cmd::cloud_sign_in_cancel,
+            cloud::cmd::cloud_extend_google_grant,
             cloud::cmd::cloud_sign_out,
+            commands::inbox_recent,
+            commands::inbox_scan_now,
+            commands::inbox_mark_handled,
             cloud::cmd::cloud_policy,
             cloud::cmd::cloud_record_byok,
             cloud::cmd::cloud_has_token,

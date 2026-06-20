@@ -2029,6 +2029,11 @@ pub async fn journal_ingest(
     // "actually I meant Acme"), surface it as a RECENT MISS block in
     // the next-turn system prompt so Travis doesn't repeat the same
     // mistake. Heuristic; best-effort.
+    //
+    // When the corrected name resolves to a workspace entity, the
+    // correction is also persisted as a claim so future conversations
+    // about that entity inherit the same caution. See
+    // persona::clarity_check::persist_correction.
     let corrections = {
         let history: Vec<(String, String)> = sqlx::query_as(
             "SELECT role, content FROM conversation_message
@@ -2053,18 +2058,48 @@ pub async fn journal_ingest(
             }
         }
         match (prev_assistant, current_user) {
-            (Some(p), Some(u)) => crate::persona::clarity_check::detect_correction(p, u)
-                .map(|c| vec![c])
-                .unwrap_or_default(),
+            (Some(p), Some(u)) => {
+                if let Some(signal) = crate::persona::clarity_check::detect_correction(
+                    &state.db.pool,
+                    ws_snapshot.active_id,
+                    p,
+                    u,
+                )
+                .await
+                {
+                    // Best-effort persist; tolerate failure (correction
+                    // still surfaces in-session via RECENT MISS).
+                    if let Err(e) = crate::persona::clarity_check::persist_correction(
+                        &state.db.pool,
+                        ws_snapshot.active_id,
+                        &signal,
+                    )
+                    .await
+                    {
+                        tracing::debug!("persist_correction failed (non-fatal): {e}");
+                    }
+                    vec![signal]
+                } else {
+                    Vec::new()
+                }
+            }
             _ => Vec::new(),
         }
     };
-    let recent_miss_block = crate::persona::clarity_check::format_recent_miss(&corrections);
+    let in_session_miss = crate::persona::clarity_check::format_recent_miss(&corrections);
+    let cross_session_miss = crate::persona::clarity_check::load_persisted_corrections(
+        &state.db.pool,
+        ws_snapshot.active_id,
+    )
+    .await;
+    // Concatenate. Empty strings are no-ops in the prompt template.
+    let recent_miss_block = format!("{cross_session_miss}{in_session_miss}");
     if !corrections.is_empty() {
         tracing::info!(
-            "clarity_check: detected {} correction signal(s) for conv {}",
+            "clarity_check: detected {} correction signal(s) for conv {} (persisted: {})",
             corrections.len(),
-            conv_id
+            conv_id,
+            corrections.iter().any(|c| c.matched_entity_id.is_some())
         );
     }
 

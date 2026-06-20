@@ -68,6 +68,20 @@ pub fn cloud_sign_in_cancel() {
     crate::cloud::SIGN_IN_CANCEL.notify_waiters();
 }
 
+/// Tier 2 — extend the user's Google grant to include inbox + calendar
+/// reads. `scopes` is a list like `["gmail", "gcal"]`. Returns the
+/// comma-separated list of providers actually enrolled.
+#[tauri::command]
+pub async fn cloud_extend_google_grant(
+    state: State<'_, AppState>,
+    scopes: Vec<String>,
+) -> Result<String, String> {
+    let refs: Vec<&str> = scopes.iter().map(|s| s.as_str()).collect();
+    crate::cloud::extend_google_grant(&state.http, &refs)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Sign out. Tells the backend to revoke the token, then drops the
 /// local copy. The local drop happens even if the backend round-trip
 /// fails — a user who clicks "sign out" expects to be signed out.

@@ -457,6 +457,76 @@ struct InitResponse {
 /// it via `tokio::select!` against the loopback listener.
 pub static SIGN_IN_CANCEL: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
+/// Tier 2 — extend the signed-in user's Google grant to include
+/// inbox + calendar read scopes. Opens the browser to
+/// /auth/oauth/google/extend, waits for the loopback bounce, returns
+/// the comma-separated list of providers Google actually enrolled.
+pub async fn extend_google_grant(
+    http: &reqwest::Client,
+    want_scopes: &[&str],
+) -> anyhow::Result<String> {
+    let jwt = read_jwt().ok_or_else(|| anyhow::anyhow!("not signed in"))?;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    let redirect = format!("http://127.0.0.1:{port}/cb");
+
+    let init_url = format!(
+        "{CLOUD_BASE}/auth/oauth/google/extend?redirect={}&scopes={}",
+        urlencoding::encode(&redirect),
+        urlencoding::encode(&want_scopes.join(","))
+    );
+    let init: InitResponse = http
+        .get(&init_url)
+        .header("accept", "application/json")
+        .bearer_auth(&jwt)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    if let Err(e) = open_in_browser(&init.auth_url) {
+        tracing::warn!("could not open browser for extend: {e}");
+    }
+
+    // Wait for the loopback bounce. Extend callback returns
+    // ?extended=<providers>, no token in the URL.
+    let (stream, _addr) = tokio::select! {
+        biased;
+        _ = SIGN_IN_CANCEL.notified() => anyhow::bail!("canceled"),
+        r = tokio::time::timeout(Duration::from_secs(2 * 60), listener.accept()) => {
+            r.map_err(|_| anyhow::anyhow!("extend timed out"))??
+        }
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buf = vec![0u8; 8192];
+    let mut stream = stream;
+    let n = stream.read(&mut buf).await?;
+    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+    let _ = stream
+        .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<html><body style=\"font-family:system-ui;padding:48px\"><h2>Travis is now connected.</h2><p>You can close this tab and return to the app.</p></body></html>")
+        .await;
+    let _ = stream.shutdown().await;
+
+    let first_line = req.lines().next().unwrap_or_default();
+    let providers = first_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|path| {
+            let q = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+            q.split('&')
+                .filter_map(|kv| kv.split_once('='))
+                .find(|(k, _)| *k == "extended")
+                .map(|(_, v)| v.to_string())
+        })
+        .unwrap_or_default();
+    if providers.is_empty() {
+        anyhow::bail!("extend completed without provider list");
+    }
+    Ok(providers)
+}
+
 /// Drive the full Google sign-in flow end to end.
 ///
 /// Returns the new JWT (already stored in the keychain) and the user

@@ -9,6 +9,7 @@
 //! the send loop blew up mid-flight.
 
 pub mod gmail;
+pub mod inbox_observer;
 pub mod outlook;
 
 use std::path::PathBuf;

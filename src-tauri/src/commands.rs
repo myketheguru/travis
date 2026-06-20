@@ -184,6 +184,50 @@ pub async fn get_user_profile(
     state.db.user_profile().await.map_err(|e| e.to_string())
 }
 
+/// v0.21.4 Tier 1 — fetch recent triaged inbox messages for the
+/// splash feed. Caps at `limit` (default 20). Returns empty when
+/// the inbox observer hasn't run yet or no provider is connected.
+#[tauri::command]
+pub async fn inbox_recent(
+    state: State<'_, AppState>,
+    limit: Option<i64>,
+) -> Result<Vec<crate::email::inbox_observer::TriagedMessage>, String> {
+    let cap = limit.unwrap_or(20).clamp(1, 100);
+    crate::email::inbox_observer::recent(&state.db.pool, 1, cap)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// v0.21.4 Tier 1 — trigger an inbox scan right now. Useful for the
+/// "Refresh" button on the splash feed Inbox section. Idempotent
+/// against the regular 5-minute loop.
+#[tauri::command]
+pub async fn inbox_scan_now(state: State<'_, AppState>) -> Result<usize, String> {
+    crate::email::inbox_observer::scan_once(&state.db.pool, &state.http, 1)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// v0.21.4 Tier 1 — mark a triaged message as handled. Used when the
+/// user dismisses an item or clicks through to act on it. We don't
+/// surface unhandled-but-old items in the splash; this is purely a
+/// "show / don't show" lifecycle bit.
+#[tauri::command]
+pub async fn inbox_mark_handled(
+    state: State<'_, AppState>,
+    provider_message_id: String,
+) -> Result<(), String> {
+    sqlx::query(
+        "UPDATE inbox_triage SET handled_at = CURRENT_TIMESTAMP
+         WHERE workspace_id = 1 AND provider_message_id = ?1",
+    )
+    .bind(&provider_message_id)
+    .execute(&state.db.pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn has_api_key(provider: String) -> bool {
     secrets::has_api_key(&provider.trim().to_lowercase())

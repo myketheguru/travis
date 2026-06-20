@@ -49,6 +49,10 @@ pub struct CorrectionSignal {
     pub user_snippet: String,
     /// ISO-8601 detected_at.
     pub detected_at: String,
+    /// If the used_name resolved to a workspace entity, this is its id.
+    /// When present, the correction can be persisted as a claim so it
+    /// survives across conversations.
+    pub matched_entity_id: Option<i64>,
 }
 
 /// Run the ambiguity post-check against a Travis response.
@@ -141,16 +145,55 @@ fn response_ends_with_clarification(response: &str) -> bool {
 /// from the immediately-preceding assistant message. Best-effort
 /// heuristic; misses subtle cases.
 ///
+/// Async variant that resolves the extracted name against the
+/// workspace entity table so the correction can later be persisted as
+/// a claim. Falls back to the sync [`detect_correction_basic`] when
+/// matching fails.
+///
 /// Strategy:
 ///   1. The user message must lead with a correction marker
 ///      ("no", "actually", "the other", "I meant", etc.).
-///   2. The prior assistant message must contain at least one entity
-///      reference (proper-noun-shaped token, capitalized in
-///      `prev_assistant`).
-///   3. The user message either names a different entity, OR uses a
-///      direct pronoun reference ("the other one") that lets us infer
-///      it's pointing away from the one we used.
-pub fn detect_correction(prev_assistant: &str, current_user: &str) -> Option<CorrectionSignal> {
+///   2. Extract a proper-noun-shaped reference from the assistant's
+///      message — single capitalized word, multi-word run, OR
+///      ALL-CAPS token. See [`extract_proper_noun_runs`].
+///   3. Try to match it against an active workspace entity; attach
+///      `matched_entity_id` when found so persistence is trivial.
+pub async fn detect_correction(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    prev_assistant: &str,
+    current_user: &str,
+) -> Option<CorrectionSignal> {
+    let mut signal = detect_correction_basic(prev_assistant, current_user)?;
+    // Best-effort entity match. If it fails (no workspace entity by
+    // that name yet), the signal still flows through — caller will
+    // surface it as a RECENT MISS but won't be able to persist as a
+    // claim. Both are fine; the claim is the durable-across-sessions
+    // bonus, not the primary mechanism.
+    if let Ok(row) = sqlx::query_as::<_, (i64,)>(
+        "SELECT id FROM entity
+         WHERE workspace_id = ?1
+           AND archived_at IS NULL
+           AND (lower(display_name) = lower(?2) OR lower(normalized_name) = lower(?2))
+         ORDER BY mentions_count DESC, last_seen DESC LIMIT 1",
+    )
+    .bind(workspace_id)
+    .bind(&signal.used_name)
+    .fetch_optional(pool)
+    .await
+    {
+        signal.matched_entity_id = row.map(|r| r.0);
+    }
+    Some(signal)
+}
+
+/// Sync version. Returns None when no correction is detected; when one
+/// is detected, `matched_entity_id` is always None — callers wanting
+/// entity attribution should use [`detect_correction`] instead.
+pub fn detect_correction_basic(
+    prev_assistant: &str,
+    current_user: &str,
+) -> Option<CorrectionSignal> {
     let user_lower = current_user.trim().to_lowercase();
     if user_lower.is_empty() {
         return None;
@@ -161,38 +204,195 @@ pub fn detect_correction(prev_assistant: &str, current_user: &str) -> Option<Cor
     if !starts_with_correction {
         return None;
     }
-
-    // Pull out the first capitalized-proper-noun-looking token from the
-    // assistant's message — that's our best bet for "the name Travis
-    // used." Strip punctuation; require at least 2 chars; reject common
-    // words.
-    let used = first_proper_noun(prev_assistant)?;
+    let runs = extract_proper_noun_runs(prev_assistant);
+    let used = runs.first().cloned()?;
     Some(CorrectionSignal {
         used_name: used,
         user_snippet: current_user.chars().take(200).collect(),
         detected_at: chrono::Utc::now().to_rfc3339(),
+        matched_entity_id: None,
     })
 }
 
-fn first_proper_noun(text: &str) -> Option<String> {
-    // Skip common sentence-starting capitalized words. Not a real NER —
-    // just enough to avoid stupid false positives like "Got it." showing
-    // up as a "proper noun."
+/// Tokenize `text` and return contiguous runs of proper-noun-looking
+/// tokens. Handles three patterns:
+///   - **Multi-word capitalized:** "Henderson Trust" → one run
+///   - **Single capitalized:** "Sarah" → one run
+///   - **ALL-CAPS tokens:** "NEW BOARD" → one run
+///
+/// Stop-words (sentence starters, common short capitalized words like
+/// "The", "I", "Got") never start or extend a run on their own. They
+/// CAN appear inside a run when a real name follows directly
+/// ("The Acme Group") — actually we strip them at boundaries only.
+///
+/// Returns runs in the order they appear. Caller decides which to use
+/// — `detect_correction_basic` takes the first; future callers might
+/// want all of them.
+pub fn extract_proper_noun_runs(text: &str) -> Vec<String> {
     const STOP: &[&str] = &[
-        "The", "I", "It", "We", "You", "They", "He", "She", "There", "This",
-        "That", "Here", "Yes", "No", "OK", "Okay", "Got", "Done", "Yeah",
-        "Sure", "And", "But", "Or", "If", "When", "While", "For",
+        "The", "A", "An", "I", "It", "We", "You", "They", "He", "She",
+        "There", "This", "That", "Here", "Yes", "No", "OK", "Okay",
+        "Got", "Done", "Yeah", "Sure", "And", "But", "Or", "If", "When",
+        "While", "For", "From", "Of", "On", "At", "In", "To", "With",
+        "By", "Drafted", "Sent", "Pulled", "Called", "Sure.", "Done.",
     ];
     let stop_set: std::collections::HashSet<&str> = STOP.iter().copied().collect();
-    text.split_whitespace()
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
-        .filter(|w| w.len() >= 2)
-        .filter(|w| {
-            let first = w.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
-            first && !stop_set.contains(*w)
-        })
-        .next()
-        .map(|s| s.to_string())
+
+    // Light tokenization. Keep apostrophes (O'Brien) and hyphens
+    // (Anne-Marie) inside tokens; treat other punctuation as
+    // separators. Sentence-ending punctuation (. ? !) closes a run
+    // even if the next token is capitalized.
+    let mut tokens: Vec<(String, bool)> = Vec::new(); // (token, ends_sentence)
+    let mut buf = String::new();
+    let mut ends_sentence = false;
+    for c in text.chars() {
+        if c.is_alphanumeric() || c == '\'' || c == '-' || c == '&' {
+            buf.push(c);
+        } else {
+            if !buf.is_empty() {
+                tokens.push((std::mem::take(&mut buf), ends_sentence));
+                ends_sentence = false;
+            }
+            if c == '.' || c == '?' || c == '!' {
+                ends_sentence = true;
+                if let Some(last) = tokens.last_mut() {
+                    last.1 = true;
+                }
+            }
+        }
+    }
+    if !buf.is_empty() {
+        tokens.push((buf, ends_sentence));
+    }
+
+    let is_proper = |word: &str| -> bool {
+        if word.len() < 2 || stop_set.contains(word) {
+            return false;
+        }
+        let mut chars = word.chars();
+        let first = match chars.next() {
+            Some(c) => c,
+            None => return false,
+        };
+        // ALL-CAPS: all alphabetic chars uppercase, at least 2 letters
+        let all_caps = word.chars().all(|c| !c.is_alphabetic() || c.is_uppercase())
+            && word.chars().filter(|c| c.is_alphabetic()).count() >= 2;
+        // Title-case: first letter upper, rest can be mixed (but not
+        // all-lower-then-upper which is usually a typo we skip)
+        let title_case = first.is_uppercase() && !word.chars().all(|c| c.is_uppercase());
+        all_caps || title_case
+    };
+
+    let mut runs: Vec<String> = Vec::new();
+    let mut current: Vec<String> = Vec::new();
+    for (i, (token, ends)) in tokens.iter().enumerate() {
+        // Always-stop-word at start of sentence (= first token, or
+        // previous token ended a sentence) is NOT a name. Inside a
+        // run we let "The" pass through if it's part of a name run
+        // like "Acme & The Co" — rare, fall through.
+        let prev_ended = i == 0 || tokens.get(i.wrapping_sub(1)).map_or(true, |t| t.1);
+        let token_is_stop = stop_set.contains(token.as_str());
+        if token_is_stop && prev_ended {
+            if !current.is_empty() {
+                runs.push(current.join(" "));
+                current.clear();
+            }
+            continue;
+        }
+        if is_proper(token) {
+            current.push(token.clone());
+        } else {
+            if !current.is_empty() {
+                runs.push(current.join(" "));
+                current.clear();
+            }
+        }
+        // Sentence ends close the run unconditionally.
+        if *ends {
+            if !current.is_empty() {
+                runs.push(current.join(" "));
+                current.clear();
+            }
+        }
+    }
+    if !current.is_empty() {
+        runs.push(current.join(" "));
+    }
+    runs
+}
+
+/// Persist a correction signal as a claim so it survives across
+/// conversations. When `matched_entity_id` is set, writes a
+/// `(entity, "user-corrected-misreference", user_snippet)` claim
+/// with high confidence. When it's None, this is a no-op — the
+/// correction still flows through the system prompt in-session.
+pub async fn persist_correction(
+    pool: &SqlitePool,
+    workspace_id: i64,
+    signal: &CorrectionSignal,
+) -> anyhow::Result<()> {
+    let Some(entity_id) = signal.matched_entity_id else {
+        return Ok(());
+    };
+    let value = format!(
+        "Travis referenced \"{}\" and the user corrected with: \"{}\". Don't repeat this misreference.",
+        signal.used_name, signal.user_snippet
+    );
+    crate::memory::claims::upsert(
+        pool,
+        crate::memory::claims::ClaimInput {
+            workspace_id,
+            entity_id,
+            other_entity_id: None,
+            predicate: "user-corrected-misreference".to_string(),
+            value,
+            confidence: Some("high".to_string()),
+            source: Some("clarity_check".to_string()),
+            source_journal_entry_id: None,
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+/// Load recent correction claims so they can be injected into a
+/// new-conversation system prompt. Returns the formatted prompt block
+/// or an empty string if there are none.
+///
+/// Looks back 7 days; caps at 5 most-recent corrections to keep the
+/// prompt tight. Empty when there are no corrections — caller can
+/// splat unconditionally.
+pub async fn load_persisted_corrections(
+    pool: &SqlitePool,
+    workspace_id: i64,
+) -> String {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT c.value, e.display_name
+         FROM claim c
+         JOIN entity e ON e.id = c.entity_id
+         WHERE c.workspace_id = ?1
+           AND c.predicate = 'user-corrected-misreference'
+           AND c.superseded_at IS NULL
+           AND datetime(c.updated_at) >= datetime('now', '-7 day')
+         ORDER BY datetime(c.updated_at) DESC
+         LIMIT 5",
+    )
+    .bind(workspace_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    if rows.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    out.push_str("PERSISTENT MISSES (entity-reference mistakes the user has corrected in the last week — don't repeat them across conversations):\n");
+    for (value, entity_name) in &rows {
+        out.push_str(&format!("- {entity_name}: {value}\n"));
+    }
+    out.push_str(
+        "When in doubt about which entity the user means, ASK — name the candidates from the inferred context.\n",
+    );
+    out
 }
 
 /// Format a list of recent corrections as a system-prompt block. Empty

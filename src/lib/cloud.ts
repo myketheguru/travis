@@ -85,6 +85,18 @@ export function cloudSignInCancel(): Promise<void> {
 }
 
 /**
+ * Tier 2 — extend the signed-in user's Google grant to add the read
+ * scopes Travis needs to power inbox triage + calendar context.
+ *
+ * Pass scope keys: 'gmail' for gmail.readonly, 'gcal' for
+ * calendar.readonly. Opens the browser to the consent screen and
+ * resolves with a comma-separated list of providers enrolled.
+ */
+export function cloudExtendGoogleGrant(scopes: ('gmail' | 'gcal')[]): Promise<string> {
+  return invoke<string>('cloud_extend_google_grant', { scopes });
+}
+
+/**
  * Sign out — clears the JWT locally and tells the backend to revoke it.
  * The local clear happens even if the backend round-trip fails.
  */
