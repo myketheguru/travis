@@ -139,3 +139,37 @@ export function cloudMigrationStartFresh(): Promise<void> {
 export function cloudMigrationSkip(): Promise<void> {
   return invoke<void>("cloud_migration_skip");
 }
+
+// --- v2 Phase 2.2 — continuous sync -----------------------------------
+
+export interface SyncStatus {
+  cursor: string;
+  pendingOutbox: number;
+  failingOutbox: number;
+  lastSyncAt: string | null;
+  lastError: string | null;
+}
+
+export interface SyncRunResult {
+  pushed: number;
+  pulledApplied: number;
+  pulledSkipped: number;
+  cursor: string;
+}
+
+/**
+ * Trigger an immediate push + pull cycle. Settings exposes a "Sync now"
+ * button that calls this. Safe to call frequently — no-ops cleanly if
+ * there's nothing to do.
+ */
+export function cloudSyncNow(): Promise<SyncRunResult> {
+  return invoke<SyncRunResult>("cloud_sync_now");
+}
+
+/**
+ * Read current sync state — cursor, pending outbox count, last sync
+ * timestamp, last error. Cheap; safe to poll.
+ */
+export function cloudSyncStatus(): Promise<SyncStatus> {
+  return invoke<SyncStatus>("cloud_sync_status");
+}

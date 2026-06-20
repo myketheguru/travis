@@ -5,10 +5,13 @@ use tauri::State;
 
 use crate::AppState;
 
+use super::engine::{SyncEngine, SyncRunResult, SyncStatus};
 use super::sync::{
     migration_status, record_decision, upload_local, MigrationDetails, MigrationStatus,
 };
-use super::{clear_jwt, read_jwt, sign_in_with_google, ByokEvent, CloudClient, CloudUser};
+use super::{
+    clear_jwt, device_id, read_jwt, sign_in_with_google, ByokEvent, CloudClient, CloudUser,
+};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -154,9 +157,26 @@ pub async fn cloud_migration_skip(state: State<'_, AppState>) -> Result<(), Stri
 }
 
 fn whoami_device() -> String {
-    std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".to_string())
+    device_id()
+}
+
+// --- v2 Phase 2.2 — continuous sync -------------------------------------
+
+/// Trigger an immediate push + pull cycle. Returns the counts so the
+/// UI can surface a small confirmation toast. Safe to call frequently —
+/// no-ops cleanly if there's nothing to do.
+#[tauri::command]
+pub async fn cloud_sync_now(state: State<'_, AppState>) -> Result<SyncRunResult, String> {
+    if read_jwt().is_none() {
+        return Err("not signed in".to_string());
+    }
+    let engine = SyncEngine::new(state.http.clone(), device_id());
+    engine.run_once(&state.db).await.map_err(|e| e.to_string())
+}
+
+/// Status snapshot for the Settings sync indicator.
+#[tauri::command]
+pub async fn cloud_sync_status(state: State<'_, AppState>) -> Result<SyncStatus, String> {
+    let engine = SyncEngine::new(state.http.clone(), device_id());
+    engine.status(&state.db).await.map_err(|e| e.to_string())
 }

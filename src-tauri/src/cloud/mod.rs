@@ -27,7 +27,20 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 pub mod cmd;
+pub mod engine;
 pub mod sync;
+
+/// Stable identifier for this desktop install. Pulled from the OS
+/// hostname; used to tag outbound /sync/push events so we can
+/// recognise our own changes when they come back on /sync/pull and
+/// avoid applying them again.
+pub fn device_id() -> String {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
 
 /// Production base URL. The desktop currently hardcodes this. A future
 /// build flag can swap to a staging URL if we ever need one.

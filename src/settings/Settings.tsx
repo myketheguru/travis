@@ -37,8 +37,11 @@ import {
   cloudPolicy,
   cloudSignOut,
   cloudStatus,
+  cloudSyncNow,
+  cloudSyncStatus,
   type CloudPolicy,
   type CloudUser,
+  type SyncStatus,
 } from "../lib/cloud";
 
 const providers: { id: Provider; name: string; blurb: string; needsKey: boolean }[] = [
@@ -80,10 +83,15 @@ export default function Settings({ onClose }: { onClose: () => void }) {
   const [cloudUser, setCloudUser] = useState<CloudUser | null>(null);
   const [policy, setPolicy] = useState<CloudPolicy | null>(null);
   const [signingOut, setSigningOut] = useState(false);
+  const [syncState, setSyncState] = useState<SyncStatus | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncFlash, setSyncFlash] = useState<string | null>(null);
   const setActivity = useAppStore((s) => s.setActivity);
   const setProfile = useAppStore((s) => s.setProfile);
 
-  // Load the cloud account + policy in parallel with the local profile.
+  // Load the cloud account + policy + sync status in parallel with
+  // the local profile. Sync status repolls every 10s so the indicator
+  // stays fresh while Settings is open.
   useEffect(() => {
     cloudStatus()
       .then((s) => {
@@ -93,7 +101,35 @@ export default function Settings({ onClose }: { onClose: () => void }) {
     cloudPolicy()
       .then(setPolicy)
       .catch(() => {});
+    cloudSyncStatus()
+      .then(setSyncState)
+      .catch(() => {});
+    const t = setInterval(() => {
+      cloudSyncStatus().then(setSyncState).catch(() => {});
+    }, 10_000);
+    return () => clearInterval(t);
   }, []);
+
+  async function handleSyncNow() {
+    if (syncing) return;
+    setSyncing(true);
+    setSyncFlash(null);
+    try {
+      const r = await cloudSyncNow();
+      const parts: string[] = [];
+      if (r.pushed > 0) parts.push(`${r.pushed} sent`);
+      if (r.pulledApplied > 0) parts.push(`${r.pulledApplied} received`);
+      setSyncFlash(parts.length ? parts.join(" · ") : "Up to date");
+      cloudSyncStatus().then(setSyncState).catch(() => {});
+    } catch (e) {
+      setSyncFlash(
+        e instanceof Error ? e.message : "Sync failed — try again",
+      );
+    } finally {
+      setSyncing(false);
+      setTimeout(() => setSyncFlash(null), 4000);
+    }
+  }
 
   async function handleSignOut() {
     if (signingOut) return;
@@ -293,6 +329,62 @@ export default function Settings({ onClose }: { onClose: () => void }) {
                   {signingOut ? "Signing out…" : "Sign out"}
                 </button>
               </div>
+
+              {syncState && (
+                <div className="border-t border-ink-3 pt-3 flex flex-col gap-2 text-[11px] text-bone-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={
+                          "h-1.5 w-1.5 rounded-full " +
+                          (syncState.failingOutbox > 0
+                            ? "bg-warn"
+                            : syncState.pendingOutbox > 0
+                            ? "bg-pulse"
+                            : "bg-pulse-2")
+                        }
+                        style={{
+                          boxShadow:
+                            syncState.failingOutbox > 0
+                              ? "0 0 6px rgba(255,184,107,0.6)"
+                              : syncState.pendingOutbox > 0
+                              ? "0 0 6px rgba(124,92,255,0.6)"
+                              : "0 0 6px rgba(110,196,232,0.6)",
+                        }}
+                      />
+                      <span>
+                        {syncState.failingOutbox > 0
+                          ? `${syncState.failingOutbox} stuck`
+                          : syncState.pendingOutbox > 0
+                          ? `${syncState.pendingOutbox} queued`
+                          : "Synced"}
+                      </span>
+                      {syncState.lastSyncAt && (
+                        <span className="text-bone-3/70 ml-1 font-mono text-[10px]">
+                          {fmtRelative(syncState.lastSyncAt)}
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      onClick={handleSyncNow}
+                      disabled={syncing}
+                      className="text-bone-3 hover:text-bone-2 text-[11px] px-2 py-0.5 rounded border border-ink-3 hover:border-ink-3/80 transition-colors disabled:opacity-50"
+                    >
+                      {syncing ? "syncing…" : "sync now"}
+                    </button>
+                  </div>
+                  {syncFlash && (
+                    <div className="text-bone-2 text-[10px] font-mono">
+                      {syncFlash}
+                    </div>
+                  )}
+                  {syncState.lastError && !syncFlash && (
+                    <div className="text-warn text-[10px] leading-relaxed">
+                      Last error: {syncState.lastError}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {policy && (
                 <div className="border-t border-ink-3 pt-3 flex flex-col gap-2 text-[11px] text-bone-3">
@@ -1847,6 +1939,20 @@ function ExportSection() {
       </div>
     </Section>
   );
+}
+
+function fmtRelative(iso: string): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "";
+  const diffSec = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (diffSec < 5) return "just now";
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const min = Math.round(diffSec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const d = Math.round(hr / 24);
+  return `${d}d ago`;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {

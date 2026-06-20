@@ -8,6 +8,17 @@ pub struct Db {
     pub pool: SqlitePool,
 }
 
+/// Meta keys reserved for per-install state — never sync these to the cloud.
+/// Used by [`Db::set_meta`] to decide whether to enqueue a `settings.set`
+/// change event.
+fn is_internal_meta_key(key: &str) -> bool {
+    key.starts_with("cloud_")
+        || key.starts_with("sync_")
+        || key.starts_with("travis_cloud_")
+        || key.starts_with("previous_llm_")
+        || key == "onboarded"
+}
+
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct UserProfile {
@@ -100,7 +111,42 @@ impl Db {
         Ok(row.map(|r| r.0))
     }
 
+    /// Write a meta value and, for user-meaningful keys, enqueue a
+    /// `settings.set` change so the cloud (and other devices) see it
+    /// on the next sync. Keys with internal-flag prefixes (`cloud_`,
+    /// `sync_`, `travis_cloud_`) are excluded from sync — those are
+    /// per-install state that should NOT roam.
+    ///
+    /// The insert + outbox enqueue run in a single transaction so we
+    /// can never end up with a local value that didn't queue (or an
+    /// outbox row whose underlying value got rolled back).
     pub async fn set_meta(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO meta(key, value, updated_at) VALUES (?1, ?2, CURRENT_TIMESTAMP)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&mut *tx)
+        .await?;
+        if !is_internal_meta_key(key) {
+            let payload = serde_json::json!({ "key": key, "value": value }).to_string();
+            sqlx::query(
+                "INSERT INTO sync_outbox (kind, payload) VALUES ('settings.set', ?1)",
+            )
+            .bind(payload)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Same as `set_meta` but does NOT enqueue. Used by the sync engine
+    /// when applying a pulled remote event — we already know the cloud
+    /// has it, so re-enqueueing would create a write loop.
+    pub async fn set_meta_from_remote(&self, key: &str, value: &str) -> anyhow::Result<()> {
         sqlx::query(
             "INSERT INTO meta(key, value, updated_at) VALUES (?1, ?2, CURRENT_TIMESTAMP)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",

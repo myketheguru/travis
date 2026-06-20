@@ -286,6 +286,44 @@ pub fn run() {
             // (subprocess stdout/stderr are read inline).
             let _ = &interpreter_state; // kept on AppState for now
 
+            // v2 Phase 2.2 — background sync worker.
+            //
+            // Idle until the user signs in; once a JWT is in the
+            // keychain it runs a push+pull cycle every 60 seconds.
+            // Errors are logged and don't crash the loop — the engine
+            // records the latest error to meta.cloud_sync_last_error
+            // so the Settings UI can surface it.
+            {
+                let sync_db = db_arc.clone();
+                let sync_http = http.clone();
+                tauri::async_runtime::spawn(async move {
+                    let engine = cloud::engine::SyncEngine::new(
+                        sync_http,
+                        cloud::device_id(),
+                    );
+                    // 5-second startup grace so we don't race the
+                    // sign-in gate. Negligible cost; nice for logs.
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    loop {
+                        if cloud::read_jwt().is_some() {
+                            match engine.run_once(&sync_db).await {
+                                Ok(r) if r.pushed > 0 || r.pulled_applied > 0 => {
+                                    tracing::info!(
+                                        "sync cycle: pushed={} pulled_applied={} pulled_skipped_self={} cursor={}",
+                                        r.pushed, r.pulled_applied, r.pulled_skipped, r.cursor
+                                    );
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    tracing::warn!("sync cycle failed: {e}");
+                                }
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    }
+                });
+            }
+
             handle.global_shortcut().register(primary_shortcut)?;
 
             // System tray: keeps Travis alive when the main window is closed.
@@ -588,6 +626,8 @@ pub fn run() {
             cloud::cmd::cloud_migration_upload,
             cloud::cmd::cloud_migration_start_fresh,
             cloud::cmd::cloud_migration_skip,
+            cloud::cmd::cloud_sync_now,
+            cloud::cmd::cloud_sync_status,
             commands::app_status,
             commands::complete_onboarding,
             commands::update_profile,
