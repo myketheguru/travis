@@ -457,6 +457,71 @@ struct InitResponse {
 /// it via `tokio::select!` against the loopback listener.
 pub static SIGN_IN_CANCEL: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
+/// Tier 2 — one row per (user, provider) connected account.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectedAccount {
+    pub provider: String,
+    pub scopes_granted: String,
+    pub provider_account_id: Option<String>,
+    pub is_active: i64,
+    pub created_at: String,
+    pub last_used_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConnectedAccountsResp {
+    accounts: Vec<ConnectedAccount>,
+}
+
+/// Tier 2 — fetch the list of connected_account rows.
+pub async fn connected_accounts(http: &reqwest::Client) -> anyhow::Result<Vec<ConnectedAccount>> {
+    let jwt = read_jwt().ok_or_else(|| anyhow::anyhow!("not signed in"))?;
+    let resp: ConnectedAccountsResp = http
+        .get(format!("{CLOUD_BASE}/workflows/connected-accounts"))
+        .bearer_auth(&jwt)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    Ok(resp.accounts)
+}
+
+/// Tier 2 — revoke a connected account by provider.
+pub async fn disconnect_account(http: &reqwest::Client, provider: &str) -> anyhow::Result<()> {
+    let jwt = read_jwt().ok_or_else(|| anyhow::anyhow!("not signed in"))?;
+    http.delete(format!(
+        "{CLOUD_BASE}/workflows/connected-accounts/{provider}"
+    ))
+    .bearer_auth(&jwt)
+    .send()
+    .await?
+    .error_for_status()?;
+    Ok(())
+}
+
+/// Tier 3 — patch a proposed action's status on a workflow run.
+pub async fn update_action_status(
+    http: &reqwest::Client,
+    run_id: &str,
+    action_id: &str,
+    status: &str,
+    payload: Option<serde_json::Value>,
+) -> anyhow::Result<()> {
+    let jwt = read_jwt().ok_or_else(|| anyhow::anyhow!("not signed in"))?;
+    let body = serde_json::json!({ "status": status, "payload": payload });
+    http.patch(format!(
+        "{CLOUD_BASE}/workflows/runs/{run_id}/actions/{action_id}"
+    ))
+    .bearer_auth(&jwt)
+    .json(&body)
+    .send()
+    .await?
+    .error_for_status()?;
+    Ok(())
+}
+
 /// Tier 2 — extend the signed-in user's Google grant to include
 /// inbox + calendar read scopes. Opens the browser to
 /// /auth/oauth/google/extend, waits for the loopback bounce, returns

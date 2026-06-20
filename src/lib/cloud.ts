@@ -220,10 +220,78 @@ export interface WorkflowRun {
   started_at: string;
   finished_at?: string | null;
   result_text?: string | null;
+  /** v0.21.5 Tier 3 — JSON-encoded array of ProposedAction. */
+  result_actions_json?: string | null;
   input_tokens: number;
   output_tokens: number;
   cost_usd_cents: number;
   error_message?: string | null;
+}
+
+/** v0.21.5 Tier 3 — one action a workflow run wants the user to approve. */
+export interface ProposedAction {
+  id: string;
+  kind: "draft_reply" | string;
+  payload: {
+    to?: string;
+    subject?: string;
+    body?: string;
+    context?: Record<string, unknown>;
+    [k: string]: unknown;
+  };
+  status: "pending" | "approved" | "executed" | "discarded" | "edited";
+  updated_at?: string;
+}
+
+/** Update a single action's status on a workflow run. The desktop
+ *  calls this after user clicks Approve / Discard / Edit-then-Send. */
+export function cloudUpdateActionStatus(
+  runId: string,
+  actionId: string,
+  status: ProposedAction["status"],
+  payload?: ProposedAction["payload"],
+): Promise<void> {
+  return invoke<void>("cloud_update_action_status", {
+    runId,
+    actionId,
+    status,
+    payload: payload ?? null,
+  });
+}
+
+/** v0.21.5 Tier 3 — execute an approved draft_reply via local Gmail
+ *  OAuth and mark the action as executed on the cloud run. */
+export function cloudActionExecuteDraftReply(
+  runId: string,
+  actionId: string,
+  to: string,
+  subject: string,
+  body: string,
+): Promise<void> {
+  return invoke<void>("cloud_action_execute_draft_reply", {
+    runId,
+    actionId,
+    to,
+    subject,
+    body,
+  });
+}
+
+export interface ConnectedAccount {
+  provider: string;
+  scopes_granted: string;
+  provider_account_id: string | null;
+  is_active: number;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+export function cloudConnectedAccounts(): Promise<ConnectedAccount[]> {
+  return invoke<ConnectedAccount[]>("cloud_connected_accounts");
+}
+
+export function cloudDisconnectAccount(provider: string): Promise<void> {
+  return invoke<void>("cloud_disconnect_account", { provider });
 }
 
 export interface CreateScheduleInput {

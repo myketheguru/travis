@@ -14,12 +14,156 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import {
+  cloudActionExecuteDraftReply,
+  cloudUpdateActionStatus,
   cloudWorkflowRunNow,
   cloudWorkflowRuns,
   cloudWorkflowSchedules,
+  type ProposedAction,
   type WorkflowRun,
   type WorkflowSchedule,
 } from "../lib/cloud";
+
+/** v0.21.5 Tier 3 — render the proposed_actions on a completed run. */
+function ProposedActions({
+  runId,
+  json,
+  onChanged,
+}: {
+  runId: string;
+  json: string;
+  onChanged: () => Promise<void> | void;
+}) {
+  const [actions, setActions] = useState<ProposedAction[]>(() => {
+    try {
+      return JSON.parse(json) as ProposedAction[];
+    } catch {
+      return [];
+    }
+  });
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [editing, setEditing] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string | null>(null);
+
+  if (actions.length === 0) return null;
+
+  async function approve(a: ProposedAction) {
+    if (a.kind !== "draft_reply") return;
+    setBusyId(a.id);
+    setError(null);
+    try {
+      const body = editing[a.id] ?? (a.payload.body as string);
+      await cloudActionExecuteDraftReply(
+        runId,
+        a.id,
+        a.payload.to as string,
+        a.payload.subject as string,
+        body,
+      );
+      setActions((prev) =>
+        prev.map((x) => (x.id === a.id ? { ...x, status: "executed" } : x)),
+      );
+      await onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function discard(a: ProposedAction) {
+    setBusyId(a.id);
+    setError(null);
+    try {
+      await cloudUpdateActionStatus(runId, a.id, "discarded");
+      setActions((prev) =>
+        prev.map((x) => (x.id === a.id ? { ...x, status: "discarded" } : x)),
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <div className="mt-4 flex flex-col gap-2">
+      <div className="text-bone-3 text-[10px] tracking-[0.18em] uppercase">
+        Proposed
+      </div>
+      {actions.map((a) => {
+        const isDraft = a.kind === "draft_reply";
+        const to = (a.payload.to as string) ?? "";
+        const subject = (a.payload.subject as string) ?? "";
+        const body = (a.payload.body as string) ?? "";
+        const display = editing[a.id] ?? body;
+        const dimmed =
+          a.status === "executed" || a.status === "discarded";
+        return (
+          <div
+            key={a.id}
+            className={`rounded-lg border border-ink-3/80 bg-ink-2/40 p-3 ${
+              dimmed ? "opacity-60" : ""
+            }`}
+          >
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="text-bone-2 text-xs font-medium">
+                {isDraft ? "Draft reply" : a.kind}
+              </div>
+              {a.status !== "pending" && (
+                <span className="text-[10px] uppercase tracking-wider text-bone-3">
+                  {a.status}
+                </span>
+              )}
+            </div>
+            {isDraft && (
+              <>
+                <div className="text-bone-3 text-[11px] mb-1">
+                  to <span className="text-bone-2">{to}</span> · {subject}
+                </div>
+                {dimmed ? (
+                  <div className="text-bone-3 text-xs italic whitespace-pre-wrap">
+                    {body}
+                  </div>
+                ) : (
+                  <textarea
+                    value={display}
+                    onChange={(e) =>
+                      setEditing((prev) => ({ ...prev, [a.id]: e.target.value }))
+                    }
+                    rows={Math.min(8, Math.max(3, body.split("\n").length))}
+                    className="w-full bg-ink-2/40 border border-ink-3 rounded-md px-2 py-1.5 text-xs text-bone leading-relaxed focus:outline-none focus:border-pulse-2 resize-vertical"
+                  />
+                )}
+                {!dimmed && (
+                  <div className="flex gap-2 mt-2">
+                    <button
+                      onClick={() => approve(a)}
+                      disabled={busyId === a.id}
+                      className="px-3 py-1.5 rounded-md bg-bone text-ink text-xs font-medium hover:bg-white disabled:opacity-40 transition-all"
+                    >
+                      {busyId === a.id ? "Sending…" : "Send"}
+                    </button>
+                    <button
+                      onClick={() => discard(a)}
+                      disabled={busyId === a.id}
+                      className="px-3 py-1.5 rounded-md border border-ink-3 text-bone-2 text-xs hover:border-ink-3/80 disabled:opacity-40 transition-colors"
+                    >
+                      Discard
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        );
+      })}
+      {error && (
+        <div className="text-warn text-[11px] leading-relaxed">{error}</div>
+      )}
+    </div>
+  );
+}
 
 function fmtRelative(iso: string): string {
   const t = Date.parse(iso);
@@ -201,6 +345,13 @@ export function WhileYouWereAway({ onClose }: { onClose: () => void }) {
                   <div className="text-bone text-sm leading-relaxed whitespace-pre-wrap">
                     {r.result_text}
                   </div>
+                )}
+                {r.status === "completed" && r.result_actions_json && (
+                  <ProposedActions
+                    runId={r.id}
+                    json={r.result_actions_json}
+                    onChanged={refresh}
+                  />
                 )}
                 {r.status === "running" && (
                   <div className="text-bone-3 text-xs italic">Running…</div>

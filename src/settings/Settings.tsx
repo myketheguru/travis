@@ -34,11 +34,15 @@ import {
 import { VoiceDropdown } from "../components/VoiceDropdown";
 import { useAppStore } from "../stores/app";
 import {
+  cloudConnectedAccounts,
+  cloudDisconnectAccount,
+  cloudExtendGoogleGrant,
   cloudPolicy,
   cloudSignOut,
   cloudStatus,
   cloudSyncNow,
   cloudSyncStatus,
+  type ConnectedAccount,
   type CloudPolicy,
   type CloudUser,
   type SyncStatus,
@@ -283,6 +287,12 @@ export default function Settings({ onClose }: { onClose: () => void }) {
             Account, provider, model, and identity.
           </p>
         </div>
+
+        {cloudUser && (
+          <Section title="Connected">
+            <ConnectedAccounts />
+          </Section>
+        )}
 
         {cloudUser && (
           <Section title="Account">
@@ -1970,6 +1980,106 @@ function fmtRelative(iso: string): string {
   if (hr < 24) return `${hr}h ago`;
   const d = Math.round(hr / 24);
   return `${d}d ago`;
+}
+
+/** v0.21.5 Tier 2 — Settings card surfacing the user's connected
+ *  Google services (inbox + calendar). One toggle per surface; when
+ *  not enrolled, Connect kicks off the loopback OAuth-extend flow. */
+function ConnectedAccounts() {
+  const [accounts, setAccounts] = useState<ConnectedAccount[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load() {
+    try {
+      const a = await cloudConnectedAccounts();
+      setAccounts(a);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const isConnected = (provider: string) =>
+    accounts?.some((a) => a.provider === provider && a.is_active === 1) ?? false;
+
+  async function connect(provider: "gmail" | "gcal") {
+    setBusy(provider);
+    setError(null);
+    try {
+      await cloudExtendGoogleGrant([provider]);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function disconnect(provider: string) {
+    setBusy(provider);
+    setError(null);
+    try {
+      await cloudDisconnectAccount(provider);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-ink-3 bg-ink-2/40 p-4 flex flex-col gap-3">
+      <p className="text-bone-3 text-[11px] leading-relaxed">
+        Let Travis read your inbox + calendar in the cloud so it can summarize
+        what came in while you were away. Send actions are still local — Travis
+        never sends mail without your approval.
+      </p>
+      {[
+        { id: "gmail" as const, label: "Inbox (Gmail)", desc: "Read recent mail; classify urgency; draft replies for approval." },
+        { id: "gcal" as const, label: "Calendar (Google)", desc: "Read upcoming events; pull context into meeting prep." },
+      ].map((row) => {
+        const on = isConnected(row.id);
+        return (
+          <div
+            key={row.id}
+            className="flex items-start justify-between gap-3 border-t border-ink-3 pt-3 first:border-t-0 first:pt-0"
+          >
+            <div className="min-w-0">
+              <div className="text-bone-2 text-xs font-medium">{row.label}</div>
+              <div className="text-bone-3 text-[11px] mt-1 leading-relaxed">
+                {row.desc}
+              </div>
+            </div>
+            <button
+              onClick={() => (on ? disconnect(row.id) : connect(row.id))}
+              disabled={busy === row.id}
+              className={
+                "shrink-0 text-xs px-3 py-1.5 rounded-md transition-colors disabled:opacity-50 " +
+                (on
+                  ? "border border-ink-3 text-bone-2 hover:border-ink-3/80"
+                  : "bg-bone text-ink hover:bg-white font-medium")
+              }
+            >
+              {busy === row.id
+                ? on
+                  ? "Disconnecting…"
+                  : "Connecting…"
+                : on
+                ? "Disconnect"
+                : "Connect"}
+            </button>
+          </div>
+        );
+      })}
+      {error && (
+        <div className="text-warn text-[11px] leading-relaxed">{error}</div>
+      )}
+    </div>
+  );
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {

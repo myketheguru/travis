@@ -82,6 +82,81 @@ pub async fn cloud_extend_google_grant(
         .map_err(|e| e.to_string())
 }
 
+/// Tier 3 — update a proposed action's status on a cloud workflow run.
+#[tauri::command]
+pub async fn cloud_update_action_status(
+    state: State<'_, AppState>,
+    run_id: String,
+    action_id: String,
+    status: String,
+    payload: Option<serde_json::Value>,
+) -> Result<(), String> {
+    crate::cloud::update_action_status(&state.http, &run_id, &action_id, &status, payload)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Tier 3 — execute an approved draft_reply: send the email via the
+/// user's local Gmail OAuth, then PATCH the cloud run row marking the
+/// action 'executed'. Failures on the send step are surfaced; the
+/// action stays 'approved' (not 'executed') so the user can retry.
+#[tauri::command]
+pub async fn cloud_action_execute_draft_reply(
+    state: State<'_, AppState>,
+    run_id: String,
+    action_id: String,
+    to: String,
+    subject: String,
+    body: String,
+) -> Result<(), String> {
+    crate::email::gmail::send(
+        &state.db.pool,
+        &state.http,
+        &to,
+        &subject,
+        &body,
+        Some("workflow_action"),
+        Some("workflow_run"),
+        None,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    crate::cloud::update_action_status(
+        &state.http,
+        &run_id,
+        &action_id,
+        "executed",
+        None,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Tier 2 — list the user's connected accounts (Gmail / Calendar /
+/// Outlook). Surfaced in Settings so the user can see what Travis can
+/// reach + revoke.
+#[tauri::command]
+pub async fn cloud_connected_accounts(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::cloud::ConnectedAccount>, String> {
+    crate::cloud::connected_accounts(&state.http)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Tier 2 — revoke a connected account by provider. Server marks
+/// is_active=0; the WorkflowLoop stops reading from it on next tick.
+#[tauri::command]
+pub async fn cloud_disconnect_account(
+    state: State<'_, AppState>,
+    provider: String,
+) -> Result<(), String> {
+    crate::cloud::disconnect_account(&state.http, &provider)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Sign out. Tells the backend to revoke the token, then drops the
 /// local copy. The local drop happens even if the backend round-trip
 /// fails — a user who clicks "sign out" expects to be signed out.
