@@ -376,9 +376,31 @@ pub async fn chat(
     )
     .map_err(|e| e.to_string())?;
 
+    let provider_name = profile.llm_provider.clone();
     match provider.chat(payload.messages, payload.options).await {
         Ok(r) => {
             state.health.clear(&app);
+            // v2 Phase 3 — BYOK paths still report identity-tagged
+            // usage to the cloud so we know which signed-in user
+            // burned which tokens. Best-effort; failures shouldn't
+            // affect the user's chat.
+            if matches!(provider_name.as_str(), "claude" | "openai") && crate::cloud::read_jwt().is_some() {
+                let event = crate::cloud::ByokEvent {
+                    model: r.model.clone(),
+                    provider: provider_name.clone(),
+                    input_tokens: r.input_tokens.unwrap_or(0),
+                    output_tokens: r.output_tokens.unwrap_or(0),
+                    cache_read_tokens: r.cache_read_tokens,
+                    cache_write_tokens: r.cache_write_tokens,
+                    context: None,
+                };
+                let http = state.http.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Some(client) = crate::cloud::CloudClient::current(http) {
+                        let _ = client.record_byok_event(event).await;
+                    }
+                });
+            }
             Ok(r)
         }
         Err(e) => {

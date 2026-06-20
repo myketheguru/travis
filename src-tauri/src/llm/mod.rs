@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 pub mod claude;
 pub mod ollama;
 pub mod openai;
+pub mod travis_cloud;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -306,17 +307,17 @@ pub fn build(
         // users have a working LLM out of the box without configuring
         // anything. Falls through to a clear error when the build
         // wasn't compiled with the key.
+        // v2 Phase 3 — Travis Cloud is now a proxy provider. Calls go
+        // to api.usetravis.com/llm/chat with the user's session JWT.
+        // No build-time API key required. Hosted-tier users get
+        // metering + caching + tier policy enforcement server-side.
+        // If no JWT is in the keychain, the provider returns a friendly
+        // error asking the user to sign in.
         "travis_cloud" => {
-            let key = travis_cloud_key()
-                .ok_or_else(|| anyhow::anyhow!(
-                    "This build of Travis wasn't compiled with a Travis Cloud key. \
-                     Open Settings → LLM Provider and switch to 'Use my own LLM', \
-                     OR install an official release build.",
-                ))?;
-            let cloud_model = travis_cloud_model().unwrap_or_else(|| default_model("claude").to_string());
-            Ok(Box::new(claude::ClaudeProvider::new(
+            let cloud_model = travis_cloud_model()
+                .unwrap_or_else(|| default_model("claude").to_string());
+            Ok(Box::new(travis_cloud::TravisCloudProvider::new(
                 http,
-                key.to_string(),
                 cloud_model,
             )))
         }

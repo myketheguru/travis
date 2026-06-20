@@ -473,43 +473,50 @@ export default function Settings({ onClose }: { onClose: () => void }) {
         </Section>
 
         <Section title="Model">
-          {cloudAvailable && (
-            <div className="rounded-xl border border-pulse/40 bg-pulse/[0.05] p-3.5 flex flex-col gap-2">
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-bone font-medium text-sm">Travis Cloud</div>
-                  <p className="text-bone-3 text-[11px] mt-0.5 leading-relaxed">
-                    Recommended. Managed by Travis — no API key, no setup. We run
-                    Claude under the hood and keep the model up to date for you.
-                  </p>
-                </div>
-                <label className="flex items-center gap-2 cursor-pointer select-none shrink-0">
-                  <input
-                    type="checkbox"
-                    checked={!useOwnLlm}
-                    onChange={(e) => {
-                      const goCloud = e.target.checked;
-                      setUseOwnLlm(!goCloud);
-                      if (goCloud) {
-                        update({ provider: "travis_cloud" as Provider });
-                      } else if (draft.provider === "travis_cloud") {
-                        update({ provider: "claude" as Provider });
-                      }
-                    }}
-                    className="accent-pulse"
-                  />
-                  <span className="text-bone-2 text-xs">Use Travis Cloud</span>
-                </label>
+          <div className="rounded-xl border border-pulse/40 bg-pulse/[0.05] p-3.5 flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-bone font-medium text-sm">Travis Cloud</div>
+                <p className="text-bone-3 text-[11px] mt-0.5 leading-relaxed">
+                  Default. Hosted by Travis on your behalf — no key, no
+                  setup. Tier policy and usage caps are enforced server-side
+                  so your spend never overshoots your plan.
+                </p>
               </div>
+              <label className="flex items-center gap-2 cursor-pointer select-none shrink-0">
+                <input
+                  type="checkbox"
+                  checked={!useOwnLlm}
+                  onChange={(e) => {
+                    const goCloud = e.target.checked;
+                    setUseOwnLlm(!goCloud);
+                    if (goCloud) {
+                      update({ provider: "travis_cloud" as Provider });
+                    } else if (draft.provider === "travis_cloud") {
+                      update({ provider: "claude" as Provider });
+                    }
+                  }}
+                  className="accent-pulse"
+                />
+                <span className="text-bone-2 text-xs">Use Travis Cloud</span>
+              </label>
             </div>
-          )}
+          </div>
 
-          {(useOwnLlm || !cloudAvailable) && (
-            <div className="flex flex-col gap-2">
-              <p className="text-bone-3 text-[11px] -mb-1">
-                {cloudAvailable
-                  ? "Bring your own provider and key."
-                  : "This build wasn't compiled with a Travis Cloud key — bring your own provider."}
+          {/* v2 Phase 3 — BYOK lives behind an Advanced disclosure.
+              Default tier is Travis Cloud; we don't want a fresh user
+              accidentally on a self-managed key path. */}
+          <details className="rounded-xl border border-ink-3 bg-ink-2/20 group" open={useOwnLlm}>
+            <summary className="cursor-pointer select-none px-4 py-2.5 text-bone-2 text-xs flex items-center justify-between hover:bg-ink-2/40 rounded-xl transition-colors">
+              <span>Advanced — bring your own LLM</span>
+              <span className="text-bone-3 group-open:rotate-90 transition-transform">›</span>
+            </summary>
+            <div className="px-4 pb-3 pt-1 flex flex-col gap-2">
+              <p className="text-bone-3 text-[11px] leading-relaxed">
+                Power-user mode: route LLM calls through your own provider
+                key. Your sign-in still tracks usage so the cloud can
+                rate-limit per account, but your provider charges you
+                directly. Free tier users default to this path.
               </p>
               {providers
                 .filter((p) => p.id !== "travis_cloud")
@@ -518,7 +525,10 @@ export default function Settings({ onClose }: { onClose: () => void }) {
                   return (
                     <button
                       key={p.id}
-                      onClick={() => update({ provider: p.id })}
+                      onClick={() => {
+                        setUseOwnLlm(true);
+                        update({ provider: p.id });
+                      }}
                       className={
                         "text-left rounded-xl border px-4 py-3 transition-all " +
                         (active
@@ -537,7 +547,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
                   );
                 })}
             </div>
-          )}
+          </details>
 
           {draft.provider === "travis_cloud" ? null : provider.needsKey ? (
             <Field

@@ -101,6 +101,9 @@ pub fn store_jwt(jwt: &str) -> anyhow::Result<()> {
 
 /// Read the current session JWT from the keychain. Returns `None` if
 /// there is no stored token (user has never signed in or has signed out).
+///
+/// Marked `pub` so llm::travis_cloud can construct authenticated
+/// requests to api.usetravis.com/llm/chat from outside this module.
 pub fn read_jwt() -> Option<String> {
     match jwt_entry().and_then(|e| e.get_password()) {
         Ok(s) if !s.is_empty() => Some(s),
