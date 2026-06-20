@@ -89,6 +89,20 @@ pub async fn scan_once(
     http: &reqwest::Client,
     workspace_id: i64,
 ) -> Result<usize> {
+    // v0.21.6 Tier 1/2 dedup guard.
+    //
+    // When the user has enrolled their Gmail server-side (Tier 2), the
+    // cloud WorkflowLoop runs the same triage on a hosted schedule.
+    // Running both layers would double-classify every message — wasted
+    // tokens AND double-notifications. Bail on the desktop observer
+    // when cloud already has it. We treat any error fetching the
+    // accounts list as "cloud probably not enrolled" — fail-open so a
+    // transient cloud blip doesn't silently break local triage.
+    if cloud_has_inbox(http).await {
+        tracing::debug!("inbox observer: cloud has gmail enrolled, skipping local tick");
+        return Ok(0);
+    }
+
     let last_run = load_last_run(pool).await;
     let since = last_run.unwrap_or_else(|| Utc::now() - chrono::Duration::hours(INITIAL_LOOKBACK_HOURS));
 
@@ -125,7 +139,7 @@ pub async fn scan_once(
             continue;
         }
 
-        match classify_one(&msg).await {
+        match classify_one(&msg, provider).await {
             Ok(triage) => {
                 if triage.urgency == Urgency::Noise {
                     // Don't persist noise — keeps the table lean and
@@ -169,7 +183,7 @@ pub async fn scan_once(
     Ok(triaged_count)
 }
 
-async fn classify_one(msg: &InboxMessage) -> Result<TriagedMessage> {
+async fn classify_one(msg: &InboxMessage, provider: &str) -> Result<TriagedMessage> {
     // Cheap, deterministic prompt. We want fast classification, not
     // creative summarization — explicit format spec, no system prompt
     // about Travis's identity (this is a utility call).
@@ -219,7 +233,7 @@ async fn classify_one(msg: &InboxMessage) -> Result<TriagedMessage> {
         urgency: Urgency::from_label(&parsed.urgency),
         summary_one_line: parsed.summary,
         suggested_next_step: parsed.next_step.filter(|s| !s.trim().is_empty()),
-        provider: "gmail".to_string(),
+        provider: provider.to_string(),
     })
 }
 
@@ -363,6 +377,42 @@ pub async fn recent(
             provider: prov,
         })
         .collect())
+}
+
+/// Tier 1/2 dedup helper — return true when the user has an active
+/// Gmail row in connected_account on the cloud. The cloud loop will
+/// triage on its own when that's the case; the desktop should not.
+///
+/// Best-effort. Network or auth failures return false (fail-open) so
+/// a transient cloud blip doesn't silently break local triage.
+///
+/// Cached at process scope with a 10-minute TTL — the cloud roundtrip
+/// itself is fast but we shouldn't pay it on every 5-min tick.
+async fn cloud_has_inbox(http: &reqwest::Client) -> bool {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    static CACHE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+    const TTL: Duration = Duration::from_secs(10 * 60);
+
+    if let Ok(guard) = CACHE.lock() {
+        if let Some((at, v)) = *guard {
+            if at.elapsed() < TTL {
+                return v;
+            }
+        }
+    }
+    let accounts = match crate::cloud::connected_accounts(http).await {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    let has = accounts
+        .iter()
+        .any(|a| a.provider == "gmail" && a.is_active != 0);
+    if let Ok(mut guard) = CACHE.lock() {
+        *guard = Some((Instant::now(), has));
+    }
+    has
 }
 
 /// Spawn the inbox observer background loop. Runs every 5 minutes

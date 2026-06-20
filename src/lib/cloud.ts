@@ -296,7 +296,9 @@ export function cloudDisconnectAccount(provider: string): Promise<void> {
 
 export interface CreateScheduleInput {
   name: string;
-  triggerKind: "cron" | "calendar" | "email_match" | "manual";
+  // v0.21.6 — 'inbox_summary' added so the cloud WorkflowLoop branches
+  // into the inbox-read pipeline instead of the agent loop.
+  triggerKind: "cron" | "calendar" | "email_match" | "manual" | "inbox_summary";
   triggerSpec: Record<string, unknown>;
   prompt: string;
   isActive: boolean;
@@ -315,6 +317,29 @@ export function cloudWorkflowCreateSchedule(
   input: CreateScheduleInput,
 ): Promise<string> {
   return invoke<string>("cloud_workflow_create_schedule", { input });
+}
+
+/** v0.21.6 — convenience helper to enroll a default hourly inbox
+ *  summary schedule after a successful Connect on Inbox. Looks up
+ *  any existing inbox_summary schedule first and no-ops if one
+ *  already exists, so calling repeatedly is safe. */
+export async function ensureInboxSummarySchedule(): Promise<string | null> {
+  try {
+    const existing = await cloudWorkflowSchedules();
+    const already = existing.find((s) => s.trigger_kind === "inbox_summary");
+    if (already) return already.id;
+  } catch {
+    /* fall through and try to create — better to risk a duplicate than
+       block the happy path on a list failure */
+  }
+  return cloudWorkflowCreateSchedule({
+    name: "Inbox summary",
+    triggerKind: "inbox_summary",
+    triggerSpec: { intervalMinutes: 60 },
+    prompt:
+      "Summarize the user's new inbox messages since the last check. Identify what's urgent, what's notable, and what can be ignored. Draft replies for urgent items where the action is clear.",
+    isActive: true,
+  });
 }
 
 export function cloudWorkflowDeleteSchedule(id: string): Promise<void> {

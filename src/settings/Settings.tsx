@@ -37,6 +37,7 @@ import {
   cloudConnectedAccounts,
   cloudDisconnectAccount,
   cloudExtendGoogleGrant,
+  ensureInboxSummarySchedule,
   cloudPolicy,
   cloudSignOut,
   cloudStatus,
@@ -2010,12 +2011,30 @@ function ConnectedAccounts() {
     setError(null);
     try {
       await cloudExtendGoogleGrant([provider]);
+      // v0.21.6 — auto-create the recurring inbox summary schedule the
+      // first time the user enrolls Gmail. Without this, Connect just
+      // grants access — nothing actually fires until the user manually
+      // POSTs /workflows/schedules. Cloud roundtrip is cheap; the
+      // helper is idempotent (looks up existing first).
+      if (provider === "gmail") {
+        try {
+          await ensureInboxSummarySchedule();
+        } catch (e) {
+          tracing(e);
+        }
+      }
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(null);
     }
+  }
+
+  function tracing(e: unknown) {
+    // Console-only; the Connect itself succeeded so we don't want to
+    // bubble a follow-up failure into the UI as an error state.
+    console.warn("auto-create inbox schedule failed (non-fatal):", e);
   }
 
   async function disconnect(provider: string) {
