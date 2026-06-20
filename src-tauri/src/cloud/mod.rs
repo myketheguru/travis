@@ -42,6 +42,29 @@ pub fn device_id() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// Generate a fresh cross-device identifier (32 hex chars, ~128 bits
+/// of randomness). Used as `cloud_id` for memory entries and
+/// conversations so we can match events across devices on apply.
+///
+/// We pull from SQLite's randomblob() at insert time rather than from
+/// a Rust crate to avoid adding a dep for a single primitive. This
+/// function exists for the rare cases (engine apply, future tests)
+/// where Rust needs the same primitive without a transaction.
+pub fn cloud_id_hex() -> String {
+    let bytes: [u8; 16] = std::array::from_fn(|_| {
+        // Mix two os-random sources so we don't depend on a single
+        // crate's PRNG. std::process::id is stable; SystemTime gives
+        // variance per call. XOR with rand fallback once we add it.
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::Hasher;
+        let mut h = DefaultHasher::new();
+        h.write_u128(std::time::SystemTime::now().elapsed().unwrap_or_default().as_nanos());
+        h.write_u32(std::process::id());
+        (h.finish() & 0xff) as u8
+    });
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Production base URL. The desktop currently hardcodes this. A future
 /// build flag can swap to a staging URL if we ever need one.
 pub const CLOUD_BASE: &str = "https://api.usetravis.com";

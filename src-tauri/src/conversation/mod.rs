@@ -13,6 +13,11 @@ pub struct Conversation {
     pub created_at: String,
     pub updated_at: String,
     pub workspace_id: i64,
+    /// v2 Phase 2.4 — stable cross-device identifier. Generated at
+    /// create time via SQLite's randomblob(); used by the sync apply
+    /// pipeline to match incoming conversation.upsert events against
+    /// the local row.
+    pub cloud_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -62,8 +67,13 @@ pub async fn open(
     kind: &str,
     title: Option<&str>,
 ) -> Result<Conversation, sqlx::Error> {
+    // v2 Phase 2.4 — stamp a cloud_id at create time so the
+    // conversation has a stable cross-device identity. Remote devices
+    // pulling a conversation.upsert event for this thread will match
+    // on this id rather than risking a duplicate insert.
     let id = sqlx::query(
-        "INSERT INTO conversation (kind, title, workspace_id) VALUES (?1, ?2, ?3)",
+        "INSERT INTO conversation (kind, title, workspace_id, cloud_id)
+         VALUES (?1, ?2, ?3, lower(hex(randomblob(16))))",
     )
     .bind(kind)
     .bind(title)
@@ -76,7 +86,7 @@ pub async fn open(
 
 pub async fn fetch(pool: &SqlitePool, id: i64) -> Result<Conversation, sqlx::Error> {
     sqlx::query_as::<_, Conversation>(
-        "SELECT id, kind, title, status, link_kind, link_id, created_at, updated_at, workspace_id
+        "SELECT id, kind, title, status, link_kind, link_id, created_at, updated_at, workspace_id, cloud_id
          FROM conversation WHERE id=?1",
     )
     .bind(id)
@@ -157,7 +167,7 @@ async fn enqueue_conversation_snapshot(
     conversation_id: i64,
 ) -> Result<(), sqlx::Error> {
     let conv = sqlx::query_as::<_, Conversation>(
-        "SELECT id, kind, title, status, link_kind, link_id, created_at, updated_at, workspace_id
+        "SELECT id, kind, title, status, link_kind, link_id, created_at, updated_at, workspace_id, cloud_id
          FROM conversation WHERE id = ?1",
     )
     .bind(conversation_id)
@@ -171,6 +181,7 @@ async fn enqueue_conversation_snapshot(
     .fetch_all(pool)
     .await?;
     let payload = serde_json::json!({
+        "cloudId": conv.cloud_id,
         "localId": conv.id,
         "kind": conv.kind,
         "title": conv.title,

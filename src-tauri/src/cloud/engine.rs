@@ -27,6 +27,7 @@ use tokio::time::sleep;
 
 use super::{read_jwt, CLOUD_BASE};
 use crate::db::Db;
+use crate::memory::embedder;
 
 const META_CURSOR: &str = "cloud_sync_cursor";
 const META_LAST_SYNC: &str = "cloud_sync_last_at";
@@ -86,6 +87,165 @@ struct PullChange {
     payload: Value,
     #[serde(default, rename = "sourceDevice")]
     source_device: Option<String>,
+}
+
+// --- Apply helpers — memory.add + conversation.upsert ------------------
+
+/// Insert a memory entry from a pulled event. Idempotent via the
+/// `cloud_id` unique index — a re-pulled event with a cloud_id we've
+/// already seen is a no-op.
+///
+/// The text is re-embedded locally (using this device's fastembed
+/// model) so memory recall on this device picks it up immediately.
+async fn apply_memory_add(db: &Db, payload: &Value) -> anyhow::Result<bool> {
+    let cloud_id = payload
+        .get("cloudId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("memory.add missing cloudId"))?;
+    let workspace_id = payload
+        .get("workspaceId")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(1);
+    let source_kind = payload
+        .get("sourceKind")
+        .and_then(|v| v.as_str())
+        .unwrap_or("remote");
+    let source_id = payload
+        .get("sourceId")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let text = payload
+        .get("text")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("memory.add missing text"))?;
+
+    // Short-circuit if we already have this cloud_id.
+    let existing: Option<(i64,)> =
+        sqlx::query_as("SELECT id FROM embedding WHERE cloud_id = ?1 LIMIT 1")
+            .bind(cloud_id)
+            .fetch_optional(&db.pool)
+            .await?;
+    if existing.is_some() {
+        return Ok(false);
+    }
+
+    let vector = embedder::embed_one(text)?;
+    let bytes = embedder::vec_to_bytes(&vector);
+
+    sqlx::query(
+        "INSERT INTO embedding (workspace_id, source_kind, source_id, text, vector, cloud_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )
+    .bind(workspace_id)
+    .bind(source_kind)
+    .bind(source_id)
+    .bind(text)
+    .bind(bytes)
+    .bind(cloud_id)
+    .execute(&db.pool)
+    .await?;
+    Ok(true)
+}
+
+/// Apply a conversation snapshot from a pulled event. Match by cloud_id;
+/// if found, replace the local conversation + its messages wholesale
+/// (last-write-wins). If not found, create a new local conversation
+/// stamped with the incoming cloud_id, then insert all messages.
+async fn apply_conversation_upsert(db: &Db, payload: &Value) -> anyhow::Result<bool> {
+    let cloud_id = payload
+        .get("cloudId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("conversation.upsert missing cloudId"))?;
+    let kind = payload.get("kind").and_then(|v| v.as_str()).unwrap_or("journal");
+    let title = payload.get("title").and_then(|v| v.as_str());
+    let status = payload.get("status").and_then(|v| v.as_str()).unwrap_or("open");
+    let workspace_id = payload
+        .get("workspaceId")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(1);
+    let created_at = payload
+        .get("createdAt")
+        .and_then(|v| v.as_str());
+    let updated_at = payload
+        .get("updatedAt")
+        .and_then(|v| v.as_str());
+    let messages = payload
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut tx = db.pool.begin().await?;
+
+    let existing: Option<(i64,)> =
+        sqlx::query_as("SELECT id FROM conversation WHERE cloud_id = ?1 LIMIT 1")
+            .bind(cloud_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+
+    let local_id: i64 = if let Some((id,)) = existing {
+        sqlx::query(
+            "UPDATE conversation SET kind = ?1, title = ?2, status = ?3, \
+             updated_at = COALESCE(?4, updated_at) WHERE id = ?5",
+        )
+        .bind(kind)
+        .bind(title)
+        .bind(status)
+        .bind(updated_at)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM conversation_message WHERE conversation_id = ?1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        id
+    } else {
+        let id = sqlx::query(
+            "INSERT INTO conversation (kind, title, status, workspace_id, cloud_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5,
+                     COALESCE(?6, CURRENT_TIMESTAMP),
+                     COALESCE(?7, CURRENT_TIMESTAMP))",
+        )
+        .bind(kind)
+        .bind(title)
+        .bind(status)
+        .bind(workspace_id)
+        .bind(cloud_id)
+        .bind(created_at)
+        .bind(updated_at)
+        .execute(&mut *tx)
+        .await?
+        .last_insert_rowid();
+        id
+    };
+
+    for msg in &messages {
+        let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("user");
+        let content = msg.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        let payload_json = msg
+            .get("payload")
+            .map(|v| v.to_string())
+            .filter(|s| s != "null");
+        let response_kind = msg.get("responseKind").and_then(|v| v.as_str());
+        let msg_created_at = msg.get("createdAt").and_then(|v| v.as_str());
+        sqlx::query(
+            "INSERT INTO conversation_message
+                (conversation_id, role, content, payload_json, response_kind, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, COALESCE(?6, CURRENT_TIMESTAMP))",
+        )
+        .bind(local_id)
+        .bind(role)
+        .bind(content)
+        .bind(payload_json)
+        .bind(response_kind)
+        .bind(msg_created_at)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(true)
 }
 
 #[derive(Debug, Clone)]
@@ -370,12 +530,11 @@ impl SyncEngine {
                 .await?;
                 Ok(true)
             }
+            "memory.add" => apply_memory_add(db, &change.payload).await,
+            "conversation.upsert" => apply_conversation_upsert(db, &change.payload).await,
             _ => {
-                // memory.add and conversation.upsert are pushed (so the
-                // cloud accumulates the full graph) but local apply for
-                // them is deferred. Need stable cloud_id columns first
-                // so a re-pulled event doesn't double-insert / overwrite
-                // the user's local edits. Phase 2.4.
+                // Unknown / future kinds — cursor still advances so
+                // they don't block the pull, but we silently skip apply.
                 Ok(false)
             }
         }
