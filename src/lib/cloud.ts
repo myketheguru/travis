@@ -146,6 +146,7 @@ export interface SyncStatus {
   cursor: string;
   pendingOutbox: number;
   failingOutbox: number;
+  pendingFiles: number;
   lastSyncAt: string | null;
   lastError: string | null;
 }
@@ -154,6 +155,7 @@ export interface SyncRunResult {
   pushed: number;
   pulledApplied: number;
   pulledSkipped: number;
+  filesUploaded: number;
   cursor: string;
 }
 

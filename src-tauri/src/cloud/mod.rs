@@ -28,7 +28,24 @@ use tokio::net::TcpListener;
 
 pub mod cmd;
 pub mod engine;
+pub mod files;
 pub mod sync;
+
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
+/// One-shot store for the app's data directory, set in setup() once
+/// Tauri has resolved it. Read by the sync engine to find local files
+/// for upload.
+static APP_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn init_app_data_dir(path: PathBuf) {
+    let _ = APP_DATA_DIR.set(path);
+}
+
+pub fn app_data_dir() -> Option<PathBuf> {
+    APP_DATA_DIR.get().cloned()
+}
 
 /// Stable identifier for this desktop install. Pulled from the OS
 /// hostname; used to tag outbound /sync/push events so we can

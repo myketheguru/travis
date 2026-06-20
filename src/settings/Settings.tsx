@@ -118,6 +118,8 @@ export default function Settings({ onClose }: { onClose: () => void }) {
       const r = await cloudSyncNow();
       const parts: string[] = [];
       if (r.pushed > 0) parts.push(`${r.pushed} sent`);
+      if (r.filesUploaded > 0)
+        parts.push(`${r.filesUploaded} file${r.filesUploaded === 1 ? "" : "s"}`);
       if (r.pulledApplied > 0) parts.push(`${r.pulledApplied} received`);
       setSyncFlash(parts.length ? parts.join(" · ") : "Up to date");
       cloudSyncStatus().then(setSyncState).catch(() => {});
@@ -355,8 +357,8 @@ export default function Settings({ onClose }: { onClose: () => void }) {
                       <span>
                         {syncState.failingOutbox > 0
                           ? `${syncState.failingOutbox} stuck`
-                          : syncState.pendingOutbox > 0
-                          ? `${syncState.pendingOutbox} queued`
+                          : syncState.pendingOutbox > 0 || syncState.pendingFiles > 0
+                          ? `${syncState.pendingOutbox + syncState.pendingFiles} queued`
                           : "Synced"}
                       </span>
                       {syncState.lastSyncAt && (

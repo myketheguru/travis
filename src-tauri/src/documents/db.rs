@@ -175,17 +175,27 @@ pub struct InsertDocument<'a> {
 
 /// Insert a new document row. Caller must have already copied the file
 /// bytes into managed storage at `relative_path`.
+///
+/// v2 Phase 2.5: also wires the row into the sync layer. The insert,
+/// the doc.upsert outbox enqueue, and the file-upload queue insert all
+/// run in a single transaction so we never end up with partial sync
+/// state. The bytes themselves get pushed to R2 by the background
+/// sync worker draining `file_upload_queue` — caller is not blocked
+/// on the network round-trip.
 pub async fn insert(
     pool: &SqlitePool,
     input: InsertDocument<'_>,
 ) -> anyhow::Result<Document> {
-    let id: i64 = sqlx::query_scalar(
+    let mut tx = pool.begin().await?;
+
+    let row: (i64, String) = sqlx::query_as(
         "INSERT INTO document
             (workspace_id, kind, display_name, original_filename,
              content_hash, relative_path, size_bytes, mime_type,
-             source, conversation_id, workflow_state_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-         RETURNING id",
+             source, conversation_id, workflow_state_id, cloud_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                 lower(hex(randomblob(16))))
+         RETURNING id, cloud_id",
     )
     .bind(input.workspace_id)
     .bind(input.kind)
@@ -198,8 +208,45 @@ pub async fn insert(
     .bind(input.source.as_db_str())
     .bind(input.conversation_id)
     .bind(input.workflow_state_id)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
+    let id = row.0;
+    let cloud_id = row.1;
+
+    // Enqueue the doc.upsert event so the metadata flows to the cloud
+    // (and onward to the user's other devices) on the next sync cycle.
+    let payload = serde_json::json!({
+        "cloudId": cloud_id,
+        "workspaceId": input.workspace_id,
+        "kind": input.kind,
+        "displayName": input.display_name,
+        "originalFilename": input.original_filename,
+        "contentHash": input.content_hash,
+        "sizeBytes": input.size_bytes,
+        "mimeType": input.mime_type,
+        "source": input.source.as_db_str(),
+    })
+    .to_string();
+    sqlx::query("INSERT INTO sync_outbox (kind, payload) VALUES ('doc.upsert', ?1)")
+        .bind(payload)
+        .execute(&mut *tx)
+        .await?;
+
+    // Queue the bytes for R2 upload. INSERT OR IGNORE so multiple docs
+    // pointing at the same content_hash only schedule one upload.
+    sqlx::query(
+        "INSERT OR IGNORE INTO file_upload_queue
+            (content_hash, relative_path, mime_type, size_bytes)
+         VALUES (?1, ?2, ?3, ?4)",
+    )
+    .bind(input.content_hash)
+    .bind(input.relative_path)
+    .bind(input.mime_type)
+    .bind(input.size_bytes)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
 
     get(pool, id)
         .await?

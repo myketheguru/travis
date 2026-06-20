@@ -177,6 +177,9 @@ pub fn run() {
                 }
             };
             std::fs::create_dir_all(&data_dir).ok();
+            // v2 Phase 2.5 — make the data dir visible to the sync
+            // engine so it can find local files for upload to R2.
+            cloud::init_app_data_dir(data_dir.clone());
             let db_path = data_dir.join("travis.db");
 
             // Open + migrate the SQLite DB. The most likely failure mode is

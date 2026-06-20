@@ -25,6 +25,7 @@ use serde_json::Value;
 use sqlx::Row;
 use tokio::time::sleep;
 
+use super::files;
 use super::{read_jwt, CLOUD_BASE};
 use crate::db::Db;
 use crate::memory::embedder;
@@ -42,6 +43,7 @@ pub struct SyncStatus {
     pub cursor: String,
     pub pending_outbox: u32,
     pub failing_outbox: u32,
+    pub pending_files: u32,
     pub last_sync_at: Option<String>,
     pub last_error: Option<String>,
 }
@@ -52,6 +54,7 @@ pub struct SyncRunResult {
     pub pushed: u32,
     pub pulled_applied: u32,
     pub pulled_skipped: u32,
+    pub files_uploaded: u32,
     pub cursor: String,
 }
 
@@ -248,6 +251,91 @@ async fn apply_conversation_upsert(db: &Db, payload: &Value) -> anyhow::Result<b
     Ok(true)
 }
 
+/// Apply an incoming doc.upsert event. Matches the local row by
+/// cloud_id; on hit, updates the metadata in place. On miss, inserts a
+/// new local document row with the incoming cloud_id stamped.
+///
+/// Bytes are NOT downloaded here. The content_hash is stored so a
+/// future open of the doc can lazy-fetch via /sync/files/<hash>.
+/// Auto-download all docs on apply would be a disaster for users with
+/// gigabytes of historical PDFs.
+async fn apply_doc_upsert(db: &Db, payload: &Value) -> anyhow::Result<bool> {
+    let cloud_id = payload
+        .get("cloudId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("doc.upsert missing cloudId"))?;
+    let workspace_id = payload
+        .get("workspaceId")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(1);
+    let kind = payload.get("kind").and_then(|v| v.as_str()).unwrap_or("file");
+    let display_name = payload
+        .get("displayName")
+        .and_then(|v| v.as_str())
+        .unwrap_or("untitled");
+    let original_filename = payload
+        .get("originalFilename")
+        .and_then(|v| v.as_str())
+        .unwrap_or(display_name);
+    let content_hash = payload
+        .get("contentHash")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("doc.upsert missing contentHash"))?;
+    let size_bytes = payload
+        .get("sizeBytes")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let mime_type = payload
+        .get("mimeType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("application/octet-stream");
+    let source = payload.get("source").and_then(|v| v.as_str()).unwrap_or("synced");
+
+    let existing: Option<(i64,)> =
+        sqlx::query_as("SELECT id FROM document WHERE cloud_id = ?1 LIMIT 1")
+            .bind(cloud_id)
+            .fetch_optional(&db.pool)
+            .await?;
+    if let Some((id,)) = existing {
+        sqlx::query(
+            "UPDATE document SET kind = ?1, display_name = ?2, original_filename = ?3,
+             content_hash = ?4, size_bytes = ?5, mime_type = ?6 WHERE id = ?7",
+        )
+        .bind(kind)
+        .bind(display_name)
+        .bind(original_filename)
+        .bind(content_hash)
+        .bind(size_bytes)
+        .bind(mime_type)
+        .bind(id)
+        .execute(&db.pool)
+        .await?;
+    } else {
+        // relative_path will be filled in when the bytes are actually
+        // downloaded (Phase 2.5+ lazy fetch). For now we store the
+        // content_hash and an empty path; readers should check for
+        // empty path and treat it as "remote, not yet downloaded."
+        sqlx::query(
+            "INSERT INTO document
+                (workspace_id, kind, display_name, original_filename, content_hash,
+                 relative_path, size_bytes, mime_type, source, cloud_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, '', ?6, ?7, ?8, ?9)",
+        )
+        .bind(workspace_id)
+        .bind(kind)
+        .bind(display_name)
+        .bind(original_filename)
+        .bind(content_hash)
+        .bind(size_bytes)
+        .bind(mime_type)
+        .bind(source)
+        .bind(cloud_id)
+        .execute(&db.pool)
+        .await?;
+    }
+    Ok(true)
+}
+
 #[derive(Debug, Clone)]
 pub struct SyncEngine {
     http: reqwest::Client,
@@ -284,11 +372,17 @@ impl SyncEngine {
             .await
             .map(|r| r.get(0))
             .unwrap_or(0);
+        let pending_files: i64 = sqlx::query("SELECT COUNT(*) FROM file_upload_queue")
+            .fetch_one(&db.pool)
+            .await
+            .map(|r| r.get(0))
+            .unwrap_or(0);
 
         Ok(SyncStatus {
             cursor,
             pending_outbox: pending.max(0) as u32,
             failing_outbox: failing.max(0) as u32,
+            pending_files: pending_files.max(0) as u32,
             last_sync_at,
             last_error,
         })
@@ -298,6 +392,7 @@ impl SyncEngine {
     /// surface a small confirmation toast on manual triggers.
     pub async fn run_once(&self, db: &Db) -> anyhow::Result<SyncRunResult> {
         let pushed = self.drain_outbox(db).await?;
+        let files_uploaded = self.drain_file_uploads(db).await?;
         let (pulled_applied, pulled_skipped, cursor) = self.pull_and_apply(db).await?;
 
         db.set_meta_from_remote(META_LAST_SYNC, &chrono::Utc::now().to_rfc3339())
@@ -310,8 +405,90 @@ impl SyncEngine {
             pushed,
             pulled_applied,
             pulled_skipped,
+            files_uploaded,
             cursor,
         })
+    }
+
+    // --- file bytes drain --------------------------------------------
+
+    /// Drain the `file_upload_queue` into R2 via /sync/files. Each row
+    /// is read from local storage and uploaded by content hash. Successful
+    /// uploads delete their queue row; failures bump attempts and stash
+    /// last_error like the outbox path.
+    ///
+    /// We process one file at a time (rather than batches) because each
+    /// upload is its own HTTP round-trip and we want bounded memory
+    /// usage even with multi-MB documents.
+    async fn drain_file_uploads(&self, db: &Db) -> anyhow::Result<u32> {
+        let mut uploaded = 0u32;
+        let Some(app_data_dir) = super::app_data_dir() else {
+            tracing::warn!("file drain: app_data_dir not initialised yet");
+            return Ok(0);
+        };
+        let storage_root = match crate::documents::storage::storage_root(&app_data_dir) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("file drain: storage_root unavailable: {e}");
+                return Ok(0);
+            }
+        };
+        loop {
+            let row: Option<(i64, String, String, String, i64)> = sqlx::query_as(
+                "SELECT id, content_hash, relative_path, mime_type, size_bytes \
+                 FROM file_upload_queue WHERE attempts < ?1 ORDER BY id LIMIT 1",
+            )
+            .bind(MAX_OUTBOX_ATTEMPTS)
+            .fetch_optional(&db.pool)
+            .await?;
+            let Some((id, content_hash, relative_path, mime_type, _size_bytes)) = row else {
+                break;
+            };
+
+            let abs_path = storage_root.join(&relative_path);
+            let bytes = match tokio::fs::read(&abs_path).await {
+                Ok(b) => b,
+                Err(e) => {
+                    let err_str = format!("read {}: {e}", abs_path.display());
+                    sqlx::query(
+                        "UPDATE file_upload_queue SET attempts = attempts + 1, \
+                         last_error = ?1 WHERE id = ?2",
+                    )
+                    .bind(&err_str)
+                    .bind(id)
+                    .execute(&db.pool)
+                    .await
+                    .ok();
+                    db.set_meta_from_remote(META_LAST_ERROR, &err_str).await.ok();
+                    return Err(anyhow::anyhow!(err_str));
+                }
+            };
+            match files::upload_one(&self.http, &content_hash, bytes, &mime_type).await {
+                Ok(()) => {
+                    sqlx::query("DELETE FROM file_upload_queue WHERE id = ?1")
+                        .bind(id)
+                        .execute(&db.pool)
+                        .await
+                        .ok();
+                    uploaded += 1;
+                }
+                Err(e) => {
+                    let err_str = e.to_string();
+                    sqlx::query(
+                        "UPDATE file_upload_queue SET attempts = attempts + 1, \
+                         last_error = ?1 WHERE id = ?2",
+                    )
+                    .bind(&err_str)
+                    .bind(id)
+                    .execute(&db.pool)
+                    .await
+                    .ok();
+                    db.set_meta_from_remote(META_LAST_ERROR, &err_str).await.ok();
+                    return Err(e);
+                }
+            }
+        }
+        Ok(uploaded)
     }
 
     // --- push --------------------------------------------------------
@@ -532,6 +709,7 @@ impl SyncEngine {
             }
             "memory.add" => apply_memory_add(db, &change.payload).await,
             "conversation.upsert" => apply_conversation_upsert(db, &change.payload).await,
+            "doc.upsert" => apply_doc_upsert(db, &change.payload).await,
             _ => {
                 // Unknown / future kinds — cursor still advances so
                 // they don't block the pull, but we silently skip apply.
