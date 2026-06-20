@@ -14,6 +14,7 @@ mod calendar_cmd;
 mod capture;
 mod diagnostics;
 mod cases;
+mod cloud;
 mod commands;
 mod conversation;
 mod conversation_cmd;
@@ -577,6 +578,12 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            cloud::cmd::cloud_status,
+            cloud::cmd::cloud_sign_in_with_google,
+            cloud::cmd::cloud_sign_out,
+            cloud::cmd::cloud_policy,
+            cloud::cmd::cloud_record_byok,
+            cloud::cmd::cloud_has_token,
             commands::app_status,
             commands::complete_onboarding,
             commands::update_profile,

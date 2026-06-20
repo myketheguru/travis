@@ -13,8 +13,18 @@ import { packAlerts, type AlertResult } from "./lib/packs";
 import Onboarding from "./onboarding/Onboarding";
 import Settings from "./settings/Settings";
 import Manage from "./manage/Manage";
+import { SignIn } from "./components/SignIn";
+import { cloudHasToken, cloudStatus, type CloudUser } from "./lib/cloud";
 
 type View = "splash" | "settings" | "manage";
+
+// v2 Phase 1 — Tri-state cloud sign-in gate. Resolved at launch and
+// after sign-in. Null while we're still checking; the empty render
+// avoids a flash of the sign-in screen for already-signed-in users.
+type CloudGate =
+  | { kind: "checking" }
+  | { kind: "signed_out" }
+  | { kind: "signed_in"; user: CloudUser };
 
 interface UpdateInfo {
   version: string;
@@ -40,6 +50,39 @@ function AppInner() {
   const [pendingUpdate, setPendingUpdate] = useState<UpdateInfo | null>(null);
   const [updateDismissed, setUpdateDismissed] = useState<string | null>(null);
   const [updateInstalling, setUpdateInstalling] = useState(false);
+  const [cloud, setCloud] = useState<CloudGate>({ kind: "checking" });
+
+  // v2 Phase 1 — Check cloud sign-in status at launch. Fast-path:
+  // cloudHasToken() avoids the network call when nothing is stored.
+  // Slow path: cloudStatus() validates the token against the backend.
+  // On 401 the backend has rejected the JWT; we treat that as signed-out.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const hasToken = await cloudHasToken();
+        if (!hasToken) {
+          if (!cancelled) setCloud({ kind: "signed_out" });
+          return;
+        }
+        const status = await cloudStatus();
+        if (cancelled) return;
+        if (status.signedIn && status.user) {
+          setCloud({ kind: "signed_in", user: status.user });
+        } else {
+          setCloud({ kind: "signed_out" });
+        }
+      } catch (e) {
+        // Cloud unreachable. Treat as signed out for now so the user
+        // can retry; the SignIn screen surfaces network errors clearly.
+        console.error("cloud status check failed", e);
+        if (!cancelled) setCloud({ kind: "signed_out" });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const refresh = useCallback(async () => {
     // v0.20.10 — split the two calls so a getUserProfile() failure
@@ -109,6 +152,33 @@ function AppInner() {
 
   const updateBannerVisible =
     pendingUpdate !== null && updateDismissed !== pendingUpdate.version;
+
+  // v2 Phase 1 — sign-in gate runs BEFORE the onboarding gate. A user
+  // who isn't signed in can't proceed regardless of local state.
+  if (cloud.kind === "checking") {
+    return <main className="h-full w-full" />;
+  }
+
+  if (cloud.kind === "signed_out") {
+    return (
+      <motion.div
+        key="signin"
+        className="h-full w-full"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.45 }}
+      >
+        <SignIn
+          onSignedIn={(user) => {
+            setCloud({ kind: "signed_in", user });
+            // Kick off a status refresh so the rest of the app picks
+            // up any profile that may have been provisioned cloud-side.
+            void refresh();
+          }}
+        />
+      </motion.div>
+    );
+  }
 
   if (!status) {
     return <main className="h-full w-full" />;
