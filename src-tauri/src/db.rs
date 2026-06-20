@@ -159,6 +159,7 @@ impl Db {
     }
 
     pub async fn upsert_user_profile(&self, p: &UserProfile) -> anyhow::Result<()> {
+        let mut tx = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO user_profile (id, name, role, org, llm_provider, ollama_url, model,
                                        context_blurb, communication_style, updated_at)
@@ -182,6 +183,61 @@ impl Db {
         .bind(&p.model)
         .bind(&p.context_blurb)
         .bind(&p.communication_style)
+        .execute(&mut *tx)
+        .await?;
+        // v2 Phase 2.3 — enqueue profile.set so the cloud (and other
+        // devices) see the change on the next sync cycle. We omit the
+        // llm_provider / ollama_url / model fields from the synced
+        // payload — those are per-install (BYOK vs hosted) and never
+        // roam.
+        let payload = serde_json::json!({
+            "name": p.name,
+            "role": p.role,
+            "org": p.org,
+            "contextBlurb": p.context_blurb,
+            "communicationStyle": p.communication_style,
+        })
+        .to_string();
+        sqlx::query("INSERT INTO sync_outbox (kind, payload) VALUES ('profile.set', ?1)")
+            .bind(payload)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// v2 Phase 2.3 — apply a pulled `profile.set` event. Bypasses the
+    /// outbox so we don't re-emit our own writes. Only the synced
+    /// fields are touched; llm_provider / ollama_url / model stay
+    /// whatever the local install had.
+    pub async fn upsert_user_profile_from_remote(
+        &self,
+        name: &str,
+        role: &str,
+        org: &str,
+        context_blurb: Option<&str>,
+        communication_style: Option<&str>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO user_profile (id, name, role, org, llm_provider, ollama_url, model,
+                                       context_blurb, communication_style, updated_at)
+             VALUES (1, ?1, ?2, ?3, COALESCE((SELECT llm_provider FROM user_profile WHERE id=1), 'travis_cloud'),
+                     (SELECT ollama_url FROM user_profile WHERE id=1),
+                     (SELECT model FROM user_profile WHERE id=1),
+                     ?4, ?5, CURRENT_TIMESTAMP)
+             ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                role = excluded.role,
+                org = excluded.org,
+                context_blurb = excluded.context_blurb,
+                communication_style = excluded.communication_style,
+                updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(name)
+        .bind(role)
+        .bind(org)
+        .bind(context_blurb)
+        .bind(communication_style)
         .execute(&self.pool)
         .await?;
         Ok(())

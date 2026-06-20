@@ -336,10 +336,46 @@ impl SyncEngine {
                 db.set_meta_from_remote(key, value).await?;
                 Ok(true)
             }
+            "profile.set" => {
+                let name = change
+                    .payload
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let role = change
+                    .payload
+                    .get("role")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let org = change
+                    .payload
+                    .get("org")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let context_blurb = change
+                    .payload
+                    .get("contextBlurb")
+                    .and_then(|v| v.as_str());
+                let communication_style = change
+                    .payload
+                    .get("communicationStyle")
+                    .and_then(|v| v.as_str());
+                db.upsert_user_profile_from_remote(
+                    name,
+                    role,
+                    org,
+                    context_blurb,
+                    communication_style,
+                )
+                .await?;
+                Ok(true)
+            }
             _ => {
-                // Other kinds (memory.add, conversation.upsert, etc.) are
-                // accepted by the cloud and will appear in pull responses,
-                // but local apply for them lands in Phase 2.3+.
+                // memory.add and conversation.upsert are pushed (so the
+                // cloud accumulates the full graph) but local apply for
+                // them is deferred. Need stable cloud_id columns first
+                // so a re-pulled event doesn't double-insert / overwrite
+                // the user's local edits. Phase 2.4.
                 Ok(false)
             }
         }

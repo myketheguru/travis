@@ -124,13 +124,74 @@ pub async fn append_with_kind(
         .execute(pool)
         .await?;
 
-    sqlx::query_as::<_, ConversationMessage>(
+    let result = sqlx::query_as::<_, ConversationMessage>(
         "SELECT id, conversation_id, role, content, payload_json, created_at, response_kind
          FROM conversation_message WHERE id=?1",
     )
     .bind(id)
     .fetch_one(pool)
-    .await
+    .await;
+
+    // v2 Phase 2.3 — enqueue conversation.upsert snapshot so the
+    // cloud has the running thread (and other devices will eventually
+    // be able to pull it). Best-effort — a failure here doesn't fail
+    // the user's message append. If the enqueue dies between message
+    // insert and snapshot enqueue, the next append picks up the
+    // entire thread state anyway.
+    if let Err(e) = enqueue_conversation_snapshot(pool, conversation_id).await {
+        tracing::warn!(
+            "sync: failed to enqueue conversation.upsert (conv_id={conversation_id}): {e}"
+        );
+    }
+
+    result
+}
+
+/// Build a full conversation snapshot and append it to the sync outbox.
+/// Triggered after every message append so the cloud always has the
+/// latest state of the thread. Conversations rarely exceed a few
+/// hundred messages; sending the whole thing each time keeps the
+/// apply contract dead simple (last write wins).
+async fn enqueue_conversation_snapshot(
+    pool: &SqlitePool,
+    conversation_id: i64,
+) -> Result<(), sqlx::Error> {
+    let conv = sqlx::query_as::<_, Conversation>(
+        "SELECT id, kind, title, status, link_kind, link_id, created_at, updated_at, workspace_id
+         FROM conversation WHERE id = ?1",
+    )
+    .bind(conversation_id)
+    .fetch_one(pool)
+    .await?;
+    let messages = sqlx::query_as::<_, ConversationMessage>(
+        "SELECT id, conversation_id, role, content, payload_json, created_at, response_kind
+         FROM conversation_message WHERE conversation_id = ?1 ORDER BY id",
+    )
+    .bind(conversation_id)
+    .fetch_all(pool)
+    .await?;
+    let payload = serde_json::json!({
+        "localId": conv.id,
+        "kind": conv.kind,
+        "title": conv.title,
+        "status": conv.status,
+        "workspaceId": conv.workspace_id,
+        "createdAt": conv.created_at,
+        "updatedAt": conv.updated_at,
+        "messages": messages.iter().map(|m| serde_json::json!({
+            "role": m.role,
+            "content": m.content,
+            "payload": m.payload_json.as_ref().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()),
+            "responseKind": m.response_kind,
+            "createdAt": m.created_at,
+        })).collect::<Vec<_>>(),
+    })
+    .to_string();
+    sqlx::query("INSERT INTO sync_outbox (kind, payload) VALUES ('conversation.upsert', ?1)")
+        .bind(payload)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 /// Delete a message and every message that came after it in the
