@@ -451,6 +451,12 @@ struct InitResponse {
     state: String,
 }
 
+/// Signal a pending sign-in attempt to give up early. Set by the
+/// `cloud_sign_in_cancel` command when the user clicks Cancel on the
+/// SignIn screen; the in-flight `sign_in_with_google` task polls for
+/// it via `tokio::select!` against the loopback listener.
+pub static SIGN_IN_CANCEL: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
 /// Drive the full Google sign-in flow end to end.
 ///
 /// Returns the new JWT (already stored in the keychain) and the user
@@ -482,12 +488,20 @@ pub async fn sign_in_with_google(http: &reqwest::Client) -> anyhow::Result<Cloud
         tracing::warn!("could not open browser: {e}. Auth URL: {}", init.auth_url);
     }
 
-    // 4. Wait for the loopback callback. Hard cap at 5 minutes so a
-    //    user who closes the browser tab doesn't tie up the listener
-    //    forever.
-    let callback = tokio::time::timeout(Duration::from_secs(5 * 60), accept_callback(listener))
-        .await
-        .map_err(|_| anyhow::anyhow!("sign-in timed out — the browser tab was closed before completing"))??;
+    // 4. Wait for the loopback callback OR a cancel signal OR a 2-minute
+    //    timeout. The cancel path lets the UI abort cleanly when the user
+    //    closes the browser tab or hits an error on Google's side; the
+    //    timeout is the hard backstop. Both paths release the port so
+    //    a quick retry doesn't fail.
+    let callback = tokio::select! {
+        biased;
+        _ = SIGN_IN_CANCEL.notified() => {
+            anyhow::bail!("sign-in canceled");
+        }
+        r = tokio::time::timeout(Duration::from_secs(2 * 60), accept_callback(listener)) => {
+            r.map_err(|_| anyhow::anyhow!("sign-in timed out — the browser tab was closed before completing"))??
+        }
+    };
 
     // 5. Store the JWT, fetch the user profile, return it.
     store_jwt(&callback.token)?;
@@ -550,8 +564,18 @@ async fn accept_callback(listener: TcpListener) -> anyhow::Result<CallbackResult
 
 #[cfg(target_os = "windows")]
 fn open_in_browser(url: &str) -> std::io::Result<()> {
-    std::process::Command::new("cmd")
-        .args(["/c", "start", "", url])
+    // Don't use `cmd /c start "" <url>` — cmd.exe parses `&` in the URL
+    // as a command separator BEFORE passing to start, so OAuth URLs get
+    // truncated at the first `&`. Symptoms: Google replies with
+    // "Required parameter is missing: response_type" because everything
+    // past `?client_id=…&` was chopped off.
+    //
+    // rundll32 hands the URL straight to the ShellExecute API as a
+    // single literal argument — no shell parsing, no truncation. This
+    // is the documented Win32 way to launch the system browser from a
+    // command line.
+    std::process::Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", url])
         .spawn()
         .map(|_| ())
 }

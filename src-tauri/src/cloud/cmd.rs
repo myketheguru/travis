@@ -48,7 +48,8 @@ pub async fn cloud_status(state: State<'_, AppState>) -> Result<CloudStatus, Str
 }
 
 /// Drive the full Google sign-in flow. Blocks until the user finishes
-/// in their browser (capped at 5 minutes by the loopback listener).
+/// in their browser (capped at 2 minutes by the loopback listener, or
+/// when the UI fires cloud_sign_in_cancel).
 #[tauri::command]
 pub async fn cloud_sign_in_with_google(
     state: State<'_, AppState>,
@@ -56,6 +57,15 @@ pub async fn cloud_sign_in_with_google(
     sign_in_with_google(&state.http)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Abort the in-flight sign_in_with_google call. Triggers the cancel
+/// notify; the awaiting task drops out of its tokio::select! and the
+/// listener port is released. Idempotent — calling when no sign-in is
+/// in flight is a no-op.
+#[tauri::command]
+pub fn cloud_sign_in_cancel() {
+    crate::cloud::SIGN_IN_CANCEL.notify_waiters();
 }
 
 /// Sign out. Tells the backend to revoke the token, then drops the

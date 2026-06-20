@@ -76,6 +76,15 @@ export function cloudSignInWithGoogle(): Promise<CloudUser> {
 }
 
 /**
+ * Abort the in-flight Google sign-in. The cloudSignInWithGoogle()
+ * promise rejects with "sign-in canceled". Idempotent — safe to call
+ * when no sign-in is running.
+ */
+export function cloudSignInCancel(): Promise<void> {
+  return invoke<void>("cloud_sign_in_cancel");
+}
+
+/**
  * Sign out — clears the JWT locally and tells the backend to revoke it.
  * The local clear happens even if the backend round-trip fails.
  */

@@ -7,10 +7,10 @@
  * Intentionally minimal: this is the single source of truth for sign-in
  * and it sits in front of everything else, including onboarding.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { PresenceOrb } from "./PresenceOrb";
-import { cloudSignInWithGoogle, type CloudUser } from "../lib/cloud";
+import { cloudSignInCancel, cloudSignInWithGoogle, type CloudUser } from "../lib/cloud";
 
 interface Props {
   onSignedIn: (user: CloudUser) => void;
@@ -27,16 +27,40 @@ export function SignIn({ onSignedIn }: Props) {
       const user = await cloudSignInWithGoogle();
       onSignedIn(user);
     } catch (e) {
-      setStatus("error");
-      setError(
+      const msg =
         e instanceof Error
           ? e.message
           : typeof e === "string"
           ? e
-          : "Sign-in didn't complete. Please try again.",
-      );
+          : "Sign-in didn't complete. Please try again.";
+      // Surface canceled as a soft state, not an error.
+      if (msg.toLowerCase().includes("canceled") || msg.toLowerCase().includes("cancelled")) {
+        setStatus("idle");
+        setError(null);
+        return;
+      }
+      setStatus("error");
+      setError(msg);
     }
   }
+
+  async function handleCancel() {
+    try {
+      await cloudSignInCancel();
+    } catch {
+      /* idempotent; ignore */
+    }
+    // The inflight invoke will reject as 'sign-in canceled' and the
+    // handler above turns it into status: idle.
+  }
+
+  // If the screen unmounts mid-flight (user navigated away somehow),
+  // make sure the backend loopback stops blocking on the port.
+  useEffect(() => {
+    return () => {
+      void cloudSignInCancel().catch(() => {});
+    };
+  }, []);
 
   return (
     <div className="min-h-screen flex items-center justify-center px-6">
@@ -68,10 +92,18 @@ export function SignIn({ onSignedIn }: Props) {
         </button>
 
         {status === "loading" && (
-          <p className="mt-6 text-xs text-bone-3 leading-relaxed max-w-xs mx-auto">
-            We've opened your browser to Google. Finish signing in there, then
-            this window will continue.
-          </p>
+          <div className="mt-6 flex flex-col items-center gap-3">
+            <p className="text-xs text-bone-3 leading-relaxed max-w-xs mx-auto">
+              We've opened your browser to Google. Finish signing in there, then
+              this window will continue.
+            </p>
+            <button
+              onClick={handleCancel}
+              className="text-xs text-bone-3 hover:text-bone-2 underline underline-offset-4 decoration-bone-3/40 transition-colors"
+            >
+              Cancel and try again
+            </button>
+          </div>
         )}
 
         {error && (

@@ -664,6 +664,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             cloud::cmd::cloud_status,
             cloud::cmd::cloud_sign_in_with_google,
+            cloud::cmd::cloud_sign_in_cancel,
             cloud::cmd::cloud_sign_out,
             cloud::cmd::cloud_policy,
             cloud::cmd::cloud_record_byok,
