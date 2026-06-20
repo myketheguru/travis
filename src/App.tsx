@@ -15,6 +15,7 @@ import Settings from "./settings/Settings";
 import Manage from "./manage/Manage";
 import { SignIn } from "./components/SignIn";
 import { MigrationPrompt } from "./components/MigrationPrompt";
+import { WhileYouWereAway } from "./components/WhileYouWereAway";
 import {
   cloudHasToken,
   cloudMigrationStatus,
@@ -22,7 +23,7 @@ import {
   type CloudUser,
 } from "./lib/cloud";
 
-type View = "splash" | "settings" | "manage";
+type View = "splash" | "settings" | "manage" | "feed";
 
 // v2 Phase 1 — Tri-state cloud sign-in gate. Resolved at launch and
 // after sign-in. Null while we're still checking; the empty render
@@ -307,6 +308,24 @@ function AppInner() {
     );
   }
 
+  if (view === "feed") {
+    return (
+      <>
+        <HealthBanner />
+        {updateBanner}
+        <motion.div
+          key="feed"
+          className="h-full w-full"
+          initial={{ opacity: 0, x: 16 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+        >
+          <WhileYouWereAway onClose={() => setView("splash")} />
+        </motion.div>
+      </>
+    );
+  }
+
   if (view === "manage") {
     return (
       <>
@@ -341,6 +360,7 @@ function AppInner() {
           name={profile?.name ?? null}
           onOpenSettings={() => setView("settings")}
           onOpenManage={() => setView("manage")}
+          onOpenFeed={() => setView("feed")}
         />
       </motion.div>
     </>
@@ -352,11 +372,13 @@ function Splash({
   name,
   onOpenSettings,
   onOpenManage,
+  onOpenFeed,
 }: {
   status: { version: string; dbReady: boolean };
   name: string | null;
   onOpenSettings: () => void;
   onOpenManage: () => void;
+  onOpenFeed: () => void;
 }) {
   const first = name ? name.split(" ")[0] : null;
   const [stats, setStats] = useState<DbStats | null>(null);
@@ -387,6 +409,17 @@ function Splash({
     <main className="relative h-full w-full flex flex-col items-center overflow-hidden">
       <div className="absolute top-4 right-4 flex items-center gap-2">
         <WorkspaceSwitcher />
+        <button
+          onClick={onOpenFeed}
+          title="While you were away"
+          aria-label="While you were away"
+          className="h-9 w-9 flex items-center justify-center rounded-full text-bone-3 hover:text-bone-2 hover:bg-white/[0.04] transition-colors"
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 7v5l3 2" />
+          </svg>
+        </button>
         <button
           onClick={onOpenManage}
           title="Manage"

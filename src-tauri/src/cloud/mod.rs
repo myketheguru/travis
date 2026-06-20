@@ -199,6 +199,100 @@ impl CloudClient {
         Ok(body)
     }
 
+    /// v2 Phase 4 — list this user's workflow schedules.
+    pub async fn list_schedules(&self) -> anyhow::Result<Vec<WorkflowSchedule>> {
+        let resp = self
+            .http
+            .get(format!("{CLOUD_BASE}/workflows/schedules"))
+            .header("authorization", self.auth())
+            .send()
+            .await?
+            .error_for_status()?;
+        let body: serde_json::Value = resp.json().await?;
+        let arr = body
+            .get("schedules")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        Ok(arr
+            .into_iter()
+            .filter_map(|v| serde_json::from_value(v).ok())
+            .collect())
+    }
+
+    /// v2 Phase 4 — create a new schedule.
+    pub async fn create_schedule(&self, input: CreateScheduleInput) -> anyhow::Result<String> {
+        let resp = self
+            .http
+            .post(format!("{CLOUD_BASE}/workflows/schedules"))
+            .header("authorization", self.auth())
+            .json(&input)
+            .send()
+            .await?
+            .error_for_status()?;
+        let body: serde_json::Value = resp.json().await?;
+        Ok(body
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_default())
+    }
+
+    /// v2 Phase 4 — delete a schedule.
+    pub async fn delete_schedule(&self, id: &str) -> anyhow::Result<()> {
+        self.http
+            .delete(format!("{CLOUD_BASE}/workflows/schedules/{id}"))
+            .header("authorization", self.auth())
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    /// v2 Phase 4 — trigger an immediate run.
+    pub async fn run_workflow_now(&self, input: RunNowInput) -> anyhow::Result<String> {
+        let resp = self
+            .http
+            .post(format!("{CLOUD_BASE}/workflows/run-now"))
+            .header("authorization", self.auth())
+            .json(&input)
+            .send()
+            .await?
+            .error_for_status()?;
+        let body: serde_json::Value = resp.json().await?;
+        Ok(body
+            .get("runId")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_default())
+    }
+
+    /// v2 Phase 4 — paginated run history. Optional `since` ISO
+    /// timestamp filters to newer items only (for incremental polling).
+    pub async fn list_runs(&self, since: Option<&str>) -> anyhow::Result<Vec<WorkflowRun>> {
+        let mut url = format!("{CLOUD_BASE}/workflows/runs");
+        if let Some(s) = since {
+            url.push_str(&format!("?since={}", urlencoding::encode(s)));
+        }
+        let resp = self
+            .http
+            .get(&url)
+            .header("authorization", self.auth())
+            .send()
+            .await?
+            .error_for_status()?;
+        let body: serde_json::Value = resp.json().await?;
+        let arr = body
+            .get("runs")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        Ok(arr
+            .into_iter()
+            .filter_map(|v| serde_json::from_value(v).ok())
+            .collect())
+    }
+
     /// `POST /auth/signout` — tells the backend to revoke this token.
     /// The local copy is cleared via `clear_jwt()` separately.
     pub async fn signout(&self) -> anyhow::Result<()> {
@@ -260,6 +354,68 @@ pub struct ByokEvent {
 pub struct RefreshResponse {
     pub token: String,
     pub expires_in: u64,
+}
+
+// --- v2 Phase 4 — workflow loop types ---------------------------------
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct WorkflowSchedule {
+    pub id: String,
+    pub name: String,
+    pub trigger_kind: String,
+    pub trigger_spec: String,
+    pub prompt: String,
+    pub is_active: i32,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct WorkflowRun {
+    pub id: String,
+    pub user_id: String,
+    #[serde(default)]
+    pub schedule_id: Option<String>,
+    #[serde(default)]
+    pub schedule_name: Option<String>,
+    pub source: String,
+    pub status: String,
+    pub started_at: String,
+    #[serde(default)]
+    pub finished_at: Option<String>,
+    #[serde(default)]
+    pub result_text: Option<String>,
+    #[serde(default)]
+    pub input_tokens: u32,
+    #[serde(default)]
+    pub output_tokens: u32,
+    #[serde(default)]
+    pub cost_usd_cents: u32,
+    #[serde(default)]
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateScheduleInput {
+    pub name: String,
+    pub trigger_kind: String,
+    pub trigger_spec: serde_json::Value,
+    pub prompt: String,
+    pub is_active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunNowInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schedule_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
 }
 
 // --- OAuth loopback flow -------------------------------------------------

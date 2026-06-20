@@ -175,3 +175,67 @@ export function cloudSyncNow(): Promise<SyncRunResult> {
 export function cloudSyncStatus(): Promise<SyncStatus> {
   return invoke<SyncStatus>("cloud_sync_status");
 }
+
+// --- v2 Phase 4 — workflow loop ---------------------------------------
+
+export interface WorkflowSchedule {
+  id: string;
+  name: string;
+  trigger_kind: string;
+  trigger_spec: string;
+  prompt: string;
+  is_active: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface WorkflowRun {
+  id: string;
+  user_id: string;
+  schedule_id?: string | null;
+  schedule_name?: string | null;
+  source: string;
+  status: string;
+  started_at: string;
+  finished_at?: string | null;
+  result_text?: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd_cents: number;
+  error_message?: string | null;
+}
+
+export interface CreateScheduleInput {
+  name: string;
+  triggerKind: "cron" | "calendar" | "email_match" | "manual";
+  triggerSpec: Record<string, unknown>;
+  prompt: string;
+  isActive: boolean;
+}
+
+export interface RunNowInput {
+  scheduleId?: string;
+  prompt?: string;
+}
+
+export function cloudWorkflowSchedules(): Promise<WorkflowSchedule[]> {
+  return invoke<WorkflowSchedule[]>("cloud_workflow_schedules");
+}
+
+export function cloudWorkflowCreateSchedule(
+  input: CreateScheduleInput,
+): Promise<string> {
+  return invoke<string>("cloud_workflow_create_schedule", { input });
+}
+
+export function cloudWorkflowDeleteSchedule(id: string): Promise<void> {
+  return invoke<void>("cloud_workflow_delete_schedule", { id });
+}
+
+export function cloudWorkflowRunNow(input: RunNowInput): Promise<string> {
+  return invoke<string>("cloud_workflow_run_now", { input });
+}
+
+export function cloudWorkflowRuns(since?: string): Promise<WorkflowRun[]> {
+  return invoke<WorkflowRun[]>("cloud_workflow_runs", { since: since ?? null });
+}

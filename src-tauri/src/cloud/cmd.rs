@@ -1,6 +1,6 @@
 //! Tauri commands exposing the cloud client to the React frontend.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::AppState;
@@ -11,6 +11,7 @@ use super::sync::{
 };
 use super::{
     clear_jwt, device_id, read_jwt, sign_in_with_google, ByokEvent, CloudClient, CloudUser,
+    CreateScheduleInput, RunNowInput, WorkflowRun, WorkflowSchedule,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -179,4 +180,58 @@ pub async fn cloud_sync_now(state: State<'_, AppState>) -> Result<SyncRunResult,
 pub async fn cloud_sync_status(state: State<'_, AppState>) -> Result<SyncStatus, String> {
     let engine = SyncEngine::new(state.http.clone(), device_id());
     engine.status(&state.db).await.map_err(|e| e.to_string())
+}
+
+// --- v2 Phase 4 — workflow loop --------------------------------------
+
+#[tauri::command]
+pub async fn cloud_workflow_schedules(
+    state: State<'_, AppState>,
+) -> Result<Vec<WorkflowSchedule>, String> {
+    let client = CloudClient::current(state.http.clone())
+        .ok_or_else(|| "not signed in".to_string())?;
+    client.list_schedules().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cloud_workflow_create_schedule(
+    state: State<'_, AppState>,
+    input: CreateScheduleInput,
+) -> Result<String, String> {
+    let client = CloudClient::current(state.http.clone())
+        .ok_or_else(|| "not signed in".to_string())?;
+    client.create_schedule(input).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cloud_workflow_delete_schedule(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let client = CloudClient::current(state.http.clone())
+        .ok_or_else(|| "not signed in".to_string())?;
+    client.delete_schedule(&id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cloud_workflow_run_now(
+    state: State<'_, AppState>,
+    input: RunNowInput,
+) -> Result<String, String> {
+    let client = CloudClient::current(state.http.clone())
+        .ok_or_else(|| "not signed in".to_string())?;
+    client.run_workflow_now(input).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cloud_workflow_runs(
+    state: State<'_, AppState>,
+    since: Option<String>,
+) -> Result<Vec<WorkflowRun>, String> {
+    let client = CloudClient::current(state.http.clone())
+        .ok_or_else(|| "not signed in".to_string())?;
+    client
+        .list_runs(since.as_deref())
+        .await
+        .map_err(|e| e.to_string())
 }
