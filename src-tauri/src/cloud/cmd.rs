@@ -5,6 +5,9 @@ use tauri::State;
 
 use crate::AppState;
 
+use super::sync::{
+    migration_status, record_decision, upload_local, MigrationDetails, MigrationStatus,
+};
 use super::{clear_jwt, read_jwt, sign_in_with_google, ByokEvent, CloudClient, CloudUser};
 
 #[derive(Debug, Clone, Serialize)]
@@ -103,4 +106,57 @@ pub async fn cloud_record_byok(
 #[tauri::command]
 pub fn cloud_has_token() -> bool {
     read_jwt().is_some()
+}
+
+// --- v2 Phase 2.1 — migration of existing local data --------------------
+
+/// Inspect the migration state + count what we have to migrate. Called
+/// from the MigrationPrompt UI before the user picks a path.
+#[tauri::command]
+pub async fn cloud_migration_status(
+    state: State<'_, AppState>,
+) -> Result<MigrationStatus, String> {
+    migration_status(&state.db).await.map_err(|e| e.to_string())
+}
+
+/// User picked "Upload my work" — push the local DB to the cloud.
+/// Records `complete` status on success so the prompt doesn't re-appear.
+#[tauri::command]
+pub async fn cloud_migration_upload(
+    state: State<'_, AppState>,
+) -> Result<MigrationDetails, String> {
+    let host = whoami_device();
+    upload_local(state.http.clone(), &state.db, Some(host))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// User picked "Start fresh" — local stays untouched, cloud starts
+/// empty. Records `fresh` so we don't re-prompt.
+#[tauri::command]
+pub async fn cloud_migration_start_fresh(
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    record_decision(&state.db, "fresh", "fresh")
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// User picked "Skip for now" — records `skipped`. The UI may offer
+/// the prompt again from settings; the gate in App.tsx will treat
+/// `skipped` as "don't prompt automatically" but Settings can still
+/// surface it.
+#[tauri::command]
+pub async fn cloud_migration_skip(state: State<'_, AppState>) -> Result<(), String> {
+    record_decision(&state.db, "skipped", "skipped")
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn whoami_device() -> String {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
 }

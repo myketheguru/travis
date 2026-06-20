@@ -27,6 +27,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 pub mod cmd;
+pub mod sync;
 
 /// Production base URL. The desktop currently hardcodes this. A future
 /// build flag can swap to a staging URL if we ever need one.

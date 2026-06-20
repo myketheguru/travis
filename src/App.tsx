@@ -14,7 +14,13 @@ import Onboarding from "./onboarding/Onboarding";
 import Settings from "./settings/Settings";
 import Manage from "./manage/Manage";
 import { SignIn } from "./components/SignIn";
-import { cloudHasToken, cloudStatus, type CloudUser } from "./lib/cloud";
+import { MigrationPrompt } from "./components/MigrationPrompt";
+import {
+  cloudHasToken,
+  cloudMigrationStatus,
+  cloudStatus,
+  type CloudUser,
+} from "./lib/cloud";
 
 type View = "splash" | "settings" | "manage";
 
@@ -51,6 +57,31 @@ function AppInner() {
   const [updateDismissed, setUpdateDismissed] = useState<string | null>(null);
   const [updateInstalling, setUpdateInstalling] = useState(false);
   const [cloud, setCloud] = useState<CloudGate>({ kind: "checking" });
+  // v2 Phase 2.1 — Migration prompt gate. Resolved after sign-in.
+  // null = still checking; true = show prompt; false = skip prompt.
+  const [needsMigration, setNeedsMigration] = useState<boolean | null>(null);
+
+  // v2 Phase 2.1 — Check whether the migration prompt should fire.
+  // Runs as soon as the user is signed in. Three statuses skip the prompt:
+  //   complete / fresh / skipped. Empty status with any local data shows it.
+  useEffect(() => {
+    if (cloud.kind !== "signed_in") return;
+    cloudMigrationStatus()
+      .then((s) => {
+        const decided =
+          s.status === "complete" || s.status === "fresh" || s.status === "skipped";
+        const totals =
+          s.localCounts.profile +
+          s.localCounts.memories +
+          s.localCounts.conversations +
+          s.localCounts.settings;
+        setNeedsMigration(!decided && totals > 0);
+      })
+      .catch(() => {
+        // If we can't read the status, don't block — let the user in.
+        setNeedsMigration(false);
+      });
+  }, [cloud.kind]);
 
   // v2 Phase 1 — Check cloud sign-in status at launch. Fast-path:
   // cloudHasToken() avoids the network call when nothing is stored.
@@ -176,6 +207,26 @@ function AppInner() {
             void refresh();
           }}
         />
+      </motion.div>
+    );
+  }
+
+  // v2 Phase 2.1 — Migration prompt sits between sign-in and onboarding.
+  // Only triggered for signed-in users with existing local data who
+  // haven't decided yet.
+  if (needsMigration === null) {
+    return <main className="h-full w-full" />;
+  }
+  if (needsMigration === true) {
+    return (
+      <motion.div
+        key="migration"
+        className="h-full w-full"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.45 }}
+      >
+        <MigrationPrompt onDone={() => setNeedsMigration(false)} />
       </motion.div>
     );
   }

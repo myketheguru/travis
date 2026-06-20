@@ -47,7 +47,7 @@ export function SignIn({ onSignedIn }: Props) {
         className="w-full max-w-md text-center"
       >
         <div className="flex justify-center mb-8">
-          <PresenceOrb size={140} pulse={status === "loading"} />
+          <PresenceOrb size={140} />
         </div>
 
         <h1 className="text-bone text-3xl font-light tracking-tight mb-3">

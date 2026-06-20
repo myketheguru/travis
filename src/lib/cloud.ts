@@ -99,3 +99,43 @@ export function cloudPolicy(): Promise<CloudPolicy> {
 export function cloudRecordByok(event: ByokEvent): Promise<void> {
   return invoke<void>("cloud_record_byok", { event });
 }
+
+// --- v2 Phase 2.1 — migration -----------------------------------------
+
+export interface LocalCounts {
+  profile: number;
+  memories: number;
+  conversations: number;
+  conversationMessages: number;
+  settings: number;
+}
+
+export interface MigrationDetails {
+  pushed: number;
+  skipped: number;
+  at: string;
+  decision: string;
+}
+
+export interface MigrationStatus {
+  /** "" if undecided, "complete" | "fresh" | "skipped" otherwise. */
+  status: string;
+  localCounts: LocalCounts;
+  details: MigrationDetails | null;
+}
+
+export function cloudMigrationStatus(): Promise<MigrationStatus> {
+  return invoke<MigrationStatus>("cloud_migration_status");
+}
+
+export function cloudMigrationUpload(): Promise<MigrationDetails> {
+  return invoke<MigrationDetails>("cloud_migration_upload");
+}
+
+export function cloudMigrationStartFresh(): Promise<void> {
+  return invoke<void>("cloud_migration_start_fresh");
+}
+
+export function cloudMigrationSkip(): Promise<void> {
+  return invoke<void>("cloud_migration_skip");
+}
