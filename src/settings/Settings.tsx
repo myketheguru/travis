@@ -78,7 +78,12 @@ export default function Settings({ onClose }: { onClose: () => void }) {
   const [test, setTest] = useState<PingResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savedHint, setSavedHint] = useState<string | null>(null);
-  const [cloudAvailable, setCloudAvailable] = useState<boolean>(false);
+  // v2 Phase 3 — cloudAvailable is gone (every signed-in user has Travis
+  // Cloud; the build-time key check we used to do is irrelevant). Kept
+  // setCloudAvailable as a no-op so older code paths setting it don't
+  // need to be rewritten — TS picks it up as unused but it's referenced
+  // in the platform_info load below.
+  const setCloudAvailable = (_v: boolean) => {};
   const [useOwnLlm, setUseOwnLlm] = useState<boolean>(false);
   const [cloudUser, setCloudUser] = useState<CloudUser | null>(null);
   const [policy, setPolicy] = useState<CloudPolicy | null>(null);
