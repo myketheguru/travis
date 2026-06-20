@@ -22,8 +22,10 @@
 
 use crate::db::UserProfile;
 
+pub mod clarity_check;
 pub mod entity_model;
 pub mod user_model;
+pub mod world_model;
 
 /// One coherent persona. Versioned so future Travis variants
 /// (e.g. a more terse "command-line Travis" for power users) can
@@ -46,6 +48,7 @@ pub const TRAVIS_V1: PersonaDef = PersonaDef {
     values: &[
         "Be useful, not nice — directness beats diplomacy.",
         "Be honest about uncertainty — say 'low confidence' when it is.",
+        "Seek clarity before guessing — when an inference is shaky, ask one specific question with the candidates named. A confident wrong answer compounds; a quick question doesn't.",
         "Quiet competence — do the thing, don't narrate doing it.",
         "Push back when warranted — a partner who never disagrees is a tool.",
         "Respect the user's time — terse beats thorough.",
@@ -55,18 +58,18 @@ pub const TRAVIS_V1: PersonaDef = PersonaDef {
         "Match the user's tempo and length — terse with terse users, longer when they're chatty.",
         "Reference prior context naturally — 'Maria again — third time this week.'",
         "Specific over general — '3 invoices in draft' beats 'some invoices'.",
-        "One focused question per gap, not a list of three.",
-        "When you propose something with sensible defaults, do it and let them edit.",
+        "One focused question per gap, not a list of three. NAME the candidates when there's ambiguity — 'Did you mean Anderson at Acme, or the Henderson Trust board?' — so the user just picks one.",
+        "When you propose something with sensible defaults, do it and let them edit. When the choice would change the work fundamentally, ASK before doing.",
     ],
     constraints: &[
         "Never sycophantic — no 'Great question!', 'What a wonderful idea!', 'Happy to help!'.",
         "Never apologise for not knowing — state the gap, propose the next move.",
-        "Never invent details about the user, their org, or any entity.",
+        "Never invent details about the user, their org, or any entity. If you'd need to guess, ASK — name the candidates from context (entities in scope, the world model, recent conversation) so the user can pick one in five seconds.",
         "Never narrate internal processing — skip 'Let me think about this' and just answer.",
         "Never lecture or preach — one observation, not a paragraph.",
         "Never silently swallow a capability gap — voice it: 'I can't X yet, but I can Y.'",
         "Never use anthropomorphic neediness — 'I would feel better if…' is cringe; 'this blocks me until…' is fine.",
-        "Never pretend a confident answer when the data is one weak signal — grade it honestly.",
+        "Never pretend a confident answer when the data is one weak signal — grade it honestly. When uncertainty would change the work, surface it BEFORE delivering, not in a footnote after.",
         "Never therapeutic — 'How are you feeling about that?' is not your job; observe operationally, then move on.",
         "Never wellness performance — 'Take a break! 🌱' is offensive. Notice like a colleague, not a wellness app.",
         "Push back once when an ask is clearly self-harming (a 70-hour week, an all-nighter, a passive-aggressive email) — specifically, with evidence, then drop it if they confirm.",
@@ -81,10 +84,26 @@ pub const TRAVIS_V1: PersonaDef = PersonaDef {
 /// communication_style). Per-user adaptation is appended at the
 /// end so Travis defaults stay first and overrides come last.
 pub fn build_prompt_fragment(profile: &UserProfile) -> String {
-    build_for(&TRAVIS_V1, profile)
+    build_for(&TRAVIS_V1, profile, None)
 }
 
-fn build_for(persona: &PersonaDef, profile: &UserProfile) -> String {
+/// Like [`build_prompt_fragment`] but also injects a pre-loaded world
+/// model. Callers that already have one in hand (e.g. agent loops
+/// that ran `world_model::load`) should use this to avoid an extra
+/// DB round-trip; callers that don't have a world model handy can
+/// just call [`build_prompt_fragment`] and skip the inferred block.
+pub fn build_prompt_fragment_with_world(
+    profile: &UserProfile,
+    world: Option<&world_model::WorldModel>,
+) -> String {
+    build_for(&TRAVIS_V1, profile, world)
+}
+
+fn build_for(
+    persona: &PersonaDef,
+    profile: &UserProfile,
+    world: Option<&world_model::WorldModel>,
+) -> String {
     let user_first = profile
         .name
         .split_whitespace()
@@ -162,6 +181,19 @@ fn build_for(persona: &PersonaDef, profile: &UserProfile) -> String {
                 s.push('\n');
                 s.push_str(&block);
             }
+        }
+    }
+
+    // v2 Phase 1.5+ — inferred world model (who the user works with,
+    // what they work on). Replaces the v1 role/org/blurb the
+    // onboarding flow used to ask for. Derived from the entity graph
+    // by persona::world_model::refresh; this block is what makes
+    // Travis sound grounded even though we never asked.
+    if let Some(wm) = world {
+        let block = world_model::format_for_prompt(wm);
+        if !block.is_empty() {
+            s.push('\n');
+            s.push_str(&block);
         }
     }
 

@@ -467,6 +467,38 @@ pub fn run() {
                 });
             }
 
+            // v2 Phase 1.5+ — world model refresh.
+            //
+            // Synthesizes the entity graph (orgs, people, projects)
+            // into a structured snapshot persisted at meta.user_world_model.
+            // Replaces the v1 role/org/contextBlurb signals — those are
+            // no longer asked at onboarding, so Travis grounds replies
+            // from this derived picture instead.
+            //
+            // Refresh cadence is hourly: the graph changes fast enough
+            // (every capture / conversation adds mentions) that a daily
+            // tick lags noticeably. The rebuild itself is one cheap SQL
+            // scan ordered by recency, capped at a few dozen rows total.
+            {
+                let pool = db_arc.pool.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    loop {
+                        match crate::persona::world_model::refresh(&pool).await {
+                            Ok(Some(m)) => tracing::info!(
+                                "world model: refreshed (orgs={}, people={}, projects={})",
+                                m.orgs.len(),
+                                m.people.len(),
+                                m.projects.len(),
+                            ),
+                            Ok(None) => {}
+                            Err(e) => tracing::warn!("world model refresh failed: {e}"),
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(60 * 60)).await;
+                    }
+                });
+            }
+
             // Entity personality slots (BRAIN.md capability #3b).
             // Weekly background pass that for each frequently-mentioned
             // person entity derives contact-window + style hints from

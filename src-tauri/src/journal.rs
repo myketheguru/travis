@@ -35,6 +35,8 @@ fn build_system_prompt(
     pack_fragment: &str,
     workspace_block: &str,
     pack_memory_block: &str,
+    world: Option<&crate::persona::world_model::WorldModel>,
+    recent_miss_block: &str,
 ) -> String {
     let name = profile.name.trim();
     let first = name.split_whitespace().next().unwrap_or(name);
@@ -46,9 +48,23 @@ fn build_system_prompt(
     // Single source of truth across journal, ask, proactive, splash
     // (BRAIN.md capability #2). Replaces the inline VOICE block that
     // used to live here.
-    let persona_block = crate::persona::build_prompt_fragment(profile);
+    //
+    // v2 Phase 1.5+ — the persona block now also injects the inferred
+    // world model (orgs / people / projects) so Travis grounds replies
+    // in the user's actual world even though we never asked at onboarding.
+    let persona_block = crate::persona::build_prompt_fragment_with_world(profile, world);
 
-    let mut prompt = format!(r#"{persona_block}You are Travis — a personal AI assistant for {first}. You can help with anything Claude.ai can: writing, analysis, code, research, creative work, document handling, scheduling, and ops capture. The chat surface is your primary interface; tools let you act, persist information, and process files locally on {first}'s computer.
+    // v2 Phase 1.5+ — RECENT MISS block. When the user corrected a
+    // confident guess earlier in this conversation, surface it here so
+    // Travis doesn't repeat the mistake. Empty string when there are
+    // no corrections — no-op.
+    let recent_miss = if recent_miss_block.is_empty() {
+        String::new()
+    } else {
+        format!("\n{recent_miss_block}")
+    };
+
+    let mut prompt = format!(r#"{persona_block}{recent_miss}You are Travis — a personal AI assistant for {first}. You can help with anything Claude.ai can: writing, analysis, code, research, creative work, document handling, scheduling, and ops capture. The chat surface is your primary interface; tools let you act, persist information, and process files locally on {first}'s computer.
 
 == HOW YOUR TURN ENDS — READ THIS FIRST ==
 
@@ -61,6 +77,17 @@ Your turn ends ONLY when one of these is true:
 2. **You asked a SPECIFIC question** that the user must answer for you to proceed — name the field, the option, the doc you need. Vague asks ("what would you like next?") don't count.
 
 3. **You hit a real blocker** — a tool you called returned a hard error, or the user asked for something genuinely outside your capabilities.
+
+== CLARITY OVER GUESSING ==
+
+Confident guessing is worse than asking. When an inference is shaky — the user mentions a person and two are in scope, refers to "the project" when several are active, asks for "the same as last time" when there are multiple "last times" — STOP and ask one specific clarifying question. Name the candidates from the inferred context block above so the user just picks one in five seconds.
+
+"Did you mean the Acme Q3 review or the Henderson Trust board prep?" — good.
+"Which one?" — bad.
+
+A clarifying question is a SPECIFIC question per turn-ending rule #2. It's not a defeat; it's the workflow's slot-filling step. Capture whatever is unambiguous *immediately* (record names mentioned, entities surfaced) so the user's correction enriches your model rather than gates it. After the user clarifies, update behavior for the rest of the turn AND record the correction so the next turn doesn't repeat the mistake.
+
+What you must NEVER do: pretend confidence to seem capable. A wrong-but-confident answer in an ops workflow compounds — invoice draft A → sign-in sheet B → email C — and is harder to undo than the friction of asking. If you'd need to guess, ASK.
 
 == FUTURE TENSE IS BANNED ==
 
@@ -1985,6 +2012,62 @@ pub async fn journal_ingest(
     )
     .await;
 
+    // v2 Phase 1.5+ — load the inferred world model so the persona
+    // block can ground Travis in the user's actual world (orgs,
+    // people, projects). Best-effort; absence (cold start, never
+    // refreshed) is fine — persona block just skips the inferred
+    // block.
+    let world_model = crate::persona::world_model::load(&state.db.pool)
+        .await
+        .ok()
+        .flatten();
+
+    // v2 Phase 1.5+ hardening — correction capture.
+    //
+    // If the user's most recent message looks like a correction of the
+    // immediately-prior assistant turn ("no, the other Sarah",
+    // "actually I meant Acme"), surface it as a RECENT MISS block in
+    // the next-turn system prompt so Travis doesn't repeat the same
+    // mistake. Heuristic; best-effort.
+    let corrections = {
+        let history: Vec<(String, String)> = sqlx::query_as(
+            "SELECT role, content FROM conversation_message
+             WHERE conversation_id = ?1
+             ORDER BY id DESC LIMIT 4",
+        )
+        .bind(conv_id)
+        .fetch_all(&state.db.pool)
+        .await
+        .unwrap_or_default();
+
+        let mut prev_assistant: Option<&str> = None;
+        let mut current_user: Option<&str> = None;
+        for (role, content) in history.iter() {
+            if role == "user" && current_user.is_none() {
+                current_user = Some(content.as_str());
+            } else if role == "assistant" && prev_assistant.is_none() {
+                prev_assistant = Some(content.as_str());
+                if current_user.is_some() {
+                    break;
+                }
+            }
+        }
+        match (prev_assistant, current_user) {
+            (Some(p), Some(u)) => crate::persona::clarity_check::detect_correction(p, u)
+                .map(|c| vec![c])
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    };
+    let recent_miss_block = crate::persona::clarity_check::format_recent_miss(&corrections);
+    if !corrections.is_empty() {
+        tracing::info!(
+            "clarity_check: detected {} correction signal(s) for conv {}",
+            corrections.len(),
+            conv_id
+        );
+    }
+
     // v0.19.0 — pack memory recall. Loads user-stated rules /
     // preferences for the enabled packs.
     // v0.19.1 — entity-scoped: also pull memories tied to entities
@@ -2467,6 +2550,8 @@ pub async fn journal_ingest(
                     &crate::packs::prompt_fragment(&state.enabled_packs),
                     &workspace_block,
                     &pack_memory_block,
+                    world_model.as_ref(),
+                    &recent_miss_block,
                 )),
                 cache_system: true,
                 cache_tools: true,
@@ -3486,6 +3571,8 @@ pub async fn journal_ingest(
                 &crate::packs::prompt_fragment(&state.enabled_packs),
                 &workspace_block,
                 &pack_memory_block,
+                world_model.as_ref(),
+                &recent_miss_block,
             )),
             cache_system: true,
             cache_tools: true,
@@ -3618,6 +3705,44 @@ pub async fn journal_ingest(
             hint.to_string()
         }
     };
+
+    // v2 Phase 1.5+ hardening #1 — ambiguity post-check. After the
+    // LLM returns a response, scan it for entity references that are
+    // ambiguous in this workspace. If found AND the response doesn't
+    // already end with a clarifying question, log a warning.
+    //
+    // Soft signal — doesn't block the turn or retry. Observability
+    // hook: when this fires often we'll know the prompt doctrine is
+    // being ignored and can build the retry pipeline. For now,
+    // tracing::warn is the alarm.
+    if let Some(response_text) = extraction.response.as_deref() {
+        if !response_text.trim().is_empty() {
+            match crate::persona::clarity_check::scan_response(
+                &state.db.pool,
+                ws_snapshot.active_id,
+                response_text,
+            )
+            .await
+            {
+                Ok(Some(warn)) if !warn.already_clarifying => {
+                    let cand_names: Vec<String> =
+                        warn.candidates.iter().map(|(n, _)| n.clone()).collect();
+                    tracing::warn!(
+                        "clarity_check: ambiguous reference \"{}\" in response without clarifying question — candidates: {}",
+                        warn.name,
+                        cand_names.join(", ")
+                    );
+                }
+                Ok(Some(_)) => {
+                    tracing::info!(
+                        "clarity_check: ambiguous reference present but Travis is clarifying — good"
+                    );
+                }
+                Ok(None) => {}
+                Err(e) => tracing::debug!("clarity_check failed (non-fatal): {e}"),
+            }
+        }
+    }
 
     // v0.15.4 — when the assistant message is a synthesised error
     // hint, attach errorDetail to the payload so the chat UI can
