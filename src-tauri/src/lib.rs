@@ -289,6 +289,49 @@ pub fn run() {
             // (subprocess stdout/stderr are read inline).
             let _ = &interpreter_state; // kept on AppState for now
 
+            // v2 Phase 5 — refresh cloud_authorized_packs in the background.
+            // Runs every 5 minutes when signed in. Free/Pro users will
+            // see the CSV land as empty; Org users will see it land as
+            // the admin's enabled set. resolve_enabled_packs reads this
+            // on next launch.
+            {
+                let pack_db = db_arc.clone();
+                let pack_http = http.clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        if cloud::read_jwt().is_some() {
+                            if let Some(client) =
+                                cloud::CloudClient::current(pack_http.clone())
+                            {
+                                match client.authorized_packs().await {
+                                    Ok(packs) => {
+                                        let csv = packs.join(",");
+                                        if let Err(e) = pack_db
+                                            .set_meta_from_remote(
+                                                "cloud_authorized_packs",
+                                                &csv,
+                                            )
+                                            .await
+                                        {
+                                            tracing::warn!(
+                                                "cloud_authorized_packs write failed: {e}"
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::debug!(
+                                            "cloud_authorized_packs fetch: {e}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(5 * 60))
+                            .await;
+                    }
+                });
+            }
+
             // v2 Phase 2.2 — background sync worker.
             //
             // Idle until the user signs in; once a JWT is in the
@@ -636,6 +679,7 @@ pub fn run() {
             cloud::cmd::cloud_workflow_delete_schedule,
             cloud::cmd::cloud_workflow_run_now,
             cloud::cmd::cloud_workflow_runs,
+            cloud::cmd::cloud_authorized_packs,
             commands::app_status,
             commands::complete_onboarding,
             commands::update_profile,

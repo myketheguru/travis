@@ -223,6 +223,19 @@ pub async fn cloud_workflow_run_now(
     client.run_workflow_now(input).await.map_err(|e| e.to_string())
 }
 
+/// v2 Phase 5 — list packs the cloud has authorized for this user.
+/// Returns [] for Free/Pro tiers (packs are Org-only). Used by the
+/// desktop's pack resolver to filter the bundled pack catalog so a
+/// user only sees what an admin granted them.
+#[tauri::command]
+pub async fn cloud_authorized_packs(
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let client = CloudClient::current(state.http.clone())
+        .ok_or_else(|| "not signed in".to_string())?;
+    client.authorized_packs().await.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn cloud_workflow_runs(
     state: State<'_, AppState>,

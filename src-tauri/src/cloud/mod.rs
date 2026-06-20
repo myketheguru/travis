@@ -267,6 +267,29 @@ impl CloudClient {
             .unwrap_or_default())
     }
 
+    /// v2 Phase 5 — which packs has the cloud authorized for this user?
+    /// Free / Pro users always get an empty list (packs are Org-only).
+    /// Org users get whatever the org admin has enabled for them.
+    pub async fn authorized_packs(&self) -> anyhow::Result<Vec<String>> {
+        let resp = self
+            .http
+            .get(format!("{CLOUD_BASE}/auth/me/packs"))
+            .header("authorization", self.auth())
+            .send()
+            .await?
+            .error_for_status()?;
+        let body: serde_json::Value = resp.json().await?;
+        Ok(body
+            .get("packs")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     /// v2 Phase 4 — paginated run history. Optional `since` ISO
     /// timestamp filters to newer items only (for incremental polling).
     pub async fn list_runs(&self, since: Option<&str>) -> anyhow::Result<Vec<WorkflowRun>> {
