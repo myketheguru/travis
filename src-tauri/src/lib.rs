@@ -282,6 +282,28 @@ pub fn run() {
                 interpreter: interpreter_state.clone(),
             });
 
+            // v0.21.8 — reveal the main window NOW that AppState is
+            // managed. We keep it hidden in tauri.conf.json
+            // (`"visible": false`) so the WebView can't load and start
+            // calling Tauri commands before .manage() runs.
+            //
+            // Before this fix, users on first launch with the new
+            // migration 0046 (inbox_triage) could get this exact race:
+            //
+            //   1. setup() blocks on DB migration
+            //   2. Tauri's auto-visible window mounts WebView
+            //   3. App.tsx fires cloudHasToken() immediately
+            //   4. State<AppState> extractor finds no managed AppState
+            //      → "state not managed for field `state` on command
+            //         `cloud_sign_in_with_google`"
+            //
+            // With the window hidden until here, the WebView can't
+            // mount until .manage() has run.
+            if let Some(win) = handle.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
+
             // v0.18.0 — interpreter wiring removed. Pyodide hidden
             // window is gone; python execution is now subprocess-
             // based via `python_runtime`. No readiness signal needed

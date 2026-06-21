@@ -88,16 +88,38 @@ function AppInner() {
   // cloudHasToken() avoids the network call when nothing is stored.
   // Slow path: cloudStatus() validates the token against the backend.
   // On 401 the backend has rejected the JWT; we treat that as signed-out.
+  //
+  // v0.21.8 — defensive retry on transient "state not managed" errors.
+  // On older binaries that don't hide the window until setup completes
+  // (everything <= v0.21.7), the WebView can race the Rust .manage()
+  // call. New builds hide the window in setup() so this can't happen,
+  // but we keep the retry so a corrupted install gives the user a
+  // chance to recover gracefully.
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      const callWithRetry = async <T,>(fn: () => Promise<T>): Promise<T> => {
+        let attempt = 0;
+        while (true) {
+          try {
+            return await fn();
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            if (!msg.toLowerCase().includes("state not managed") || attempt >= 30) {
+              throw e;
+            }
+            attempt++;
+            await new Promise((r) => setTimeout(r, 100));
+          }
+        }
+      };
       try {
-        const hasToken = await cloudHasToken();
+        const hasToken = await callWithRetry(() => cloudHasToken());
         if (!hasToken) {
           if (!cancelled) setCloud({ kind: "signed_out" });
           return;
         }
-        const status = await cloudStatus();
+        const status = await callWithRetry(() => cloudStatus());
         if (cancelled) return;
         if (status.signedIn && status.user) {
           setCloud({ kind: "signed_in", user: status.user });
