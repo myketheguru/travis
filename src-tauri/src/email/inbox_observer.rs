@@ -209,10 +209,15 @@ async fn classify_one(msg: &InboxMessage, provider: &str) -> Result<TriagedMessa
     // Use the default Travis Cloud provider for inbox classification.
     // The user is signed in (we wouldn't be reading inbox otherwise);
     // their tier policy applies. BYOK users use their own key.
+    //
+    // Bound to `llm` (not `provider`) on purpose: the function's `provider`
+    // arg is the email-provider name ("gmail" / "outlook") which we still
+    // need below when constructing the TriagedMessage. v0.21.6 had a
+    // shadowing bug here that CI caught.
     let http = reqwest::Client::new();
-    let provider = crate::llm::build("travis_cloud", None, None, None, http)
+    let llm = crate::llm::build("travis_cloud", None, None, None, http)
         .context("build llm provider for inbox classification")?;
-    let resp = provider
+    let resp = llm
         .chat(vec![LlmMessage::user(prompt)], Default::default())
         .await
         .context("llm classify call")?;
