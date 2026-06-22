@@ -68,6 +68,20 @@ pub fn cloud_sign_in_cancel() {
     crate::cloud::SIGN_IN_CANCEL.notify_waiters();
 }
 
+/// v3 Slice 4 — pick up the existing web session for this user.
+/// Opens browser to usetravis.com/app/handoff with a loopback redirect;
+/// when the user approves on the web, the cloud sends back a single-use
+/// code, the desktop swaps it for a fresh JWT, and the user is in. This
+/// is the primary v3 sign-in path; Google-direct stays as fallback.
+#[tauri::command]
+pub async fn cloud_handoff_from_web(
+    state: State<'_, AppState>,
+) -> Result<CloudUser, String> {
+    crate::cloud::claim_handoff_from_web(&state.http)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Tier 2 — extend the user's Google grant to include inbox + calendar
 /// reads. `scopes` is a list like `["gmail", "gcal"]`. Returns the
 /// comma-separated list of providers actually enrolled.

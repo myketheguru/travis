@@ -592,6 +592,112 @@ pub async fn extend_google_grant(
     Ok(providers)
 }
 
+/// v3 Slice 4 — desktop handoff claim via web-based session.
+///
+/// Flow:
+///   1. Bind a loopback listener
+///   2. Open browser to https://usetravis.com/app/handoff?device=<label>&redirect=http://127.0.0.1:<port>/cb
+///   3. Web: if signed_in, shows Approve UI → POSTs /auth/oauth/handoff/start →
+///      cloud writes {code → user_id} to KV with 5-min TTL → redirects to
+///      `${redirect}?code=<code>`
+///      If signed_out: web kicks the user through Google OAuth first,
+///      then resumes here.
+///   4. Loopback catches the request, extracts ?code=
+///   5. POST /auth/oauth/handoff/claim with code → cloud returns fresh JWT +
+///      user profile, code is single-use and deleted from KV
+///   6. Store JWT in keychain, return CloudUser
+///
+/// This is the v3 primary sign-in path. The Google-direct flow stays as
+/// a fallback for users who don't want a browser hop or are signing in
+/// for the first time and would rather do it from the desktop.
+pub async fn claim_handoff_from_web(http: &reqwest::Client) -> anyhow::Result<CloudUser> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    // 1. Bind loopback.
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    let redirect = format!("http://127.0.0.1:{port}/cb");
+
+    // 2. Device label — hostname is informative without revealing too much.
+    let device_label = hostname_fallback();
+
+    // 3. Open browser.
+    let url = format!(
+        "https://usetravis.com/app/handoff?device={}&redirect={}",
+        urlencoding::encode(&device_label),
+        urlencoding::encode(&redirect),
+    );
+    if let Err(e) = open_in_browser(&url) {
+        tracing::warn!("could not open browser for handoff: {e}");
+    }
+
+    // 4. Wait for loopback callback OR cancel OR timeout.
+    let (stream, _addr) = tokio::select! {
+        biased;
+        _ = SIGN_IN_CANCEL.notified() => anyhow::bail!("handoff canceled"),
+        r = tokio::time::timeout(Duration::from_secs(5 * 60), listener.accept()) => {
+            r.map_err(|_| anyhow::anyhow!("handoff timed out — close the browser tab and try again"))??
+        }
+    };
+    let mut buf = vec![0u8; 8192];
+    let mut stream = stream;
+    let n = stream.read(&mut buf).await?;
+    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+    let _ = stream
+        .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<html><body style=\"font-family:system-ui;padding:48px;text-align:center\"><h2>You're signed in.</h2><p>You can close this tab and return to Travis.</p></body></html>")
+        .await;
+    let _ = stream.shutdown().await;
+
+    // 5. Extract code from the callback URL.
+    let first_line = req.lines().next().unwrap_or_default();
+    let code = first_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|path| {
+            let q = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+            q.split('&')
+                .filter_map(|kv| kv.split_once('='))
+                .find(|(k, _)| *k == "code")
+                .map(|(_, v)| urlencoding::decode(v).unwrap_or_default().into_owned())
+        })
+        .unwrap_or_default();
+    if code.is_empty() {
+        anyhow::bail!("handoff completed without a code — sign-in didn't finish");
+    }
+
+    // 6. Exchange code → JWT.
+    let claim_resp: ClaimResponse = http
+        .post(format!("{CLOUD_BASE}/auth/oauth/handoff/claim"))
+        .json(&serde_json::json!({ "code": code }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    // 7. Store + return.
+    store_jwt(&claim_resp.token)?;
+    Ok(claim_resp.user)
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaimResponse {
+    token: String,
+    #[allow(dead_code)]
+    expires_in: u64,
+    user: CloudUser,
+}
+
+fn hostname_fallback() -> String {
+    // Best-effort host label. We never use this as an identifier;
+    // it's a human-facing string shown on the web approval screen so
+    // the user can tell which device is asking.
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "your computer".to_string())
+}
+
 /// Drive the full Google sign-in flow end to end.
 ///
 /// Returns the new JWT (already stored in the keychain) and the user

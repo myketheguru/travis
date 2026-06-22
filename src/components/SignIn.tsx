@@ -1,44 +1,69 @@
 /**
- * Sign-in screen — Phase 1 of the v2 cloud-first architecture.
+ * Sign-in screen — v3 Slice 4 primary path is web handoff. Google-direct
+ * stays as a fallback for users without a browser session yet.
  *
- * Shown whenever the desktop has no valid Travis Cloud session. Drives
- * the Google OAuth loopback flow via cloudSignInWithGoogle().
+ * Primary CTA: "Continue from your browser" → opens usetravis.com/app/handoff,
+ * user approves on web (signing in there first if needed), desktop catches a
+ * single-use code on its loopback listener, exchanges for a JWT, signed in.
  *
- * Intentionally minimal: this is the single source of truth for sign-in
- * and it sits in front of everything else, including onboarding.
+ * Fallback: the v2 direct Google OAuth still works, kept behind a smaller
+ * link for users on a fresh device who haven't been to the web yet.
  */
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { PresenceOrb } from "./PresenceOrb";
-import { cloudSignInCancel, cloudSignInWithGoogle, type CloudUser } from "../lib/cloud";
+import {
+  cloudHandoffFromWeb,
+  cloudSignInCancel,
+  cloudSignInWithGoogle,
+  type CloudUser,
+} from "../lib/cloud";
 
 interface Props {
   onSignedIn: (user: CloudUser) => void;
 }
 
+type Method = "handoff" | "google";
+
 export function SignIn({ onSignedIn }: Props) {
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
+  const [method, setMethod] = useState<Method | null>(null);
 
-  async function handleSignIn() {
+  function softFail(msg: string) {
+    if (msg.toLowerCase().includes("canceled") || msg.toLowerCase().includes("cancelled")) {
+      setStatus("idle");
+      setError(null);
+      return true;
+    }
+    return false;
+  }
+
+  async function startHandoff() {
+    setMethod("handoff");
+    setStatus("loading");
+    setError(null);
+    try {
+      const user = await cloudHandoffFromWeb();
+      onSignedIn(user);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : typeof e === "string" ? e : "Sign-in didn't complete. Please try again.";
+      if (softFail(msg)) return;
+      setStatus("error");
+      setError(msg);
+    }
+  }
+
+  async function startGoogleDirect() {
+    setMethod("google");
     setStatus("loading");
     setError(null);
     try {
       const user = await cloudSignInWithGoogle();
       onSignedIn(user);
     } catch (e) {
-      const msg =
-        e instanceof Error
-          ? e.message
-          : typeof e === "string"
-          ? e
-          : "Sign-in didn't complete. Please try again.";
-      // Surface canceled as a soft state, not an error.
-      if (msg.toLowerCase().includes("canceled") || msg.toLowerCase().includes("cancelled")) {
-        setStatus("idle");
-        setError(null);
-        return;
-      }
+      const msg = e instanceof Error ? e.message : typeof e === "string" ? e : "Sign-in didn't complete. Please try again.";
+      if (softFail(msg)) return;
       setStatus("error");
       setError(msg);
     }
@@ -50,12 +75,8 @@ export function SignIn({ onSignedIn }: Props) {
     } catch {
       /* idempotent; ignore */
     }
-    // The inflight invoke will reject as 'sign-in canceled' and the
-    // handler above turns it into status: idle.
   }
 
-  // If the screen unmounts mid-flight (user navigated away somehow),
-  // make sure the backend loopback stops blocking on the port.
   useEffect(() => {
     return () => {
       void cloudSignInCancel().catch(() => {});
@@ -78,25 +99,59 @@ export function SignIn({ onSignedIn }: Props) {
           Sign in to Travis
         </h1>
         <p className="text-bone-3 text-sm leading-relaxed mb-10 max-w-sm mx-auto">
-          Sign in with Google so Travis can remember your work across devices
-          and keep things running while you're away.
+          One identity across web and desktop. Travis follows you between
+          devices and keeps working while you're away.
         </p>
 
         <button
-          onClick={handleSignIn}
+          onClick={startHandoff}
           disabled={status === "loading"}
           className="inline-flex items-center justify-center gap-3 px-5 py-3 rounded-xl bg-bone text-ink font-medium text-sm transition-all hover:bg-white hover:-translate-y-px disabled:opacity-60 disabled:hover:translate-y-0"
         >
-          <GoogleIcon />
-          <span>{status === "loading" ? "Waiting for browser…" : "Continue with Google"}</span>
+          <BrowserIcon />
+          <span>
+            {status === "loading" && method === "handoff"
+              ? "Waiting for browser…"
+              : "Continue from your browser"}
+          </span>
         </button>
 
-        {status === "loading" && (
+        {status === "loading" && method === "handoff" && (
           <div className="mt-6 flex flex-col items-center gap-3">
             <p className="text-xs text-bone-3 leading-relaxed max-w-xs mx-auto">
-              We've opened your browser to Google. Finish signing in there, then
-              this window will continue.
+              We've opened the Travis dashboard in your browser. Sign in there
+              (if you haven't already) and click Approve to sign in here.
             </p>
+            <button
+              onClick={handleCancel}
+              className="text-xs text-bone-3 hover:text-bone-2 underline underline-offset-4 decoration-bone-3/40 transition-colors"
+            >
+              Cancel and try again
+            </button>
+          </div>
+        )}
+
+        <div className="mt-7 flex items-center gap-3 text-bone-3 text-[10px] tracking-wider uppercase">
+          <div className="h-px flex-1 bg-bone-3/15" />
+          or
+          <div className="h-px flex-1 bg-bone-3/15" />
+        </div>
+
+        <button
+          onClick={startGoogleDirect}
+          disabled={status === "loading"}
+          className="mt-7 inline-flex items-center justify-center gap-3 px-4 py-2.5 rounded-lg border border-bone-3/20 text-bone-2 text-sm hover:border-bone-3/40 hover:text-bone disabled:opacity-50 transition-colors"
+        >
+          <GoogleIcon />
+          <span>
+            {status === "loading" && method === "google"
+              ? "Waiting for Google…"
+              : "Sign in with Google directly"}
+          </span>
+        </button>
+
+        {status === "loading" && method === "google" && (
+          <div className="mt-4 flex flex-col items-center gap-2">
             <button
               onClick={handleCancel}
               className="text-xs text-bone-3 hover:text-bone-2 underline underline-offset-4 decoration-bone-3/40 transition-colors"
@@ -113,6 +168,18 @@ export function SignIn({ onSignedIn }: Props) {
         )}
 
         <p className="mt-12 text-[11px] text-bone-3 leading-relaxed">
+          New here?{" "}
+          <a
+            href="https://usetravis.com/app/"
+            target="_blank"
+            rel="noopener"
+            className="text-pulse-2 underline underline-offset-2 decoration-pulse-2/40 hover:text-bone"
+          >
+            Start on the web
+          </a>{" "}
+          — sign up, pick a plan, then come back here.
+        </p>
+        <p className="mt-3 text-[11px] text-bone-3 leading-relaxed">
           By continuing you agree to our{" "}
           <a
             href="https://usetravis.com/terms"
@@ -135,6 +202,18 @@ export function SignIn({ onSignedIn }: Props) {
         </p>
       </motion.div>
     </div>
+  );
+}
+
+function BrowserIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M3 9 H21" />
+      <circle cx="6" cy="6.5" r="0.6" fill="currentColor" />
+      <circle cx="8" cy="6.5" r="0.6" fill="currentColor" />
+      <circle cx="10" cy="6.5" r="0.6" fill="currentColor" />
+    </svg>
   );
 }
 

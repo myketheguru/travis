@@ -738,6 +738,7 @@ pub fn run() {
             cloud::cmd::cloud_status,
             cloud::cmd::cloud_sign_in_with_google,
             cloud::cmd::cloud_sign_in_cancel,
+            cloud::cmd::cloud_handoff_from_web,
             cloud::cmd::cloud_extend_google_grant,
             cloud::cmd::cloud_update_action_status,
             cloud::cmd::cloud_action_execute_draft_reply,

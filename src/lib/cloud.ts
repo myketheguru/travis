@@ -76,6 +76,15 @@ export function cloudSignInWithGoogle(): Promise<CloudUser> {
 }
 
 /**
+ * v3 Slice 4 — pick up the existing web session via /app/handoff.
+ * Opens the browser to the handoff approval page; on approve, the
+ * desktop claims the code and ends signed in.
+ */
+export function cloudHandoffFromWeb(): Promise<CloudUser> {
+  return invoke<CloudUser>("cloud_handoff_from_web");
+}
+
+/**
  * Abort the in-flight Google sign-in. The cloudSignInWithGoogle()
  * promise rejects with "sign-in canceled". Idempotent — safe to call
  * when no sign-in is running.
