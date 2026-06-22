@@ -14,6 +14,7 @@ import Onboarding from "./onboarding/Onboarding";
 import Settings from "./settings/Settings";
 import Manage from "./manage/Manage";
 import { SignIn } from "./components/SignIn";
+import { checkForUpdate, installUpdate } from "./lib/updater";
 import { MigrationPrompt } from "./components/MigrationPrompt";
 import { WhileYouWereAway } from "./components/WhileYouWereAway";
 import {
@@ -175,6 +176,36 @@ function AppInner() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [pulse]);
+
+  // v0.22.2 — listen for the travis://update event the Rust deep-link
+  // handler dispatches. Triggers an update check + install via the
+  // existing tauri-plugin-updater wrappers in lib/updater.
+  useEffect(() => {
+    async function onUpdate() {
+      try {
+        const info = await checkForUpdate();
+        if (!info) {
+          alert("You're already on the latest version of Travis.");
+          return;
+        }
+        if (
+          confirm(
+            `Travis ${info.version} is available. Install it now? Travis will restart automatically when it's done.`,
+          )
+        ) {
+          await installUpdate();
+        }
+      } catch (e) {
+        console.error("update via deep-link failed", e);
+        alert(
+          "Couldn't check for updates. Try Settings → About to update manually.",
+        );
+      }
+    }
+    window.addEventListener("travis://update" as keyof WindowEventMap, onUpdate);
+    return () =>
+      window.removeEventListener("travis://update" as keyof WindowEventMap, onUpdate);
+  }, []);
 
   // Listen for the background updater poll (v0.12.2+). When the
   // backend detects a newer release in the feed, it emits this event;

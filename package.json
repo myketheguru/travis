@@ -1,7 +1,7 @@
 {
   "name": "travis",
   "private": true,
-  "version": "0.22.1",
+  "version": "0.22.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@tauri-apps/api": "~2.10.0",
+    "@tauri-apps/plugin-deep-link": "^2.4.9",
     "@tauri-apps/plugin-dialog": "~2.4.0",
     "@tauri-apps/plugin-notification": "~2.3.0",
     "@tauri-apps/plugin-opener": "2.5.3",

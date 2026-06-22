@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Travis",
-  "version": "0.22.1",
+  "version": "0.22.2",
   "identifier": "com.myketheguru.travis",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -60,6 +60,11 @@
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNEODY1RTRENTQwMTlGNEIKUldSTG53RlVUVjZHUGRoZ2ZsS1NRUU9sSjJuVng2OU9JSC9HOS91VHJseFNQWHc1bUt1RGJtNXgK",
       "dialog": false
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": ["travis"]
+      }
     }
   },
   "bundle": {

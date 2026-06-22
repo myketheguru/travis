@@ -131,6 +131,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
@@ -162,6 +163,55 @@ pub fn run() {
         })
         .setup(move |app| {
             let handle = app.handle().clone();
+
+            // v0.22.2 — deep-link handler. Catches travis:// URLs
+            // launched from the browser ("Open Travis", "Update from
+            // the dashboard"). Two URLs are wired today:
+            //
+            //   travis://open      → bring main window to foreground
+            //   travis://update    → trigger the Tauri updater check
+            //
+            // Other paths log + ignore so we can add more later
+            // without bricking older builds.
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let dl_handle = handle.clone();
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        let path = url.host_str().unwrap_or("");
+                        tracing::info!("deep_link received: travis://{path}");
+                        match path {
+                            "open" => {
+                                if let Some(win) = dl_handle.get_webview_window("main") {
+                                    let _ = win.show();
+                                    let _ = win.unminimize();
+                                    let _ = win.set_focus();
+                                }
+                            }
+                            "update" => {
+                                // Surface the same Settings → check
+                                // for updates path the user can hit
+                                // manually. Done from JS via the
+                                // existing tauri-plugin-updater
+                                // commands; here we just bring the
+                                // window to the front and post an
+                                // event the React side listens for.
+                                if let Some(win) = dl_handle.get_webview_window("main") {
+                                    let _ = win.show();
+                                    let _ = win.unminimize();
+                                    let _ = win.set_focus();
+                                    let _ = win.eval(
+                                        "window.dispatchEvent(new CustomEvent('travis://update'))",
+                                    );
+                                }
+                            }
+                            _ => {
+                                tracing::warn!("unknown deep_link path: {path}");
+                            }
+                        }
+                    }
+                });
+            }
             // Resolve the app data dir up front. We need this for both the
             // database and any startup_error log we want to write.
             let data_dir = match handle.path().app_data_dir() {

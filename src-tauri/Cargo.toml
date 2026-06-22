@@ -1,6 +1,6 @@
 [package]
 name = "travis"
-version = "0.22.1"
+version = "0.22.2"
 description = "Travis — local-first AI operations assistant"
 authors = ["myketheguru"]
 edition = "2021"
@@ -42,6 +42,10 @@ tauri-plugin-clipboard-manager = "~2.3"
 # in package.json. 2.5+ pulls in tauri 2.11 which isn't on crates.io in
 # the version we use yet. See CHANGELOG v0.13.4.
 tauri-plugin-dialog = "~2.4"
+# v0.22.2 — register travis:// URL scheme on all platforms so the web
+# dashboard can open the desktop app + trigger update checks via deep
+# links like travis://open and travis://update.
+tauri-plugin-deep-link = "~2.4"
 oauth2 = "5"
 url = "2"
 serde = { version = "1", features = ["derive"] }
