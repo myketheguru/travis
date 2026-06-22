@@ -480,7 +480,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
               rows={4}
             />
           </Field>
-          <Field label="Voice (optional)">
+          <Field label="Tone (optional)">
             <VoiceDropdown
               value={draft.communicationStyle}
               onChange={(v) => update({ communicationStyle: v })}

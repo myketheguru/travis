@@ -166,8 +166,8 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
               {step === 2 && (
                 <Question
                   index={2}
-                  prompt="How should I sound?"
-                  hint="Pick the voice that fits how you like to be talked to. You can change it later in Settings."
+                  prompt="What tone should I take?"
+                  hint="Pick the tone that fits how you like to be talked to. You can change it later in Settings."
                   canAdvance={!submitting}
                   onAdvance={persistAndFinish}
                   advanceLabel={submitting ? "Saving…" : "Continue"}
