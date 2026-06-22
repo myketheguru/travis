@@ -71,14 +71,14 @@ export function cloudHasToken(): Promise<boolean> {
  * loop or auto-retry on failure — that would spawn an infinite series
  * of browser tabs.
  */
-export function cloudSignInWithGoogle(): Promise<CloudUser> {
-  return invoke<CloudUser>("cloud_sign_in_with_google");
-}
+// v3 Slice 4 (final) — cloudSignInWithGoogle removed. The handoff
+// flow below is the only sign-in path.
 
 /**
- * v3 Slice 4 — pick up the existing web session via /app/handoff.
- * Opens the browser to the handoff approval page; on approve, the
- * desktop claims the code and ends signed in.
+ * v3 Slice 4 — pick up an existing web session (or sign up via
+ * /app/start in the browser). Opens the user's default browser to
+ * the handoff approval page; on approve, the desktop claims the
+ * code and ends signed in.
  */
 export function cloudHandoffFromWeb(): Promise<CloudUser> {
   return invoke<CloudUser>("cloud_handoff_from_web");

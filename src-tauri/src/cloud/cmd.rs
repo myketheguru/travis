@@ -10,7 +10,7 @@ use super::sync::{
     migration_status, record_decision, upload_local, MigrationDetails, MigrationStatus,
 };
 use super::{
-    clear_jwt, device_id, read_jwt, sign_in_with_google, ByokEvent, CloudClient, CloudUser,
+    clear_jwt, device_id, read_jwt, ByokEvent, CloudClient, CloudUser,
     CreateScheduleInput, RunNowInput, WorkflowRun, WorkflowSchedule,
 };
 
@@ -47,17 +47,12 @@ pub async fn cloud_status(state: State<'_, AppState>) -> Result<CloudStatus, Str
     }
 }
 
-/// Drive the full Google sign-in flow. Blocks until the user finishes
-/// in their browser (capped at 2 minutes by the loopback listener, or
-/// when the UI fires cloud_sign_in_cancel).
-#[tauri::command]
-pub async fn cloud_sign_in_with_google(
-    state: State<'_, AppState>,
-) -> Result<CloudUser, String> {
-    sign_in_with_google(&state.http)
-        .await
-        .map_err(|e| e.to_string())
-}
+// v3 Slice 4 (final) — cloud_sign_in_with_google removed from the IPC
+// surface. The web-handoff flow (cloud_handoff_from_web below) is the
+// only sign-in path the UI exposes. The underlying
+// cloud::sign_in_with_google function stays in cloud/mod.rs as a
+// module-private helper for dev tooling; it just isn't reachable from
+// JS anymore.
 
 /// Abort the in-flight sign_in_with_google call. Triggers the cancel
 /// notify; the awaiting task drops out of its tokio::select! and the

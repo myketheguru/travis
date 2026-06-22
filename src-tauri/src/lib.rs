@@ -736,7 +736,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             cloud::cmd::cloud_status,
-            cloud::cmd::cloud_sign_in_with_google,
             cloud::cmd::cloud_sign_in_cancel,
             cloud::cmd::cloud_handoff_from_web,
             cloud::cmd::cloud_extend_google_grant,

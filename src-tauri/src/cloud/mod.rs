@@ -702,6 +702,12 @@ fn hostname_fallback() -> String {
 ///
 /// Returns the new JWT (already stored in the keychain) and the user
 /// profile so the caller can update the UI immediately.
+///
+/// v3 Slice 4 (final) — no longer exposed as a Tauri command. The
+/// web-handoff flow (claim_handoff_from_web) replaced it as the
+/// only IPC-reachable sign-in path. Kept here as a module-private
+/// helper for dev tooling and the rare smoke-test scenario.
+#[allow(dead_code)]
 pub async fn sign_in_with_google(http: &reqwest::Client) -> anyhow::Result<CloudUser> {
     // 1. Bind the loopback listener first so we know which port to ask
     //    the backend to redirect to.
