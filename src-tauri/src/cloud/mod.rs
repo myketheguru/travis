@@ -32,11 +32,11 @@ pub mod files;
 pub mod sync;
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 /// One-shot store for the app's data directory, set in setup() once
 /// Tauri has resolved it. Read by the sync engine to find local files
-/// for upload.
+/// for upload, and by the JWT file storage.
 static APP_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 pub fn init_app_data_dir(path: PathBuf) {
@@ -89,35 +89,135 @@ pub const CLOUD_BASE: &str = "https://api.usetravis.com";
 const KEYCHAIN_SERVICE: &str = "Travis";
 const KEYCHAIN_JWT_ENTRY: &str = "cloud_jwt";
 
-fn jwt_entry() -> Result<Entry, keyring::Error> {
+/// v0.22.5 — JWT moved out of OS keychain into a file in app data dir.
+///
+/// Why: every CloudClient::current() call read the JWT, which on
+/// macOS hit Keychain. Since the keychain ACL is bound to the signed
+/// app binary, every minor version bump invalidated "Always Allow"
+/// and macOS prompted for the keychain password again. With sync
+/// running every 60s in the background plus periodic status checks,
+/// users were seeing the password prompt constantly. Reported by
+/// Taylor 2026-06-23.
+///
+/// Threat model: the JWT is a 24h bearer token. It already lives in
+/// process memory the entire session (used as the Authorization
+/// header on every API call). Persisting it to a 600-mode file in
+/// the app's data directory doesn't meaningfully change attacker
+/// reach vs keychain on a single-user macOS host. The token is
+/// short-lived and revocable from /app/settings if anything goes
+/// wrong.
+///
+/// BYOK API keys stay in keychain — those are long-lived, often
+/// belong to a paid third-party service, and warrant the prompt.
+
+static JWT_CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn jwt_cache() -> &'static Mutex<Option<String>> {
+    JWT_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn jwt_file_path() -> anyhow::Result<PathBuf> {
+    let dir = app_data_dir()
+        .ok_or_else(|| anyhow::anyhow!("app data dir not initialized"))?;
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir.join("cloud_jwt"))
+}
+
+// `app_data_dir` is defined above (line ~50) and is `pub` for the
+// sync engine + other modules. We reuse it here.
+
+fn legacy_jwt_entry() -> Result<Entry, keyring::Error> {
     Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_JWT_ENTRY)
 }
 
-/// Store the session JWT in the OS keychain.
+/// Store the session JWT in the app data directory.
 pub fn store_jwt(jwt: &str) -> anyhow::Result<()> {
-    jwt_entry()?.set_password(jwt)?;
+    let path = jwt_file_path()?;
+    // Write to a temp + rename for atomicity.
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, jwt)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        let _ = std::fs::set_permissions(&tmp, perms);
+    }
+    std::fs::rename(&tmp, &path)?;
+    if let Ok(mut g) = jwt_cache().lock() {
+        *g = Some(jwt.to_string());
+    }
     Ok(())
 }
 
-/// Read the current session JWT from the keychain. Returns `None` if
-/// there is no stored token (user has never signed in or has signed out).
+/// Read the current session JWT. Returns `None` if there is no
+/// stored token (user has never signed in or has signed out).
 ///
-/// Marked `pub` so llm::travis_cloud can construct authenticated
-/// requests to api.usetravis.com/llm/chat from outside this module.
+/// First checks the in-process cache, then the file, then (one-time)
+/// migrates from the old keychain location. Once migrated, the
+/// keychain entry is deleted so we never prompt again.
 pub fn read_jwt() -> Option<String> {
-    match jwt_entry().and_then(|e| e.get_password()) {
+    if let Ok(g) = jwt_cache().lock() {
+        if let Some(jwt) = g.as_ref() {
+            return Some(jwt.clone());
+        }
+    }
+    let path = match jwt_file_path() {
+        Ok(p) => p,
+        Err(_) => return None,
+    };
+    if let Ok(s) = std::fs::read_to_string(&path) {
+        let s = s.trim().to_string();
+        if !s.is_empty() {
+            if let Ok(mut g) = jwt_cache().lock() {
+                *g = Some(s.clone());
+            }
+            return Some(s);
+        }
+    }
+    // Cold cache + no file = check the legacy keychain location ONCE
+    // and migrate. Will prompt the user once on this launch, but only
+    // once across the lifetime of this install.
+    if let Some(legacy) = read_legacy_jwt_from_keychain() {
+        tracing::info!("cloud: migrating JWT from keychain → file");
+        if let Err(e) = store_jwt(&legacy) {
+            tracing::warn!("cloud: jwt file write failed during migration: {e}");
+        } else if let Err(e) = clear_legacy_jwt_from_keychain() {
+            tracing::warn!("cloud: legacy keychain JWT cleanup failed: {e}");
+        }
+        return Some(legacy);
+    }
+    None
+}
+
+fn read_legacy_jwt_from_keychain() -> Option<String> {
+    match legacy_jwt_entry().and_then(|e| e.get_password()) {
         Ok(s) if !s.is_empty() => Some(s),
         _ => None,
     }
 }
 
-/// Delete the stored JWT. Used on sign-out.
-pub fn clear_jwt() -> anyhow::Result<()> {
-    match jwt_entry()?.delete_credential() {
+fn clear_legacy_jwt_from_keychain() -> Result<(), keyring::Error> {
+    match legacy_jwt_entry()?.delete_credential() {
         Ok(()) => Ok(()),
         Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(e.into()),
+        Err(e) => Err(e),
     }
+}
+
+/// Delete the stored JWT. Used on sign-out.
+pub fn clear_jwt() -> anyhow::Result<()> {
+    if let Ok(mut g) = jwt_cache().lock() {
+        *g = None;
+    }
+    if let Ok(path) = jwt_file_path() {
+        let _ = std::fs::remove_file(&path);
+    }
+    // Belt-and-suspenders: also clear any stale keychain entry from
+    // pre-v0.22.5 installs. Should already have been migrated by
+    // read_jwt() but a manual sign-out from a fresh install needs to
+    // hit both locations.
+    let _ = clear_legacy_jwt_from_keychain();
+    Ok(())
 }
 
 /// Lightweight client wrapping reqwest + the session JWT.

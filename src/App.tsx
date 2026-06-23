@@ -144,13 +144,48 @@ function AppInner() {
     // doesn't fall through and falsely route the user to onboarding.
     // app_status decides onboarded; profile fetch is a separate
     // best-effort pass.
+    //
+    // v0.22.5 — added retry around getAppStatus and CRITICALLY changed
+    // the failure mode. Previously a failed getAppStatus would set
+    // {onboarded: false}, which routed the user through onboarding
+    // even though they had already done it. On Windows this was
+    // happening on every reboot — the WebView would race the Rust
+    // AppState bringup on cold boots, getAppStatus would throw "state
+    // not managed", we'd assume not-onboarded, and the user would see
+    // the onboarding flow again.
+    //
+    // The right fix: on failure, leave status as null. The render
+    // path below already shows a blank splash when status is null
+    // (line `if (!status) return <main ... />`). Then we keep
+    // retrying in the background. Onboarding only renders on a
+    // confirmed onboarded=false from the backend.
+    const callWithRetry = async <T,>(fn: () => Promise<T>): Promise<T> => {
+      let attempt = 0;
+      while (true) {
+        try {
+          return await fn();
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          // Only retry on the known AppState race; surface other errors
+          // immediately.
+          if (!msg.toLowerCase().includes("state not managed") || attempt >= 30) {
+            throw e;
+          }
+          attempt++;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
+    };
+
     let s;
     try {
-      s = await getAppStatus();
+      s = await callWithRetry(() => getAppStatus());
       setStatus(s);
     } catch (e) {
+      // Real failure (not just the AppState race). Keep status null
+      // so the splash stays up and we don't push the user into
+      // onboarding by accident. Caller can call refresh() again.
       console.error("getAppStatus failed", e);
-      setStatus({ version: "?", dbReady: false, onboarded: false, enabledPacks: [] });
       return;
     }
     if (s.onboarded) {

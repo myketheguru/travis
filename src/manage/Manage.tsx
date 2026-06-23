@@ -83,25 +83,41 @@ export default function Manage({ onClose }: { onClose: () => void }) {
     packSchemas().then(setSchemas).catch(() => setSchemas([]));
   }, []);
 
-  // Group tabs by section.
-  //
-  // Travis no longer surfaces pack-specific tabs in the main Manage
-  // sidebar — packs still ship schemas + workflows, but the per-pack
-  // tables (Lead to Empower contracts, tutoring sessions, etc.) are
-  // no longer first-class navigation. Manage is the core capture
-  // surface; pack data lives inside the Ask/Tasks/Threads flows.
+  // Group tabs by section. Pack tabs ONLY appear when the pack is
+  // actually enabled for this user (via PacksSection toggle, or via
+  // an Org entitlement flowing back from the cloud). A pack that
+  // ships in the binary but isn't enabled for this user stays
+  // hidden — sidebar is supposed to reflect the user's actual work
+  // surfaces, not "every pack we shipped."
   //
   // Diagnostics is the trailing collapsible group, only visible when
   // the user has the toggle on.
+  const enabledPackSet = useMemo(
+    () => new Set(enabledPacks),
+    [enabledPacks],
+  );
   const groups = useMemo<Group[]>(() => {
     const out: Group[] = [
       { label: "Capture", items: captureTabs },
     ];
+    for (const pack of schemas ?? []) {
+      if (!enabledPackSet.has(pack.slug)) continue;
+      const items: PackTab[] = pack.tables
+        .filter((t) => t.primary)
+        .map<PackTab>((t) => ({
+          kind: "pack",
+          id: `pack:${pack.slug}:${t.slug}`,
+          label: t.displayName,
+          pack,
+          table: t,
+        }));
+      if (items.length > 0) {
+        out.push({ label: pack.name, items });
+      }
+    }
     out.push({ label: "Diagnostics", diagnostic: true, items: diagnosticTabs });
     return out;
-  }, []);
-  void schemas;        // packSchemas() still loads in case other UIs need it
-  void enabledPacks;
+  }, [schemas, enabledPackSet]);
 
   // Flat list of currently-visible tabs, used for the active-fallback
   // logic and the active lookup.
