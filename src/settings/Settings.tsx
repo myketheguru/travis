@@ -20,7 +20,8 @@ import {
 import { checkForUpdate, installUpdate, type UpdateInfo } from "../lib/updater";
 import { listPacks, setPackEnabled, type PackInfo } from "../lib/packs";
 import { exportData, revealExport, type ExportResult } from "../lib/dataExport";
-import { packTableList, packTableUpsert } from "../lib/packs";
+// packTableList / packTableUpsert were used by the now-removed
+// CompanySection; no other code in Settings touches pack tables.
 import {
   archiveWorkspace,
   createWorkspace,
@@ -664,7 +665,11 @@ export default function Settings({ onClose }: { onClose: () => void }) {
         <WorkspacesSection />
         <PacksSection />
         <ProactiveSection />
-        <CompanySection />
+        {/* CompanySection removed — Travis is no longer scoped to a
+            single company per user. Pack-specific surfaces have been
+            pulled out of the main Settings flow. The L2E pack's
+            company_profile table still exists in the DB; it's just
+            not exposed here. */}
         <ExportSection />
         <UpdatesSection />
         <DiagnosticsSection />
@@ -1667,177 +1672,13 @@ function DiagnosticsSection() {
   );
 }
 
-function CompanySection() {
-  type ProfileRow = {
-    id?: number;
-    name?: string;
-    legal_name?: string;
-    address_line_1?: string;
-    address_line_2?: string;
-    city?: string;
-    state?: string;
-    zip?: string;
-    phone?: string;
-    email?: string;
-    website?: string;
-    ein?: string;
-    nyc_doe_vendor_number?: string;
-    default_contract_ref?: string;
-    tagline?: string;
-    default_invoice_signature_authority?: string;
-  };
-
-  const [profile, setProfile] = useState<ProfileRow | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Whether the L2E pack is enabled — company_profile only exists when
-  // the pack is on. We don't surface this section at all when it's off.
-  const [packEnabled, setPackEnabled] = useState<boolean | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const rows = await packTableList({
-          packSlug: "lead-to-empower",
-          tableSlug: "company_profile",
-          limit: 1,
-        });
-        if (cancelled) return;
-        if (rows.length === 0) {
-          // Pack disabled or migration didn't seed — either way, hide.
-          setPackEnabled(false);
-        } else {
-          setPackEnabled(true);
-          setProfile(rows[0] as ProfileRow);
-        }
-      } catch {
-        if (!cancelled) setPackEnabled(false);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const update = <K extends keyof ProfileRow>(key: K, value: ProfileRow[K]) => {
-    if (!profile) return;
-    setProfile({ ...profile, [key]: value });
-    setSaved(false);
-  };
-
-  const onSave = async () => {
-    if (!profile) return;
-    setSaving(true);
-    setError(null);
-    try {
-      const result = await packTableUpsert({
-        packSlug: "lead-to-empower",
-        tableSlug: "company_profile",
-        payload: profile as unknown as Record<string, unknown>,
-      });
-      setProfile(result as ProfileRow);
-      setSaved(true);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (loading) {
-    return (
-      <Section title="Company">
-        <p className="text-bone-3 text-[11px]">Loading…</p>
-      </Section>
-    );
-  }
-  if (packEnabled === false) {
-    // L2E pack disabled — nothing to configure. Keep the section hidden
-    // rather than showing an empty form.
-    return null;
-  }
-  if (!profile) {
-    return (
-      <Section title="Company">
-        <p className="text-warn text-[11px]">
-          No company profile row found. Re-enable the Lead to Empower pack to seed defaults.
-        </p>
-      </Section>
-    );
-  }
-
-  const field = (
-    label: string,
-    key: keyof ProfileRow,
-    placeholder?: string,
-    type: "text" | "email" | "tel" = "text",
-  ) => (
-    <label className="flex flex-col gap-1 min-w-0">
-      <span className="text-bone-3 text-[10px] uppercase tracking-wider">{label}</span>
-      <input
-        type={type}
-        value={(profile[key] as string | undefined) ?? ""}
-        onChange={(e) => update(key, e.target.value as ProfileRow[typeof key])}
-        placeholder={placeholder}
-        className="bg-ink-2/40 border border-ink-3 rounded px-2 py-1 text-bone-2 text-[12px] focus:outline-none focus:border-pulse-2/60 transition-colors"
-      />
-    </label>
-  );
-
-  return (
-    <Section title="Company">
-      <div className="flex flex-col gap-4 max-w-3xl">
-        <p className="text-bone-3 text-[11px] leading-relaxed">
-          The Lead to Empower pack uses these values to render every Work
-          Order, Sign-in Sheet, and Invoice PDF. Edit once; every document
-          downstream pulls the latest values automatically.
-        </p>
-
-        <div className="grid grid-cols-2 gap-3">
-          {field("Name", "name", "Lead to Empower")}
-          {field("Legal Name", "legal_name", "Lead to Empower LLC")}
-          {field("Tagline", "tagline", "Because Leading is Not Enough")}
-          {field("Website", "website", "www.leadtoempower.com")}
-          {field("Address Line 1", "address_line_1", "533 West 141st St.")}
-          {field("Address Line 2", "address_line_2")}
-          {field("City", "city", "New York")}
-          {field("State", "state", "NY")}
-          {field("ZIP", "zip", "10031")}
-          {field("Phone", "phone", "212-222-4275", "tel")}
-          {field("Email", "email", "jacob@leadtoempower.com", "email")}
-          {field("EIN", "ein", "82-4991893")}
-          {field("NYC DOE Vendor #", "nyc_doe_vendor_number", "LEA991893")}
-          {field("Default Contract #", "default_contract_ref", "QR179CF")}
-          {field(
-            "Default Invoice Signature Authority",
-            "default_invoice_signature_authority",
-            "Jacob Michelman",
-          )}
-        </div>
-
-        <div className="flex items-center gap-3">
-          <button
-            onClick={onSave}
-            disabled={saving}
-            className="px-4 py-1.5 rounded-full bg-bone/95 text-ink text-xs font-medium hover:bg-bone disabled:opacity-50 transition-colors"
-          >
-            {saving ? "Saving…" : "Save"}
-          </button>
-          {saved && <span className="text-pulse-2 text-[11px]">Saved</span>}
-          {error && <span className="text-warn text-[11px]">{error}</span>}
-        </div>
-      </div>
-    </Section>
-  );
-}
+// CompanySection was the L2E-pack-specific Company profile editor.
+// Removed when Travis stopped being scoped to a single company per
+// user — packs no longer assume one-company-per-user, and the
+// "Company" section in Settings was misleading for anyone not on
+// L2E. The data still lives in pack_lead_to_empower.company_profile
+// table and is editable from inside the L2E pack's own surfaces if
+// re-introduced later.
 
 function ExportSection() {
   const [busy, setBusy] = useState(false);

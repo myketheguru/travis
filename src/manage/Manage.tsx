@@ -83,32 +83,25 @@ export default function Manage({ onClose }: { onClose: () => void }) {
     packSchemas().then(setSchemas).catch(() => setSchemas([]));
   }, []);
 
-  // Group tabs by section. Pack tabs become one group per pack —
-  // `pack.name` is the user-facing display name, e.g. "Lead to
-  // Empower". Diagnostics is the trailing collapsible group, only
-  // visible when the user has the toggle on.
+  // Group tabs by section.
+  //
+  // Travis no longer surfaces pack-specific tabs in the main Manage
+  // sidebar — packs still ship schemas + workflows, but the per-pack
+  // tables (Lead to Empower contracts, tutoring sessions, etc.) are
+  // no longer first-class navigation. Manage is the core capture
+  // surface; pack data lives inside the Ask/Tasks/Threads flows.
+  //
+  // Diagnostics is the trailing collapsible group, only visible when
+  // the user has the toggle on.
   const groups = useMemo<Group[]>(() => {
     const out: Group[] = [
       { label: "Capture", items: captureTabs },
     ];
-    for (const pack of schemas ?? []) {
-      const items: PackTab[] = pack.tables
-        .filter((t) => t.primary)
-        .map<PackTab>((t) => ({
-          kind: "pack",
-          id: `pack:${pack.slug}:${t.slug}`,
-          label: t.displayName,
-          pack,
-          table: t,
-        }));
-      if (items.length > 0) {
-        out.push({ label: pack.name, items });
-      }
-    }
     out.push({ label: "Diagnostics", diagnostic: true, items: diagnosticTabs });
     return out;
-  }, [schemas]);
-  void enabledPacks; // see prior comment
+  }, []);
+  void schemas;        // packSchemas() still loads in case other UIs need it
+  void enabledPacks;
 
   // Flat list of currently-visible tabs, used for the active-fallback
   // logic and the active lookup.
