@@ -47,6 +47,143 @@ pub fn app_data_dir() -> Option<PathBuf> {
     APP_DATA_DIR.get().cloned()
 }
 
+/// Build the branded HTTP response we serve from the loopback listener
+/// after a successful sign-in or account-connect. Same look as the
+/// rest of Travis (dark bg, orb gradient, eyebrow); auto-closes the
+/// tab after a short delay so the user doesn't have to do anything.
+///
+/// `eyebrow` is the small monospace label at the top (e.g. "signed in",
+/// "connected"). `title` is the larger headline (e.g. "You're signed in",
+/// "Travis is now connected").
+fn branded_loopback_response(eyebrow: &str, title: &str) -> String {
+    // We embed the whole HTTP response — headers + body — as one
+    // string so the existing write_all call writes the full thing in
+    // one shot. The HTML is self-contained: no external CSS, no web
+    // fonts, no external scripts. window.close() works for tabs
+    // opened by JS (handoff/extend flows do open a new tab), with a
+    // fallback message for tabs the browser won't auto-close.
+    let body = format!(r##"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Travis</title>
+<style>
+  :root {{
+    color-scheme: dark;
+  }}
+  html, body {{
+    height: 100%;
+    margin: 0;
+    background: #07080b;
+    color: #eceee1;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  }}
+  body {{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }}
+  .wrap {{
+    max-width: 420px;
+    width: 100%;
+    text-align: center;
+    animation: fadeIn 0.6s ease both;
+  }}
+  .orb {{
+    width: 56px;
+    height: 56px;
+    margin: 0 auto 24px;
+    border-radius: 999px;
+    background: radial-gradient(circle at 30% 30%, #bd9eff, #7c5cff 55%, #6ec4e8);
+    box-shadow:
+      0 0 24px rgba(124, 92, 255, 0.55),
+      0 0 60px rgba(110, 196, 232, 0.25);
+    animation: pulse 3s ease-in-out infinite;
+  }}
+  .eyebrow {{
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: rgba(236, 236, 225, 0.32);
+    margin-bottom: 16px;
+  }}
+  h1 {{
+    margin: 0 0 14px;
+    font-size: 28px;
+    font-weight: 300;
+    letter-spacing: -0.02em;
+    color: #eceee1;
+  }}
+  p {{
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.6;
+    color: rgba(236, 236, 225, 0.55);
+  }}
+  .countdown {{
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color: rgba(236, 236, 225, 0.4);
+    font-size: 12px;
+    margin-top: 28px;
+    letter-spacing: 0.04em;
+  }}
+  @keyframes fadeIn {{
+    from {{ opacity: 0; transform: translateY(10px); }}
+    to {{ opacity: 1; transform: translateY(0); }}
+  }}
+  @keyframes pulse {{
+    0%, 100% {{
+      box-shadow: 0 0 24px rgba(124, 92, 255, 0.55), 0 0 60px rgba(110, 196, 232, 0.25);
+    }}
+    50% {{
+      box-shadow: 0 0 32px rgba(124, 92, 255, 0.75), 0 0 80px rgba(110, 196, 232, 0.4);
+    }}
+  }}
+</style>
+</head>
+<body>
+<main class="wrap">
+  <div class="orb" aria-hidden="true"></div>
+  <div class="eyebrow">// {eyebrow}</div>
+  <h1>{title}</h1>
+  <p>You can close this tab and return to Travis.</p>
+  <div class="countdown" id="cd">closing in <span id="t">3</span>…</div>
+</main>
+<script>
+  (function () {{
+    var sec = 3;
+    var tEl = document.getElementById("t");
+    var cdEl = document.getElementById("cd");
+    var iv = setInterval(function () {{
+      sec--;
+      if (sec <= 0) {{
+        clearInterval(iv);
+        try {{ window.close(); }} catch (e) {{}}
+        // window.close() is blocked unless the tab was opened by JS.
+        // If we're still here a moment later, switch the message so
+        // the user knows to close manually.
+        setTimeout(function () {{
+          if (cdEl) cdEl.textContent = "you can close this tab";
+        }}, 250);
+      }} else {{
+        if (tEl) tEl.textContent = String(sec);
+      }}
+    }}, 1000);
+  }})();
+</script>
+</body>
+</html>"##, eyebrow = eyebrow, title = title);
+
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body,
+    )
+}
+
 /// Stable identifier for this desktop install. Pulled from the OS
 /// hostname; used to tag outbound /sync/push events so we can
 /// recognise our own changes when they come back on /sync/pull and
@@ -670,7 +807,7 @@ pub async fn extend_google_grant(
     let n = stream.read(&mut buf).await?;
     let req = String::from_utf8_lossy(&buf[..n]).to_string();
     let _ = stream
-        .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<html><body style=\"font-family:system-ui;padding:48px\"><h2>Travis is now connected.</h2><p>You can close this tab and return to the app.</p></body></html>")
+        .write_all(branded_loopback_response("connected", "Travis is now connected.").as_bytes())
         .await;
     let _ = stream.shutdown().await;
 
@@ -813,7 +950,7 @@ pub async fn claim_handoff_from_web(http: &reqwest::Client) -> anyhow::Result<Cl
             // Send the success page on the SAME connection that carried
             // the code so the browser actually paints something.
             let _ = stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<html><body style=\"font-family:system-ui;padding:48px;text-align:center\"><h2>You're signed in.</h2><p>You can close this tab and return to Travis.</p></body></html>")
+                .write_all(branded_loopback_response("signed in", "You're signed in.").as_bytes())
                 .await;
             let _ = stream.shutdown().await;
             break extracted;
