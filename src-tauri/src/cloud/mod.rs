@@ -632,39 +632,103 @@ pub async fn claim_handoff_from_web(http: &reqwest::Client) -> anyhow::Result<Cl
         tracing::warn!("could not open browser for handoff: {e}");
     }
 
-    // 4. Wait for loopback callback OR cancel OR timeout.
-    let (stream, _addr) = tokio::select! {
-        biased;
-        _ = SIGN_IN_CANCEL.notified() => anyhow::bail!("handoff canceled"),
-        r = tokio::time::timeout(Duration::from_secs(5 * 60), listener.accept()) => {
-            r.map_err(|_| anyhow::anyhow!("handoff timed out — close the browser tab and try again"))??
+    // 4. Wait for the loopback callback that carries the code. We
+    //    accept connections IN A LOOP and keep listening until we get
+    //    a real GET with `?code=` — Windows browsers (especially
+    //    Chrome/Edge) tend to open a TCP preconnect probe to the
+    //    loopback URL before issuing the actual GET. The probe is
+    //    just a TCP handshake with no body; if we treat the first
+    //    accept as the real request we end up with an empty buffer
+    //    and bail out, leaving the real GET hanging.
+    //
+    //    Hard cap of 5 minutes across the whole loop; cancel and
+    //    individual reads are bounded so a never-completing probe
+    //    can't wedge us.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5 * 60);
+    let code = loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            anyhow::bail!("handoff timed out — close the browser tab and try again");
         }
-    };
-    let mut buf = vec![0u8; 8192];
-    let mut stream = stream;
-    let n = stream.read(&mut buf).await?;
-    let req = String::from_utf8_lossy(&buf[..n]).to_string();
-    let _ = stream
-        .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<html><body style=\"font-family:system-ui;padding:48px;text-align:center\"><h2>You're signed in.</h2><p>You can close this tab and return to Travis.</p></body></html>")
-        .await;
-    let _ = stream.shutdown().await;
+        let (stream, _addr) = tokio::select! {
+            biased;
+            _ = SIGN_IN_CANCEL.notified() => anyhow::bail!("handoff canceled"),
+            r = tokio::time::timeout(remaining, listener.accept()) => {
+                r.map_err(|_| anyhow::anyhow!("handoff timed out — close the browser tab and try again"))??
+            }
+        };
+        let mut stream = stream;
+        let mut buf = vec![0u8; 8192];
 
-    // 5. Extract code from the callback URL.
-    let first_line = req.lines().next().unwrap_or_default();
-    let code = first_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|path| {
-            let q = path.split_once('?').map(|(_, q)| q).unwrap_or("");
-            q.split('&')
-                .filter_map(|kv| kv.split_once('='))
-                .find(|(k, _)| *k == "code")
-                .map(|(_, v)| urlencoding::decode(v).unwrap_or_default().into_owned())
-        })
-        .unwrap_or_default();
-    if code.is_empty() {
-        anyhow::bail!("handoff completed without a code — sign-in didn't finish");
-    }
+        // Read up to the end-of-headers (\r\n\r\n) so we always see the
+        // full request line. Bounded by a 5s per-connection deadline so
+        // a slow / hung probe can't stall us. read() returns 0 on FIN —
+        // that's the "preconnect probe with no body" case.
+        let read_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut total = 0usize;
+        let mut got_request = false;
+        while total < buf.len() {
+            let read_remaining = read_deadline.saturating_duration_since(tokio::time::Instant::now());
+            if read_remaining.is_zero() {
+                break;
+            }
+            let n = match tokio::time::timeout(read_remaining, stream.read(&mut buf[total..])).await {
+                Ok(Ok(n)) => n,
+                Ok(Err(_)) | Err(_) => 0,
+            };
+            if n == 0 {
+                break;
+            }
+            total += n;
+            got_request = true;
+            // Found end-of-headers — we have everything we need.
+            if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+
+        if !got_request {
+            // Empty connection (preconnect probe). Move on and accept
+            // the next one — that's the real GET.
+            tracing::debug!("handoff: empty loopback connection, waiting for the real GET");
+            let _ = stream.shutdown().await;
+            continue;
+        }
+
+        let req = String::from_utf8_lossy(&buf[..total]).to_string();
+        let first_line = req.lines().next().unwrap_or_default();
+        let extracted = first_line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|path| {
+                let q = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+                q.split('&')
+                    .filter_map(|kv| kv.split_once('='))
+                    .find(|(k, _)| *k == "code")
+                    .map(|(_, v)| urlencoding::decode(v).unwrap_or_default().into_owned())
+            })
+            .unwrap_or_default();
+
+        if !extracted.is_empty() {
+            // Send the success page on the SAME connection that carried
+            // the code so the browser actually paints something.
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<html><body style=\"font-family:system-ui;padding:48px;text-align:center\"><h2>You're signed in.</h2><p>You can close this tab and return to Travis.</p></body></html>")
+                .await;
+            let _ = stream.shutdown().await;
+            break extracted;
+        }
+
+        // Some other GET (favicon, etc.) — close and keep listening.
+        let _ = stream
+            .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+            .await;
+        let _ = stream.shutdown().await;
+        tracing::debug!(
+            "handoff: loopback hit without a code, continuing to wait. Path: {}",
+            first_line
+        );
+    };
 
     // 6. Exchange code → JWT.
     let claim_resp: ClaimResponse = http
