@@ -90,6 +90,23 @@ struct AnthropicErrorBody {
     tier: Option<String>,
     #[serde(default, rename = "allowedModels")]
     allowed_models: Option<Vec<String>>,
+    /// Phase 2 quality-teaser: which lane is blocked + remaining
+    /// fallback lanes the user could switch to. The desktop renders
+    /// a modal with these options when the chat layer surfaces the
+    /// 429.
+    #[serde(default)]
+    lane: Option<String>,
+    #[serde(default)]
+    fallbacks: Option<Vec<FallbackLane>>,
+    #[serde(default, rename = "canEnableOverage")]
+    can_enable_overage: Option<bool>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct FallbackLane {
+    lane: String,
+    remaining_calls: i64,
+    remaining_cents: i64,
 }
 
 fn build_messages(messages: &[Message], cache_conversation: bool) -> Vec<Value> {
@@ -201,6 +218,39 @@ fn explain_error(status: u16, bytes: &[u8]) -> String {
             }
             Some("rate_limit_calls") | Some("rate_limit_cost") => {
                 "you've hit today's usage cap. Resets at midnight UTC, or upgrade for more.".to_string()
+            }
+            Some("quality_cap_hit") => {
+                // Quality lane is out of budget. Build an actionable
+                // message that names the next-best lane (cheap reasoning)
+                // and, for paid users, mentions pay-as-you-go.
+                let has_cheap = b
+                    .fallbacks
+                    .as_ref()
+                    .map(|f| f.iter().any(|l| l.lane == "default"))
+                    .unwrap_or(false);
+                let overage = b.can_enable_overage.unwrap_or(false);
+                let tier = b.tier.as_deref().unwrap_or("your");
+                if overage {
+                    if has_cheap {
+                        format!(
+                            "Daily quality budget is out. Enable pay-as-you-go in Settings to keep using top-tier reasoning, or switch to cheap reasoning to keep working today free of extra charge."
+                        )
+                    } else {
+                        "Daily quality budget is out. Enable pay-as-you-go in Settings to keep going.".to_string()
+                    }
+                } else if has_cheap {
+                    format!(
+                        "Your {tier} plan's daily quality budget is out for today. You can switch to cheap reasoning to keep working — it's not as sharp, but it'll get you through. Or upgrade to Pro for ~20× more quality budget."
+                    )
+                } else {
+                    format!(
+                        "Your {tier} plan's daily budget is out. Travis resets at midnight UTC. Upgrade to Pro for more."
+                    )
+                }
+            }
+            Some("lane_cap_hit") => {
+                let lane = b.lane.as_deref().unwrap_or("this");
+                format!("Daily {lane} lane budget is out. Switching lane or coming back tomorrow.")
             }
             _ => b
                 .error
