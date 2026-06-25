@@ -662,13 +662,12 @@ export default function Settings({ onClose }: { onClose: () => void }) {
           {error && <span className="text-warn text-xs">{error}</span>}
         </div>
 
-        <CalendarSection />
         <WorkspacesSection />
         <PacksSection />
         <ProactiveSection />
         <ExportSection />
         <UpdatesSection />
-        <DiagnosticsSection />
+        <CalendarSection />
         <ShellToolSection />
       </motion.div>
     </main>
@@ -684,30 +683,18 @@ type ConnectionState = {
 };
 
 function CalendarSection() {
+  // v0.22.9 — Google rows removed; the cloud-managed ConnectedAccounts
+  // section at the top of Settings now owns Gmail + Google Calendar
+  // grant flow. This section keeps only providers that don't have a
+  // cloud-side path yet (Microsoft 365). When/if cloud gets Microsoft
+  // OAuth, this section can be removed entirely.
   return (
-    <Section title="Connections">
+    <Section title="Microsoft (optional)">
       <p className="text-bone-3 text-[11px] leading-relaxed -mt-2">
-        Connect a Google or Microsoft account so Travis can see your calendar
-        ("what's on tomorrow?") and send email on your behalf — only when you
-        confirm a preview card. Calendar access is read-only.
+        Connect Outlook so Travis can see your calendar and send mail on
+        your behalf — only when you confirm a preview card. Calendar
+        access is read-only. (For Google, use Connected above.)
       </p>
-      <ProviderRow
-        label="Google"
-        description="Calendar (read) · Gmail (send)"
-        envHint="TRAVIS_GOOGLE_CLIENT_ID / _SECRET"
-        loadStatus={async () => {
-          const { calendarStatus } = await import("../lib/calendar");
-          return calendarStatus();
-        }}
-        connectFn={async () => {
-          const { calendarConnectGoogle } = await import("../lib/calendar");
-          return calendarConnectGoogle();
-        }}
-        disconnectFn={async () => {
-          const { calendarDisconnectGoogle } = await import("../lib/calendar");
-          await calendarDisconnectGoogle();
-        }}
-      />
       <ProviderRow
         label="Microsoft"
         description="Calendar (read) · Outlook (send)"
@@ -863,36 +850,49 @@ function ShellToolSection() {
     }
   };
 
+  // Wrapped in an Advanced disclosure — niche power-user feature; most
+  // users never need it. Opens automatically if the toggle is on.
   return (
-    <Section title="Computer access">
-      <div className="rounded-lg border border-warn/25 bg-warn/[0.04] p-3">
-        <div className="text-warn text-[10px] tracking-[0.18em] uppercase mb-1.5">
-          Use with care
-        </div>
-        <p className="text-bone-2 text-[11px] leading-relaxed">
-          When on, Travis can ask you for permission to do things on your
-          computer — like checking what's in a folder, looking up the version
-          of a tool, or running a quick status check. You'll always see exactly
-          what it wants to do and click Allow before anything happens.
-          Travis won't propose anything destructive, and there's a built-in
-          safety filter that refuses dangerous actions even if you say yes.
-          Default OFF.
-        </p>
-      </div>
+    <Section title="Advanced">
+      <details
+        className="rounded-xl border border-ink-3 bg-ink-2/20 group"
+        open={enabled === true}
+      >
+        <summary className="cursor-pointer select-none px-4 py-2.5 text-bone-2 text-xs flex items-center justify-between hover:bg-ink-2/40 rounded-xl transition-colors">
+          <span>Computer access — let Travis run shell commands</span>
+          <span className="text-bone-3 group-open:rotate-90 transition-transform">›</span>
+        </summary>
+        <div className="px-4 pb-4 pt-1 flex flex-col gap-3">
+          <div className="rounded-lg border border-warn/25 bg-warn/[0.04] p-3">
+            <div className="text-warn text-[10px] tracking-[0.18em] uppercase mb-1.5">
+              Use with care
+            </div>
+            <p className="text-bone-2 text-[11px] leading-relaxed">
+              When on, Travis can ask you for permission to do things on your
+              computer — like checking what's in a folder, looking up the version
+              of a tool, or running a quick status check. You'll always see exactly
+              what it wants to do and click Allow before anything happens.
+              Travis won't propose anything destructive, and there's a built-in
+              safety filter that refuses dangerous actions even if you say yes.
+              Default OFF.
+            </p>
+          </div>
 
-      <label className="flex items-center gap-2 cursor-pointer select-none">
-        <input
-          type="checkbox"
-          checked={enabled ?? false}
-          onChange={(e) => toggle(e.target.checked)}
-          disabled={enabled === null || busy}
-          className="accent-pulse"
-        />
-        <span className="text-bone-2 text-sm">
-          Let Travis run things on my computer (with my permission)
-        </span>
-      </label>
-      {err && <p className="text-warn text-xs">{err}</p>}
+          <label className="flex items-center gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={enabled ?? false}
+              onChange={(e) => toggle(e.target.checked)}
+              disabled={enabled === null || busy}
+              className="accent-pulse"
+            />
+            <span className="text-bone-2 text-sm">
+              Let Travis run things on my computer (with my permission)
+            </span>
+          </label>
+          {err && <p className="text-warn text-xs">{err}</p>}
+        </div>
+      </details>
     </Section>
   );
 }
@@ -1583,22 +1583,27 @@ function PacksSection() {
     }
   };
 
+  // Entitlement gating — Settings → Packs is for managing what you
+  // already have, NOT for discovering what you could add. A pack
+  // becomes "managed" once it's enabled (by org sync, by grandfather
+  // migration, or by a previous user toggle). For users with no
+  // enabled packs, the section is hidden entirely — adding access
+  // happens via Org admin, not self-service from a Free tier.
+  const managed = packs?.filter((p) => p.enabled) ?? null;
+  if (managed !== null && managed.length === 0) return null;
+
   return (
     <Section title="Packs">
       <p className="text-bone-3 text-[11px] leading-relaxed -mt-2">
-        Each pack is a vertical Travis can help with. Enable the packs that
-        match your work; disabled packs don't contribute prompts, tools, or
-        UI. Your data stays on disk either way.
+        Add-ons your account has access to. Turn them off here to hide
+        their tabs, prompts, and tools — your data stays put either way.
       </p>
       {!packs && !error && (
         <p className="text-bone-3 text-xs">Loading…</p>
       )}
-      {packs && packs.length === 0 && (
-        <p className="text-bone-3 text-xs">No packs are bundled in this build.</p>
-      )}
-      {packs && packs.length > 0 && (
+      {managed && managed.length > 0 && (
         <div className="flex flex-col gap-2">
-          {packs.map((p) => {
+          {managed.map((p) => {
             const isPending = pending.has(p.slug);
             return (
               <label
@@ -1637,7 +1642,7 @@ function PacksSection() {
       )}
       {restartHint && (
         <p className="text-pulse-2 text-[11px]">
-          Pack changes take effect on next launch.
+          Changes take effect on next launch.
         </p>
       )}
       {error && <p className="text-warn text-[11px]">{error}</p>}
@@ -1645,28 +1650,11 @@ function PacksSection() {
   );
 }
 
-function DiagnosticsSection() {
-  const showDiagnostics = useAppStore((s) => s.showDiagnostics);
-  const setShowDiagnostics = useAppStore((s) => s.setShowDiagnostics);
-  return (
-    <Section title="Advanced">
-      <p className="text-bone-3 text-[11px] leading-relaxed -mt-2">
-        Reveal extra Manage tabs (Entities, Summaries, Asks of me). These are
-        internal views into what Travis has captured — useful for debugging,
-        not needed day-to-day.
-      </p>
-      <label className="flex items-center gap-2 cursor-pointer select-none">
-        <input
-          type="checkbox"
-          checked={showDiagnostics}
-          onChange={(e) => setShowDiagnostics(e.target.checked)}
-          className="accent-pulse"
-        />
-        <span className="text-bone-2 text-sm">Show diagnostics tabs in Manage</span>
-      </label>
-    </Section>
-  );
-}
+// DiagnosticsSection (Manage tracking-tab reveal) was removed in v0.22.9.
+// Entity/Summary/Ask state is internal — not something users should be
+// browsing or toggling from Settings. The diagnostics toggle remains in
+// the store for dev-only flips (e.g., via console), but it no longer
+// has a user-facing surface.
 
 // CompanySection (L2E-pack-specific company profile editor) was removed
 // in v0.22.6. The original direction was that pack-specific surfaces
@@ -1722,12 +1710,11 @@ function ExportSection() {
     <Section title="Export">
       <div className="flex flex-col gap-3 max-w-xl">
         <p className="text-bone-3 text-[11px] leading-relaxed">
-          Travis is local-first; your data lives only on this device. This
-          export bundles every row Travis tracks into a single JSON file —
-          journal entries, tasks, reminders, conversations, the entity
-          graph, pack-typed records — so you can inspect what's been
-          captured or share a snapshot with someone you trust. API keys
-          and OAuth tokens are stripped automatically.
+          A snapshot of everything Travis is holding for you on this
+          device — journal entries, tasks, reminders, conversations,
+          pack-typed records — bundled into one JSON file you can read,
+          archive, or share with someone you trust. API keys and OAuth
+          tokens are stripped automatically.
         </p>
 
         <label className="flex items-start gap-2 cursor-pointer select-none">
