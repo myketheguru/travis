@@ -342,6 +342,10 @@ pub fn run() {
                 working_memory: memory::working::WorkingMemory::new(),
                 interpreter: interpreter_state.clone(),
             });
+            // v0.22.10 — Python bootstrap state. Held outside AppState
+            // because the bootstrap can spawn while the user is browsing
+            // other surfaces, and we want a separate lock.
+            handle.manage(python_runtime::cmd::BootstrapState::new());
 
             // v0.21.8 — reveal the main window NOW that AppState is
             // managed. We keep it hidden in tauri.conf.json
@@ -901,6 +905,10 @@ pub fn run() {
             templates::cmd::list_pack_templates,
             templates::cmd::delete_pack_template,
             interpreter::cmd::run_python,
+            python_runtime::cmd::python_runtime_status,
+            python_runtime::cmd::python_runtime_ensure,
+            python_runtime::cmd::python_runtime_cancel,
+            python_runtime::cmd::python_runtime_ensure_packages,
             steps::cmd::list_steps,
             workflows::cmd::get_active_workflow,
             identity_cmd::list_entities,

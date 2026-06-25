@@ -36,6 +36,9 @@
 //! - outputs/ scanned; files collected as `RunPythonResult.generated_files`
 //! - the entire `<run_id>` dir is removed
 
+pub mod bootstrap;
+pub mod cmd;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -77,6 +80,22 @@ pub struct RunParams {
 /// that as a configuration/install error (the resources weren't
 /// bundled for this build).
 pub fn resolve_python_bin(app: &AppHandle) -> Option<PathBuf> {
+    // v0.22.10 — three-tier resolution:
+    //   1. Lazy-cached runtime under <app_data>/python/<slug>/ —
+    //      survives Travis upgrades, downloaded on first use.
+    //   2. Installer-bundled runtime (legacy / current behaviour) —
+    //      shipping ~150 MB inside the installer.
+    //   3. Dev-mode fallback for cargo runs from src-tauri/.
+    //
+    // Tier 1 wins so users who've gone through the bootstrap stay
+    // on the cached copy and don't accidentally fall back to the
+    // bundled (and potentially stale) Python after a reinstall.
+    if let Ok(cached) = bootstrap::cache_python_bin(app) {
+        if cached.exists() {
+            return Some(cached);
+        }
+    }
+
     let resource_dir = app.path().resource_dir().ok()?;
     let platform_slug = host_slug();
     let candidate = resource_dir

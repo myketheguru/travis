@@ -7208,7 +7208,7 @@ dependencies = [
 
 [[package]]
 name = "travis"
-version = "0.22.7"
+version = "0.22.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7217,6 +7217,8 @@ dependencies = [
  "chrono",
  "csv",
  "fastembed",
+ "flate2",
+ "futures-util",
  "keyring",
  "lettre",
  "libsqlite3-sys",
@@ -7228,6 +7230,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-clipboard-manager",

@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { PresenceOrb } from "./components/PresenceOrb";
 import HealthBanner from "./components/HealthBanner";
 import ForceUpgradeGate from "./components/ForceUpgradeGate";
+import { ResourceLoader } from "./components/ResourceLoader";
 import { WorkspaceSwitcher } from "./components/WorkspaceSwitcher";
 import { useAppStore } from "./stores/app";
 import { getAppStatus, getUserProfile } from "./lib/ipc";
@@ -44,6 +45,10 @@ export default function App() {
   return (
     <ForceUpgradeGate>
       <AppInner />
+      {/* Global overlay for resource bootstrap (lazy Python download +
+          extract + wheel install). Stays hidden until a runtime-progress
+          event fires; auto-dismisses on ready. */}
+      <ResourceLoader />
     </ForceUpgradeGate>
   );
 }

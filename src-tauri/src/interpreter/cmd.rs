@@ -102,6 +102,31 @@ pub async fn run_python(
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
         .min(MAX_TIMEOUT_SECS);
 
+    // v0.22.10 — lazy runtime bootstrap. If Python isn't resolvable
+    // (no bundled binary AND no cache), fetch + extract + install
+    // wheels before continuing. The ResourceLoader overlay listens
+    // to the runtime-progress events the bootstrap emits, so the
+    // user sees the loader pop while we get set up. ensure_ready is
+    // idempotent — a no-op after the cache is populated.
+    if python_runtime::resolve_python_bin(&app).is_none() {
+        let handle = python_runtime::bootstrap::BootstrapHandle::default();
+        python_runtime::bootstrap::ensure_ready(&app, handle)
+            .await
+            .map_err(|e| format!("runtime bootstrap: {e}"))?;
+    }
+
+    // v0.22.10 — if the LLM requested extra libraries beyond the
+    // preinstalled wheel set, install them now (pip skips ones we
+    // already have). Errors are non-fatal — the script may not
+    // actually need every requested library to succeed.
+    if !params.libraries.is_empty() {
+        if let Err(e) =
+            python_runtime::bootstrap::ensure_packages(&app, &params.libraries).await
+        {
+            tracing::warn!("ensure_packages partial failure: {e}");
+        }
+    }
+
     // Load + base64-encode requested documents
     let mut input_files: HashMap<String, String> = HashMap::new();
     // v0.20.14 — mount any extra in-memory files (step result JSON

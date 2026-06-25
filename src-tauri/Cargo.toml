@@ -1,6 +1,6 @@
 [package]
 name = "travis"
-version = "0.22.9"
+version = "0.22.10"
 description = "Travis — local-first AI operations assistant"
 authors = ["myketheguru"]
 edition = "2021"
@@ -58,7 +58,14 @@ thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native-sync-persistent"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+# v0.22.10 — lazy Python runtime bootstrap. Downloads + extracts the
+# CPython tarball to a per-user cache when the user first touches a
+# code-execution feature. tar/flate2 unpack on POSIX + Windows from
+# the same tarball stream.
+tar = "0.4"
+flate2 = "1"
+futures-util = "0.3"
 async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 fastembed = "4"
