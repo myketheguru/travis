@@ -27,8 +27,86 @@ use crate::packs::{
     ValveValue,
 };
 use crate::workflows::recipe::WorkflowDef;
+use sqlx::SqlitePool;
 
 const SLUG: &str = "lead-to-empower";
+
+/// One-time grandfather: if this user has any LTE data rows but no
+/// explicit `meta.pack.lead-to-empower.enabled` row, set the meta key
+/// to true so they don't lose access when the default flipped from
+/// true (v0.22.7-) to false (v0.22.8+).
+///
+/// Idempotent — guarded by `meta.pack.lead-to-empower.grandfather_v1`
+/// so the data probe only runs once per install. Called from
+/// `lib.rs::setup` before `resolve_enabled_packs`.
+pub async fn grandfather_legacy_users(pool: &SqlitePool) -> anyhow::Result<()> {
+    let already_done: Option<(String,)> = sqlx::query_as(
+        "SELECT value FROM meta WHERE key = 'pack.lead-to-empower.grandfather_v1'",
+    )
+    .fetch_optional(pool)
+    .await?;
+    if already_done.is_some() {
+        return Ok(());
+    }
+
+    let explicit: Option<(String,)> = sqlx::query_as(
+        "SELECT value FROM meta WHERE key = 'pack.lead-to-empower.enabled'",
+    )
+    .fetch_optional(pool)
+    .await?;
+    if explicit.is_some() {
+        // User already has a deliberate choice recorded — don't override.
+        sqlx::query(
+            "INSERT OR REPLACE INTO meta(key, value, updated_at)
+             VALUES ('pack.lead-to-empower.grandfather_v1', 'skipped',
+                     CURRENT_TIMESTAMP)",
+        )
+        .execute(pool)
+        .await?;
+        return Ok(());
+    }
+
+    // Probe: does this DB have any LTE data? `engagement` is the central
+    // LTE entity — invoicing, quotes, contracts all reference it.
+    // Fall back to invoice_line if engagement is empty but invoicing was
+    // somehow used directly.
+    let engagement_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM engagement")
+            .fetch_one(pool)
+            .await
+            .unwrap_or((0,));
+    let invoice_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM invoice_line")
+            .fetch_one(pool)
+            .await
+            .unwrap_or((0,));
+    let has_data = engagement_count.0 > 0 || invoice_count.0 > 0;
+
+    if has_data {
+        tracing::info!(
+            "lead_to_empower: grandfathering existing user — \
+             engagement={}, invoice_line={}",
+            engagement_count.0,
+            invoice_count.0
+        );
+        sqlx::query(
+            "INSERT OR REPLACE INTO meta(key, value, updated_at)
+             VALUES ('pack.lead-to-empower.enabled', 'true',
+                     CURRENT_TIMESTAMP)",
+        )
+        .execute(pool)
+        .await?;
+    }
+    sqlx::query(
+        "INSERT OR REPLACE INTO meta(key, value, updated_at)
+         VALUES ('pack.lead-to-empower.grandfather_v1',
+                 ?1, CURRENT_TIMESTAMP)",
+    )
+    .bind(if has_data { "applied" } else { "no_data" })
+    .execute(pool)
+    .await?;
+    Ok(())
+}
 
 pub struct LeadToEmpowerPack;
 
@@ -56,9 +134,15 @@ impl PackHandle for LeadToEmpowerPack {
     }
 
     fn default_enabled(&self) -> bool {
-        // Existing v0.2.0 builds shipped with L2E enabled by default;
-        // returning true preserves that behaviour for users upgrading.
-        true
+        // Off by default. Pack-specific UI shows only when the user
+        // has explicitly opted in (Settings → Packs) or has the pack
+        // via Org entitlement that flows back from the cloud. v0.22.8
+        // flipped this from true to false; users who relied on the
+        // old default and want LTE access should re-enable via
+        // Settings → Packs. Users with LTE data rows already in the
+        // DB are auto-grandfathered by [`grandfather_legacy_users`]
+        // which runs once on startup before pack resolution.
+        false
     }
 
     fn migrations(&self) -> &'static [PackMigration] {

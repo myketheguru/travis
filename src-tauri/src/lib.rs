@@ -272,6 +272,17 @@ pub fn run() {
                 }
             });
 
+            // One-time grandfather for the LTE default-enabled flip
+            // (v0.22.7 default=true → v0.22.8 default=false). If the
+            // user has LTE data rows but no explicit enabled-meta
+            // entry, this writes the meta key to true so they don't
+            // lose access on upgrade. Idempotent.
+            if let Err(e) = tauri::async_runtime::block_on(
+                packs::lead_to_empower::grandfather_legacy_users(&db_arc.pool),
+            ) {
+                tracing::warn!("lte grandfather failed (non-fatal): {e}");
+            }
+
             // Resolve which compiled-in packs the user has enabled at
             // runtime via `meta.pack.<slug>.enabled` (PACKS.md "two
             // layers of pack gating"). First-encounter packs fall back
