@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { type ConversationMessage } from "../lib/conversation";
 import { type ParsedStep } from "../lib/steps";
@@ -42,6 +42,28 @@ export function ChatTurn({
   const isAssistant = message.role === "assistant";
   const [copied, setCopied] = useState(false);
   const [hover, setHover] = useState(false);
+  const spokeThisMessageRef = useRef<string | null>(null);
+
+  // v0.22.13 — auto-speak Travis's replies when voice output is on in
+  // Settings. Only speaks once per message (dedup by content) so a
+  // parent re-render doesn't retrigger. Non-assistant messages skip.
+  useEffect(() => {
+    if (!isAssistant) return;
+    const trimmed = message.content.trim();
+    if (!trimmed) return;
+    if (spokeThisMessageRef.current === trimmed) return;
+    spokeThisMessageRef.current = trimmed;
+    // Strip doc# markers and other machine tokens before speaking.
+    const spoken = trimmed
+      .replace(/doc#\d+/g, "")
+      .replace(/```[\s\S]*?```/g, "")
+      .replace(/`[^`]*`/g, "")
+      .replace(/[*_#>~]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!spoken) return;
+    void import("../lib/voice").then((mod) => mod.speak(spoken));
+  }, [isAssistant, message.content]);
 
   // Extract structured fields from payload_json if present
   const payload = parsePayload(message.payloadJson);

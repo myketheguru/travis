@@ -664,6 +664,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
 
         <WorkspacesSection />
         <PacksSection />
+        <VoiceSection />
         <ProactiveSection />
         <ExportSection />
         <UpdatesSection />
@@ -681,6 +682,97 @@ type ConnectionState = {
   connectedAt: string | null;
   scopes: string[];
 };
+
+import {
+  cancelSpeech,
+  defaultVoice,
+  listVoices,
+  readVoiceState,
+  speak as speakSample,
+  writeVoiceEnabled,
+  writeVoicePreferredUri,
+} from "../lib/voice";
+
+function VoiceSection() {
+  const [enabled, setEnabled] = useState<boolean>(false);
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const s = readVoiceState();
+      setEnabled(s.enabled);
+      const v = await listVoices();
+      setVoices(v);
+      const def = await defaultVoice();
+      setSelected(s.preferredVoiceUri ?? def?.voiceURI ?? null);
+      setReady(true);
+    })();
+    return () => cancelSpeech();
+  }, []);
+
+  const englishVoices = voices.filter((v) => v.lang.startsWith("en"));
+
+  async function toggle(v: boolean) {
+    setEnabled(v);
+    writeVoiceEnabled(v);
+    if (v) {
+      // Play a short greeting so the user hears the current voice.
+      await speakSample("Hey, this is Travis.");
+    } else {
+      cancelSpeech();
+    }
+  }
+
+  function onSelect(uri: string | null) {
+    setSelected(uri);
+    writeVoicePreferredUri(uri);
+    if (enabled) {
+      speakSample("Hey, this is Travis.").catch(() => {});
+    }
+  }
+
+  return (
+    <Section title="Voice">
+      <p className="text-bone-3 text-[11px] leading-relaxed -mt-2">
+        Let Travis read its replies to you. Uses your device's built-in
+        voice for now — a Travis-branded voice ships in a follow-up.
+      </p>
+      <label className="flex items-center gap-2 cursor-pointer select-none">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => void toggle(e.target.checked)}
+          disabled={!ready}
+          className="accent-pulse"
+        />
+        <span className="text-bone-2 text-sm">Speak Travis's replies aloud</span>
+      </label>
+      {enabled && englishVoices.length > 0 && (
+        <div className="mt-3">
+          <label className="text-bone-3 text-[10px] tracking-[0.18em] uppercase block mb-1.5">
+            Voice
+          </label>
+          <select
+            value={selected ?? ""}
+            onChange={(e) => onSelect(e.target.value || null)}
+            className="w-full bg-ink-2/40 border border-ink-3 rounded-lg px-3 py-2 text-sm text-bone-2"
+          >
+            {englishVoices.map((v) => (
+              <option key={v.voiceURI} value={v.voiceURI}>
+                {v.name} ({v.lang})
+              </option>
+            ))}
+          </select>
+          <p className="text-bone-3 text-[10px] mt-1.5">
+            Voices come from your OS. Selection is remembered locally.
+          </p>
+        </div>
+      )}
+    </Section>
+  );
+}
 
 function CalendarSection() {
   // v0.22.9 — Google rows removed; the cloud-managed ConnectedAccounts
