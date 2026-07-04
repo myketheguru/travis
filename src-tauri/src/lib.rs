@@ -45,6 +45,7 @@ mod manager;
 mod memory;
 mod memory_cmd;
 mod python_runtime;
+mod speech_runtime;
 mod overlay;
 mod packs;
 mod packs_cmd;
@@ -346,6 +347,7 @@ pub fn run() {
             // because the bootstrap can spawn while the user is browsing
             // other surfaces, and we want a separate lock.
             handle.manage(python_runtime::cmd::BootstrapState::new());
+            handle.manage(speech_runtime::cmd::SpeechBootstrapState::new());
 
             // v0.21.8 — reveal the main window NOW that AppState is
             // managed. We keep it hidden in tauri.conf.json
@@ -909,6 +911,9 @@ pub fn run() {
             python_runtime::cmd::python_runtime_ensure,
             python_runtime::cmd::python_runtime_cancel,
             python_runtime::cmd::python_runtime_ensure_packages,
+            speech_runtime::cmd::speech_runtime_status,
+            speech_runtime::cmd::speech_runtime_ensure,
+            speech_runtime::cmd::speech_transcribe,
             steps::cmd::list_steps,
             workflows::cmd::get_active_workflow,
             identity_cmd::list_entities,

@@ -1,6 +1,6 @@
 [package]
 name = "travis"
-version = "0.22.11"
+version = "0.22.12"
 description = "Travis — local-first AI operations assistant"
 authors = ["myketheguru"]
 edition = "2021"
@@ -77,3 +77,9 @@ pdf-extract = "0.7"
 calamine = "0.26"
 csv = "1"
 urlencoding = "2"
+# v0.22.12 — speech-to-text via whisper.cpp. Rust bindings pull in
+# the C++ code + build it at first compile (adds ~2min to a fresh
+# cargo build; incremental is cached). Runs entirely local, offline,
+# no API cost. Models download lazily via the same bootstrap pattern
+# as the Python runtime — user sees the sleek loader.
+whisper-rs = { version = "0.13", default-features = false }

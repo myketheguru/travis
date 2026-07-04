@@ -28,6 +28,7 @@ import { ActiveWorkflowPill } from "../../components/ActiveWorkflowPill";
 import { DocumentExtractCard } from "../../overlay/DocumentExtractCard";
 import { ChatTurn } from "../../chat/ChatTurn";
 import { AutoGrowTextarea } from "../../chat/AutoGrowTextarea";
+import { VoiceInputButton } from "../../chat/VoiceInputButton";
 import { CaseHeaderStrip } from "../../chat/CaseHeaderStrip";
 import { ConversationSwitcher } from "../../chat/ConversationSwitcher";
 import { ActionCard } from "../../chat/ActionCard";
@@ -912,6 +913,13 @@ export default function AskTab() {
             }
             disabled={busy}
             maxRows={8}
+          />
+          <VoiceInputButton
+            disabled={busy}
+            onTranscript={(text) => {
+              pulse();
+              setQ((prev) => (prev.trim() ? prev + " " + text : text));
+            }}
           />
           <button
             onClick={() => void submit()}
