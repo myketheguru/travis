@@ -6,6 +6,7 @@ import { PresenceOrb } from "./components/PresenceOrb";
 import HealthBanner from "./components/HealthBanner";
 import ForceUpgradeGate from "./components/ForceUpgradeGate";
 import { ResourceLoader } from "./components/ResourceLoader";
+import { AmbientIndicator } from "./components/AmbientIndicator";
 import { WorkspaceSwitcher } from "./components/WorkspaceSwitcher";
 import { useAppStore } from "./stores/app";
 import { getAppStatus, getUserProfile } from "./lib/ipc";
@@ -49,6 +50,17 @@ export default function App() {
           extract + wheel install). Stays hidden until a runtime-progress
           event fires; auto-dismisses on ready. */}
       <ResourceLoader />
+      {/* Ambient wake-word listener + wake overlay. Renders nothing when
+          ambient mode is off; when on, shows a small corner pill and a
+          full overlay during the command capture window. Wake commands
+          dispatch a window CustomEvent that AskTab listens for. */}
+      <AmbientIndicator
+        onCommand={(text) => {
+          window.dispatchEvent(
+            new CustomEvent<string>("travis-ambient-command", { detail: text }),
+          );
+        }}
+      />
     </ForceUpgradeGate>
   );
 }

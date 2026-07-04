@@ -692,6 +692,12 @@ import {
   writeVoiceEnabled,
   writeVoicePreferredUri,
 } from "../lib/voice";
+import {
+  readAmbientEnabled,
+  readAmbientName,
+  writeAmbientEnabled,
+  writeAmbientName,
+} from "../lib/ambientListener";
 
 function VoiceSection() {
   const [enabled, setEnabled] = useState<boolean>(false);
@@ -770,7 +776,70 @@ function VoiceSection() {
           </p>
         </div>
       )}
+
+      {/* Ambient listening — "Hey Travis" wake word. */}
+      <div className="mt-5 pt-4 border-t border-ink-3/60">
+        <AmbientControls />
+      </div>
     </Section>
+  );
+}
+
+function AmbientControls() {
+  const [enabled, setEnabled] = useState<boolean>(false);
+  const [name, setName] = useState<string>("travis");
+
+  useEffect(() => {
+    setEnabled(readAmbientEnabled());
+    setName(readAmbientName());
+  }, []);
+
+  function toggle(v: boolean) {
+    setEnabled(v);
+    writeAmbientEnabled(v);
+  }
+  function onNameChange(v: string) {
+    setName(v);
+    writeAmbientName(v);
+  }
+
+  return (
+    <div>
+      <label className="flex items-center gap-2 cursor-pointer select-none">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => toggle(e.target.checked)}
+          className="accent-pulse"
+        />
+        <span className="text-bone-2 text-sm">
+          Listen for me to say "Hey Travis"
+        </span>
+      </label>
+      <p className="text-bone-3 text-[11px] leading-relaxed mt-1.5">
+        When on, Travis stays listening in the background so you don't
+        have to hold the mic. Uses more battery — good for desk sessions,
+        turn off on the go.
+      </p>
+
+      {enabled && (
+        <div className="mt-3">
+          <label className="text-bone-3 text-[10px] tracking-[0.18em] uppercase block mb-1.5">
+            What do you call Travis?
+          </label>
+          <input
+            value={name}
+            onChange={(e) => onNameChange(e.target.value)}
+            placeholder="travis"
+            className="w-full bg-ink-2/40 border border-ink-3 rounded-lg px-3 py-2 text-sm text-bone font-mono"
+          />
+          <p className="text-bone-3 text-[10px] mt-1.5">
+            Also matches "Hey {name || "travis"}". Any name works — pick
+            something that doesn't sound like normal conversation.
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
 

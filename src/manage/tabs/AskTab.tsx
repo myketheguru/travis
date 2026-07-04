@@ -373,6 +373,27 @@ export default function AskTab() {
     };
   }, [activeConversationId]);
 
+  // v0.22.14 — Ambient wake-word support. When the AmbientIndicator
+  // detects "Hey Travis <command>", it dispatches this event with the
+  // transcribed command. We put the text into the composer and fire
+  // submit immediately — same as if the user had typed + pressed enter.
+  const submitRef = useRef<(() => Promise<void>) | null>(null);
+  useEffect(() => {
+    function onAmbientCommand(e: Event) {
+      const text = (e as CustomEvent<string>).detail;
+      if (!text || busy) return;
+      flushSync(() => setQ(text));
+      // Micro-delay so React commits the state update before submit
+      // reads its captured `q` value on next tick.
+      window.setTimeout(() => {
+        submitRef.current?.();
+      }, 0);
+    }
+    window.addEventListener("travis-ambient-command", onAmbientCommand);
+    return () =>
+      window.removeEventListener("travis-ambient-command", onAmbientCommand);
+  }, [busy]);
+
   const submit = async () => {
     const text = q.trim();
     // Strip pending attachments — they aren't ingested yet and can't be
@@ -561,6 +582,13 @@ export default function AskTab() {
       }
     };
   }, [ingestFile]);
+
+  // Keep submitRef pointing at the current submit closure so the
+  // ambient-command listener (registered once above) can call it with
+  // fresh state on every event.
+  useEffect(() => {
+    submitRef.current = submit;
+  });
 
   const reset = async () => {
     setActiveConversationId(null);
