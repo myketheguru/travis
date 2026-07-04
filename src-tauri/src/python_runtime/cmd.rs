@@ -6,8 +6,10 @@
 //! + extract + wheel install, emitting `runtime-progress` events for
 //! the loader UI.
 
+use std::sync::Arc;
+
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::python_runtime;
 use crate::python_runtime::bootstrap::{self, BootstrapHandle};
@@ -15,10 +17,14 @@ use crate::python_runtime::bootstrap::{self, BootstrapHandle};
 /// Shared cancellation handle for the in-flight bootstrap (at most one
 /// at a time). Lives on AppState. Frontend can call cancel via
 /// `python_runtime_cancel` if the user closes the loader.
-pub struct BootstrapState(pub tokio::sync::Mutex<Option<BootstrapHandle>>);
+///
+/// Wrapped in Arc<Mutex> so the spawned bootstrap task can re-acquire
+/// the lock to clear the slot on completion — tokio::Mutex itself isn't
+/// Clone, but Arc<...> is.
+pub struct BootstrapState(pub Arc<tokio::sync::Mutex<Option<BootstrapHandle>>>);
 impl BootstrapState {
     pub fn new() -> Self {
-        Self(tokio::sync::Mutex::new(None))
+        Self(Arc::new(tokio::sync::Mutex::new(None)))
     }
 }
 
@@ -72,7 +78,9 @@ pub async fn python_runtime_ensure(
     drop(guard);
 
     let app_clone = app.clone();
-    let state_clone = state.0.clone();
+    // Arc clone — tokio Mutex isn't Clone, but Arc is. The spawned
+    // task re-acquires the lock when it's done to clear the slot.
+    let state_arc: Arc<tokio::sync::Mutex<Option<BootstrapHandle>>> = state.0.clone();
     tauri::async_runtime::spawn(async move {
         let result = bootstrap::ensure_ready(&app_clone, handle).await;
         if let Err(e) = &result {
@@ -81,7 +89,7 @@ pub async fn python_runtime_ensure(
         // Clear the in-progress slot whether the bootstrap succeeded
         // or failed. A failure leaves the cache half-built; ensure_ready
         // wipes the dir before retry, so it self-heals.
-        *state_clone.lock().await = None;
+        *state_arc.lock().await = None;
     });
     Ok(())
 }

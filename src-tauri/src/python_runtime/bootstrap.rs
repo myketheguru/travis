@@ -312,10 +312,7 @@ async fn install_wheels(app: &AppHandle, python_bin: &Path) -> Result<(), String
         .arg("--quiet")
         .args(WHEELS);
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW — no trait import needed; tokio::process::Command has it inherently.
     let output = cmd
         .output()
         .await
@@ -419,10 +416,7 @@ pub async fn ensure_packages(
         let mut cmd = tokio::process::Command::new(&py_bin);
         cmd.arg("-m").arg("pip").arg("show").arg(bare);
         #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x08000000);
-        }
+        cmd.creation_flags(0x08000000);
         let out = cmd.output().await.map_err(|e| format!("pip show: {e}"))?;
         if !out.status.success() {
             missing.push(pkg);
