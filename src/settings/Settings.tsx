@@ -38,6 +38,7 @@ import { useAppStore } from "../stores/app";
 import { T2tSection } from "./T2tSection";
 import { McpSection } from "./McpSection";
 import { SentrySection } from "./SentrySection";
+import { InterfaceSection } from "./InterfaceSection";
 import {
   cloudConnectedAccounts,
   cloudDisconnectAccount,
@@ -450,6 +451,10 @@ export default function Settings({ onClose }: { onClose: () => void }) {
             </div>
           </Section>
         )}
+
+        <Section title="Interface">
+          <InterfaceSection />
+        </Section>
 
         <Section title="Travis-to-Travis">
           <T2tSection currentUserId={cloudUser?.id} />

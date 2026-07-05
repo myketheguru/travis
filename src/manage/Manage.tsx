@@ -4,6 +4,7 @@ import { DocumentViewer } from "../chat/DocumentViewer";
 import { ResizableSplit } from "../chat/ResizableSplit";
 import { FloatingChatOverlay } from "../chat/FloatingChatOverlay";
 import { Workspace } from "../workspace/Workspace";
+import { WorkspaceV2 } from "../workspace/v2/WorkspaceV2";
 import TasksTab from "./tabs/TasksTab";
 import RemindersTab from "./tabs/RemindersTab";
 import EntitiesTab from "./tabs/EntitiesTab";
@@ -217,15 +218,26 @@ export default function Manage({ onClose }: { onClose: () => void }) {
   );
 }
 
+/// v0.25 (v2 Shell 1) — Ask tab surface picker. Reads uiSurface from
+/// the app store; returns the v2 canvas or the classic wrapped-Ask
+/// depending on user preference. Wrapped as a component so the store
+/// subscription is scoped locally.
+function AskSurface(): React.ReactNode {
+  const surface = useAppStore((s) => s.uiSurface);
+  return surface === "classic" ? <Workspace /> : <WorkspaceV2 />;
+}
+
 function renderActiveContent(active: Tab | undefined, schemas: PackSchema[] | null): React.ReactNode {
   void schemas;
   if (!active) return null;
   if (active.kind === "core") {
-    // v0.22.15 (Shell 8) — Ask tab now renders the Workspace shell,
-    // which composes AttentionStrip + workspace controls above the
-    // existing AskTab surface. AskTab still holds the primary chat
-    // canvas; Workspace adds the peripheral chrome around it.
-    if (active.id === "ask") return <Workspace />;
+    // v0.22.15 (Shell 8) — Ask tab renders the Workspace shell.
+    // v0.25 (v2 Shell 1) — pick surface based on user preference.
+    // v2 is default; classic (the augmented Ask + shell) is opt-in
+    // through Settings for users who prefer it during the v2 rollout.
+    if (active.id === "ask") {
+      return <AskSurface />;
+    }
     if (active.id === "threads") return <ThreadsTab />;
     if (active.id === "tasks") return <TasksTab />;
     if (active.id === "reminders") return <RemindersTab />;

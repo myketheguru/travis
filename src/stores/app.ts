@@ -38,6 +38,11 @@ type AppState = {
   /// click). AskTab watches this; on change it fills its local input
   /// and clears the pending value.
   pendingComposerText: string | null;
+  /// v0.25 (task 329) — which workspace surface to render. 'v2' is the
+  /// canvas + HUD overlay design; 'classic' is the wrapped-Ask surface
+  /// that shipped in v0.23-24. Persisted to localStorage. Users toggle
+  /// via Settings; new users default to v2.
+  uiSurface: "v2" | "classic";
   setActivity: (a: Activity) => void;
   setStatus: (s: AppStatus) => void;
   setProfile: (p: UserProfile | null) => void;
@@ -48,6 +53,7 @@ type AppState = {
   setDocFullscreen: (v: boolean) => void;
   setFocusedThread: (t: FocusedThread | null) => void;
   setPendingComposerText: (t: string | null) => void;
+  setUiSurface: (s: "v2" | "classic") => void;
   pulse: () => void;
 };
 
@@ -61,6 +67,25 @@ const DIAG_KEY = "travis.showDiagnostics";
 const ACTIVE_CONV_KEY = "travis.activeConversationId";
 const CHAT_PANE_FRACTION_KEY = "travis.chatPaneFraction";
 const DOC_FULLSCREEN_KEY = "travis.docFullscreen";
+const UI_SURFACE_KEY = "travis.uiSurface";
+
+const readUiSurface = (): "v2" | "classic" => {
+  try {
+    if (typeof localStorage === "undefined") return "v2";
+    const v = localStorage.getItem(UI_SURFACE_KEY);
+    return v === "classic" ? "classic" : "v2";
+  } catch {
+    return "v2";
+  }
+};
+
+const writeUiSurface = (s: "v2" | "classic") => {
+  try {
+    if (typeof localStorage !== "undefined") localStorage.setItem(UI_SURFACE_KEY, s);
+  } catch {
+    /* private mode */
+  }
+};
 
 const readDiag = (): boolean => {
   try {
@@ -174,6 +199,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   setFocusedThread: (t) => set({ focusedThread: t }),
   pendingComposerText: null,
   setPendingComposerText: (t) => set({ pendingComposerText: t }),
+  uiSurface: readUiSurface(),
+  setUiSurface: (s) => {
+    writeUiSurface(s);
+    set({ uiSurface: s });
+  },
   pulse: () => {
     if (get().activity === "thinking" || get().activity === "listening") return;
     set({ activity: "typing" });

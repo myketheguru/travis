@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use futures_util::StreamExt;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::AsyncWriteExt;
 
 use crate::speech_runtime::cache_model_path;
@@ -65,6 +65,38 @@ pub async fn ensure_ready(
     }
     if target.exists() {
         let _ = std::fs::remove_file(&target);
+    }
+
+    // v0.25 (task 327) — the installer bundles the model as a Tauri
+    // resource. Copy it into the cache dir on first run instead of
+    // downloading. Falls through to HuggingFace download only when the
+    // resource is missing (dev builds, unbundled sources).
+    if let Ok(bundled) = app
+        .path()
+        .resolve(
+            format!("resources/whisper/{model}"),
+            tauri::path::BaseDirectory::Resource,
+        )
+    {
+        if bundled.exists() {
+            match std::fs::copy(&bundled, &target) {
+                Ok(_) => {
+                    emit(
+                        app,
+                        BootstrapProgress {
+                            phase: "ready",
+                            pct: 100.0,
+                            message: "Ready".into(),
+                            error: None,
+                        },
+                    );
+                    return Ok(target);
+                }
+                Err(e) => {
+                    tracing::warn!("speech: bundled model copy failed ({e}); falling back to download");
+                }
+            }
+        }
     }
 
     emit(
