@@ -142,6 +142,7 @@ export const useCardLifecycle = create<CardLifecycleState>((set, get) => {
         pinnedIds: next,
         clearedAt: get().clearedAt,
         lastInteractionAt: get().lastInteractionAt,
+        resurrectedIds: get().resurrectedIds,
       });
     },
 
@@ -154,6 +155,7 @@ export const useCardLifecycle = create<CardLifecycleState>((set, get) => {
         pinnedIds: next,
         clearedAt: get().clearedAt,
         lastInteractionAt: get().lastInteractionAt,
+        resurrectedIds: get().resurrectedIds,
       });
     },
 
@@ -165,6 +167,7 @@ export const useCardLifecycle = create<CardLifecycleState>((set, get) => {
         pinnedIds: get().pinnedIds,
         clearedAt: get().clearedAt,
         lastInteractionAt: next,
+        resurrectedIds: get().resurrectedIds,
       });
     },
 

@@ -86,7 +86,7 @@ export function DocRefCard({ documentId, snippet, narration }: Props) {
             className="text-[14px] font-medium truncate"
             style={{ color: "rgb(236, 236, 241)" }}
           >
-            {doc?.original_filename ?? "Loading…"}
+            {doc?.originalFilename ?? "Loading…"}
           </div>
           {(snippet || narration) && (
             <div

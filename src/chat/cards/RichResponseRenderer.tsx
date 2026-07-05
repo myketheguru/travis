@@ -49,9 +49,11 @@ export function RichResponseRenderer({
 
 function PartRouter({
   part,
-  documentIds,
 }: {
   part: MessagePart;
+  /** Reserved: kept in the prop wiring so `doc_ref` parts can later
+   *  reconcile against generated document IDs surfaced by the turn.
+   *  Currently unused by any part kind. */
   documentIds?: number[];
 }) {
   switch (part.kind) {
