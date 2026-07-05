@@ -28,6 +28,8 @@ import { SuggestionRail } from "../SuggestionRail";
 import { CanvasBackdrop } from "./CanvasBackdrop";
 import { FocalStage } from "./FocalStage";
 import { OrbitalStack } from "./OrbitalStack";
+import { ThreadRail } from "./ThreadRail";
+import { ActionRail } from "./ActionRail";
 import { useFocalContent } from "./useFocalContent";
 import AskTab from "../../manage/tabs/AskTab";
 
@@ -56,6 +58,12 @@ export function WorkspaceV2() {
 
       {/* HUD: top-left orb (v2 Shell 4) */}
       <OrbHud />
+
+      {/* HUD: left-edge thread rail (v2 Shell 4) */}
+      <ThreadRail />
+
+      {/* HUD: right-edge action rail (v2 Shell 4) */}
+      <ActionRail focal={focal} />
 
       {/* HUD: top-right attention compass — for now, reuse the strip */}
       <div
