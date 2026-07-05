@@ -306,6 +306,15 @@ Capture-only fields (`tasks`, `entities`, `reminders`, `completedTaskIds`, `clar
         prompt.push_str("\n\n");
         prompt.push_str(pack_memory_block);
     }
+
+    // v0.22.15 (Shell 2) — Rich response contract. Teaches Travis to
+    // emit typed message parts (map, doc_ref, action_proposal, etc.)
+    // instead of prose when the answer maps to a rich artifact. The
+    // ChatTurn renderer parses the typed shape and routes each part
+    // to its card component (see rich_response.rs + RichResponseRenderer.tsx).
+    prompt.push_str("\n\n");
+    prompt.push_str(crate::rich_response::SYSTEM_PROMPT_FRAGMENT);
+
     prompt
 }
 

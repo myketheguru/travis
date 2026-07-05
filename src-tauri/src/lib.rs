@@ -45,6 +45,7 @@ mod manager;
 mod memory;
 mod memory_cmd;
 mod python_runtime;
+mod rich_response;
 mod speech_runtime;
 mod overlay;
 mod packs;
