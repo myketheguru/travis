@@ -18,6 +18,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RichResponse {
     pub parts: Vec<MessagePart>,
+    /// Shell 7 — shape-shifting resume. When Travis wants to bring
+    /// archived cards back to the canvas (e.g., user asked "bring
+    /// back what I was doing on the CX hire"), include the message
+    /// IDs here.  The renderer marks them as resurrected in the card
+    /// lifecycle store, overriding the 24h archival.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resurrect_ids: Option<Vec<String>>,
 }
 
 /// A single visual/interactive piece the renderer draws. Kind
@@ -281,4 +288,28 @@ is the phone-in-pocket fallback.
 Combine parts freely: a route can be a map part + an action_proposal
 to add a reminder to leave on time. Keep the array small — 1-3 parts
 per reply is typical, 5 is the ceiling.
+
+## Shape-shifting resume
+
+When the user asks to bring back past work ("resume the CX hire
+thread", "show me yesterday's route planning", "pull up what I was
+doing on the Amanda thread"), do this:
+
+1. Call `search_conversations` to find matching past messages
+2. In your response, add the top-level field `resurrect_ids` with the
+   `message_id` values you found. Example:
+
+```
+{
+  "parts": [
+    { "kind": "text", "markdown": "Bringing back the CX hire thread.",
+      "narration": "Bringing back the CX hire thread." }
+  ],
+  "resurrect_ids": ["msg-1234", "msg-1237", "msg-1241"]
+}
+```
+
+The client re-materializes those cards in the canvas with a "restored
+from earlier" badge. Prefer 3-8 ids; more than 10 clutters the canvas.
+Do NOT include ids the search didn't actually return.
 "#;

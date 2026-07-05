@@ -11,6 +11,12 @@
 
 export interface RichResponse {
   parts: MessagePart[];
+  /** Shell 7 — shape-shifting resume. When Travis wants to bring
+   *  archived cards back to the canvas (e.g., user asked "bring back
+   *  what I was doing on the CX hire"), include the message IDs here.
+   *  The renderer marks them as resurrected in the card lifecycle
+   *  store, overriding the 24h archival. */
+  resurrect_ids?: string[];
 }
 
 export type MessagePart =

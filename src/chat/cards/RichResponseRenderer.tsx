@@ -10,11 +10,13 @@
  * Cards live in sibling files (MapCard.tsx, DocRefCard.tsx, etc.).
  */
 
+import { useEffect } from "react";
 import type { MessagePart, RichResponse } from "../../lib/richResponse";
 import { MapCard } from "./MapCard";
 import { DocRefCard } from "./DocRefCard";
 import { ThreadCard } from "./ThreadCard";
 import { MarkdownBody } from "../MarkdownBody";
+import { useCardLifecycle } from "../../stores/cardLifecycle";
 
 export function RichResponseRenderer({
   response,
@@ -23,6 +25,18 @@ export function RichResponseRenderer({
   response: RichResponse;
   documentIds?: number[];
 }) {
+  const resurrectMany = useCardLifecycle((s) => s.resurrectMany);
+
+  // Shell 7 — shape-shifting resume. When Travis's response carries
+  // resurrect_ids, mark those cards as resurrected so they re-appear
+  // in the canvas. Fires once per response payload change.
+  useEffect(() => {
+    if (response.resurrect_ids && response.resurrect_ids.length > 0) {
+      resurrectMany(response.resurrect_ids);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [response.resurrect_ids?.join(",")]);
+
   return (
     <div className="flex flex-col gap-3">
       {response.parts.map((part, i) => (

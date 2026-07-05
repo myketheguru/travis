@@ -32,6 +32,11 @@ interface Persisted {
    *  Extends the 24h window from that point. Serialized as ISO strings.
    */
   lastInteractionAt: Record<string, string>;
+  /** Shell 7 — cards the user asked Travis to bring back. These
+   *  override archival (both 24h expiry AND clearedAt) so shape-shifting
+   *  resume actually re-materializes the card in the canvas. Cleared
+   *  when the user Clears again or explicitly dismisses. */
+  resurrectedIds: string[];
 }
 
 interface CardLifecycleState extends Persisted {
@@ -39,8 +44,12 @@ interface CardLifecycleState extends Persisted {
   isVisible: (cardId: string, createdAt: string | Date) => boolean;
   /** True if this card is pinned (never archives). */
   isPinned: (cardId: string) => boolean;
+  /** True if the user asked Travis to bring this card back. Overrides
+   *  archival. */
+  isResurrected: (cardId: string) => boolean;
   /** True if visible_until has already elapsed (or the user Clear'd
-   *  and the card was created before that). */
+   *  and the card was created before that) AND the card hasn't been
+   *  resurrected. */
   isArchived: (cardId: string, createdAt: string | Date) => boolean;
 
   pin: (cardId: string) => void;
@@ -50,12 +59,21 @@ interface CardLifecycleState extends Persisted {
   noteInteraction: (cardId: string) => void;
   /** Force-archive everything up to now. No confirm. */
   clearAll: () => void;
+  /** Bring a specific card back to the canvas. Sets resurrected +
+   *  notes interaction so the card also has fresh 24h from now. */
+  resurrect: (cardId: string) => void;
+  /** Bring multiple cards back at once (bulk shape-shift result). */
+  resurrectMany: (cardIds: string[]) => void;
+  /** Remove a card from the resurrected set (does not archive
+   *  immediately — visibility falls back to age-based rules). */
+  unresurrect: (cardId: string) => void;
 }
 
 const emptyPersisted: Persisted = {
   pinnedIds: [],
   clearedAt: null,
   lastInteractionAt: {},
+  resurrectedIds: [],
 };
 
 function readPersisted(): Persisted {
@@ -71,6 +89,7 @@ function readPersisted(): Persisted {
         parsed.lastInteractionAt && typeof parsed.lastInteractionAt === "object"
           ? (parsed.lastInteractionAt as Record<string, string>)
           : {},
+      resurrectedIds: Array.isArray(parsed.resurrectedIds) ? parsed.resurrectedIds : [],
     };
   } catch {
     return emptyPersisted;
@@ -97,10 +116,15 @@ export const useCardLifecycle = create<CardLifecycleState>((set, get) => {
 
     isPinned: (cardId) => get().pinnedIds.includes(cardId),
 
+    isResurrected: (cardId) => get().resurrectedIds.includes(cardId),
+
     isVisible: (cardId, createdAt) => !get().isArchived(cardId, createdAt),
 
     isArchived: (cardId, createdAt) => {
       if (get().isPinned(cardId)) return false;
+      // Shape-shifting resume: resurrected cards are always visible
+      // regardless of clear/age rules.
+      if (get().isResurrected(cardId)) return false;
       const created = toMs(createdAt);
       const cleared = get().clearedAt ? Date.parse(get().clearedAt!) : 0;
       if (created < cleared) return true;
@@ -146,11 +170,66 @@ export const useCardLifecycle = create<CardLifecycleState>((set, get) => {
 
     clearAll: () => {
       const now = new Date().toISOString();
-      set({ clearedAt: now });
+      // Clearing also drops the current resurrected set — user is
+      // starting fresh, not preserving old shape-shifts.
+      set({ clearedAt: now, resurrectedIds: [] });
       writePersisted({
         pinnedIds: get().pinnedIds,
         clearedAt: now,
         lastInteractionAt: get().lastInteractionAt,
+        resurrectedIds: [],
+      });
+    },
+
+    resurrect: (cardId) => {
+      const cur = get().resurrectedIds;
+      if (cur.includes(cardId)) return;
+      const nextIds = [...cur, cardId];
+      const now = new Date().toISOString();
+      const nextInteract = { ...get().lastInteractionAt, [cardId]: now };
+      set({ resurrectedIds: nextIds, lastInteractionAt: nextInteract });
+      writePersisted({
+        pinnedIds: get().pinnedIds,
+        clearedAt: get().clearedAt,
+        lastInteractionAt: nextInteract,
+        resurrectedIds: nextIds,
+      });
+    },
+
+    resurrectMany: (cardIds) => {
+      if (cardIds.length === 0) return;
+      const curIds = new Set(get().resurrectedIds);
+      const now = new Date().toISOString();
+      const nextInteract = { ...get().lastInteractionAt };
+      let changed = false;
+      for (const id of cardIds) {
+        if (!curIds.has(id)) {
+          curIds.add(id);
+          changed = true;
+        }
+        nextInteract[id] = now;
+      }
+      if (!changed && cardIds.every((id) => nextInteract[id] === now)) return;
+      const nextIds = Array.from(curIds);
+      set({ resurrectedIds: nextIds, lastInteractionAt: nextInteract });
+      writePersisted({
+        pinnedIds: get().pinnedIds,
+        clearedAt: get().clearedAt,
+        lastInteractionAt: nextInteract,
+        resurrectedIds: nextIds,
+      });
+    },
+
+    unresurrect: (cardId) => {
+      const cur = get().resurrectedIds;
+      if (!cur.includes(cardId)) return;
+      const next = cur.filter((id) => id !== cardId);
+      set({ resurrectedIds: next });
+      writePersisted({
+        pinnedIds: get().pinnedIds,
+        clearedAt: get().clearedAt,
+        lastInteractionAt: get().lastInteractionAt,
+        resurrectedIds: next,
       });
     },
   };
