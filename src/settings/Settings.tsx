@@ -37,6 +37,7 @@ import { VoiceDropdown } from "../components/VoiceDropdown";
 import { useAppStore } from "../stores/app";
 import { T2tSection } from "./T2tSection";
 import { McpSection } from "./McpSection";
+import { SentrySection } from "./SentrySection";
 import {
   cloudConnectedAccounts,
   cloudDisconnectAccount,
@@ -456,6 +457,10 @@ export default function Settings({ onClose }: { onClose: () => void }) {
 
         <Section title="MCP servers">
           <McpSection />
+        </Section>
+
+        <Section title="Sentry mode">
+          <SentrySection />
         </Section>
 
         <Section title="Identity">

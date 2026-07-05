@@ -89,3 +89,9 @@ whisper-rs = { version = "0.13", default-features = false }
 # presence on the LAN + browses for other Travises so users don't need
 # to email invitations for people in the same room.
 mdns-sd = { version = "0.11", default-features = false, features = ["async"] }
+# v0.24 task 315 — Sentry Phase 2. Cross-platform foreground-window
+# capture: title + app name + PID. Used by the opt-in Sentry mode
+# to give Travis a rough sense of what the user is working on
+# throughout the day. Only runs when consent is on locally AND cloud
+# side confirms; every event is batched to /me/telemetry/ingest.
+active-win-pos-rs = "0.9"

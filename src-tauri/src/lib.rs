@@ -48,6 +48,7 @@ mod discovery;
 mod mcp;
 mod python_runtime;
 mod rich_response;
+mod sentry;
 mod speech_runtime;
 mod overlay;
 mod packs;
@@ -832,6 +833,8 @@ pub fn run() {
             mcp::cmd::mcp_ping_server,
             discovery::cmd::discovery_peers,
             discovery::cmd::discovery_start,
+            sentry::cmd::sentry_status,
+            sentry::cmd::sentry_set_enabled,
             commands::inbox_recent,
             commands::inbox_scan_now,
             commands::inbox_mark_handled,

@@ -532,3 +532,18 @@ export function discoveryStart(): Promise<void> {
 export function discoveryPeers(): Promise<DiscoveredPeer[]> {
   return invoke<DiscoveredPeer[]>("discovery_peers");
 }
+
+// ─── Sentry (task 315) ───────────────────────────────────────────
+
+export interface SentryStatus {
+  enabled: boolean;
+  buffered: number;
+}
+
+export function sentryStatus(): Promise<SentryStatus> {
+  return invoke<SentryStatus>("sentry_status");
+}
+
+export function sentrySetEnabled(enabled: boolean): Promise<void> {
+  return invoke<void>("sentry_set_enabled", { enabled });
+}
