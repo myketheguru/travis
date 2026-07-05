@@ -69,13 +69,16 @@ impl DiscoveryState {
                 .unwrap_or_else(|| "anon".into())
         );
         let hostname = format!("{}.local.", &instance);
-        let mut props = Vec::new();
-        props.push(format!("name={display_name}"));
+        // TXT records — mdns-sd expects (K, V) tuples. Keys are stable
+        // strings; values carry the identity data peers use to display
+        // + resolve.
+        let mut props: Vec<(&'static str, String)> = Vec::new();
+        props.push(("name", display_name.to_string()));
         if let Some(email) = user_email {
-            props.push(format!("email={email}"));
+            props.push(("email", email.to_string()));
         }
         if let Some(uid) = user_id {
-            props.push(format!("uid={uid}"));
+            props.push(("uid", uid.to_string()));
         }
 
         let service = ServiceInfo::new(
