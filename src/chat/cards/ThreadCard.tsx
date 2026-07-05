@@ -21,6 +21,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import type { MessagePart } from "../../lib/richResponse";
 import { RichResponseRenderer } from "./RichResponseRenderer";
 import { useAppStore } from "../../stores/app";
+import { useCardLifecycle } from "../../stores/cardLifecycle";
 
 interface ThreadTurn {
   author: "user" | "travis";
@@ -32,6 +33,8 @@ interface Props {
   title: string;
   summary?: string;
   turns: ThreadTurn[];
+  /** LLM-supplied pinned hint. Overridden by client store when the
+   *  user has explicitly (un)pinned in the UI. */
   pinned?: boolean;
   narration?: string;
   onFocus?: () => void;
@@ -43,13 +46,22 @@ export function ThreadCard({
   title,
   summary,
   turns,
-  pinned,
+  pinned: pinnedProp,
   onFocus,
   onPin,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
   const focusedThread = useAppStore((s) => s.focusedThread);
   const setFocusedThread = useAppStore((s) => s.setFocusedThread);
+  // v0.22.15 (Shell 5) — 24h card lifecycle. Client-side store tracks
+  // pin state + last-interaction timestamps (extending the visibility
+  // window). LLM-supplied pinned prop wins when explicitly set.
+  const cardId = threadId ?? `thread:${title}`;
+  const clientPinned = useCardLifecycle((s) => s.isPinned(cardId));
+  const pinFn = useCardLifecycle((s) => s.pin);
+  const unpinFn = useCardLifecycle((s) => s.unpin);
+  const noteInteraction = useCardLifecycle((s) => s.noteInteraction);
+  const effectivePinned = pinnedProp ?? clientPinned;
   const lastTurn = turns.length > 0 ? turns[turns.length - 1] : null;
 
   const isFocused =
@@ -60,13 +72,21 @@ export function ThreadCard({
   function toggle() {
     const next = !expanded;
     setExpanded(next);
+    // Any expand or collapse counts as interaction — extends the
+    // card's 24h visibility window from now.
+    noteInteraction(cardId);
     if (next) {
       setFocusedThread({ id: threadId ?? null, title });
       onFocus?.();
     } else if (isFocused) {
-      // Collapsing a focused thread defocuses it.
       setFocusedThread(null);
     }
+  }
+
+  function handlePin() {
+    if (clientPinned) unpinFn(cardId);
+    else pinFn(cardId);
+    onPin?.();
   }
 
   // Global esc handler: pressing escape while focused defocuses +
@@ -99,7 +119,7 @@ export function ThreadCard({
       style={{
         border: isFocused
           ? "1px solid rgba(124, 92, 255, 0.55)"
-          : pinned
+          : effectivePinned
             ? "1px solid rgba(189, 158, 255, 0.55)"
             : "1px solid var(--hairline-2, rgba(255,255,255,0.1))",
         background:
@@ -117,7 +137,7 @@ export function ThreadCard({
             style={{ color: "rgba(236, 236, 241, 0.5)" }}
           >
             // thread
-            {pinned && (
+            {effectivePinned && (
               <span
                 className="ml-2 px-1.5 py-0.5 rounded text-[9px]"
                 style={{
@@ -125,7 +145,7 @@ export function ThreadCard({
                   color: "rgb(189, 158, 255)",
                 }}
               >
-                pinned
+                effectivePinned
               </span>
             )}
           </div>
@@ -218,27 +238,25 @@ export function ThreadCard({
                   disabled
                   title="Shell 4 wires this up"
                 />
-                {onPin && (
-                  <button
-                    onClick={onPin}
-                    className="text-[11px] uppercase tracking-wider font-mono px-3 py-2 rounded-lg transition-colors"
+                <button
+                  onClick={handlePin}
+                  className="text-[11px] uppercase tracking-wider font-mono px-3 py-2 rounded-lg transition-colors"
                     style={{
-                      background: pinned
+                      background: effectivePinned
                         ? "rgba(189, 158, 255, 0.15)"
                         : "rgba(255, 255, 255, 0.04)",
-                      color: pinned
+                      color: effectivePinned
                         ? "rgb(189, 158, 255)"
                         : "rgba(236, 236, 241, 0.7)",
                       border: `1px solid ${
-                        pinned
+                        effectivePinned
                           ? "rgba(189, 158, 255, 0.4)"
                           : "rgba(255, 255, 255, 0.1)"
                       }`,
                     }}
-                  >
-                    {pinned ? "unpin" : "pin"}
-                  </button>
-                )}
+                >
+                  {effectivePinned ? "unpin" : "pin"}
+                </button>
               </div>
             </div>
           </motion.div>
