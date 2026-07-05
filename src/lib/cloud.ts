@@ -467,3 +467,48 @@ export function t2tDeclineReply(id: string, reason?: string): Promise<void> {
 export function t2tAutoDraft(queryId: string): Promise<string> {
   return invoke<string>("t2t_auto_draft", { queryId });
 }
+
+// ─── MCP (task 313) ──────────────────────────────────────────────
+
+export interface McpServer {
+  id: number;
+  slug: string;
+  label: string;
+  url: string;
+  auth_token: string | null;
+  enabled: boolean;
+  created_at: string;
+}
+
+export function mcpListServers(): Promise<McpServer[]> {
+  return invoke<McpServer[]>("mcp_list_servers");
+}
+
+export function mcpAddServer(
+  slug: string,
+  label: string,
+  url: string,
+  authToken?: string,
+): Promise<number> {
+  return invoke<number>("mcp_add_server", {
+    slug,
+    label,
+    url,
+    authToken: authToken ?? null,
+  });
+}
+
+export function mcpDeleteServer(id: number): Promise<void> {
+  return invoke<void>("mcp_delete_server", { id });
+}
+
+export function mcpSetEnabled(id: number, enabled: boolean): Promise<void> {
+  return invoke<void>("mcp_set_enabled", { id, enabled });
+}
+
+export function mcpPingServer(url: string, authToken?: string): Promise<string[]> {
+  return invoke<string[]>("mcp_ping_server", {
+    url,
+    authToken: authToken ?? null,
+  });
+}

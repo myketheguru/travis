@@ -36,6 +36,7 @@ import {
 import { VoiceDropdown } from "../components/VoiceDropdown";
 import { useAppStore } from "../stores/app";
 import { T2tSection } from "./T2tSection";
+import { McpSection } from "./McpSection";
 import {
   cloudConnectedAccounts,
   cloudDisconnectAccount,
@@ -451,6 +452,10 @@ export default function Settings({ onClose }: { onClose: () => void }) {
 
         <Section title="Travis-to-Travis">
           <T2tSection currentUserId={cloudUser?.id} />
+        </Section>
+
+        <Section title="MCP servers">
+          <McpSection />
         </Section>
 
         <Section title="Identity">

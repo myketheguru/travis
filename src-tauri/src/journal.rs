@@ -2477,7 +2477,11 @@ pub async fn journal_ingest(
         .collect();
     let extraction_tool = build_extraction_tool(&action_kinds, &entity_kinds);
     let extraction_name = extraction_tool.name.clone();
-    let read_registry = tools::read_only_registry(&state.enabled_packs);
+    let mut read_registry = tools::read_only_registry(&state.enabled_packs);
+    // Task 313 — extend with any tools discovered from configured MCP
+    // servers. Silent on server failures so a dead MCP server never
+    // blocks the journal turn.
+    tools::register_mcp_tools(&mut read_registry, &state.db.pool, &state.http).await;
     let mut tool_defs: Vec<ToolDef> = vec![extraction_tool.clone()];
     tool_defs.extend(read_registry.definitions());
 

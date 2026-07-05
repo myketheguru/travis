@@ -44,6 +44,7 @@ mod llm;
 mod manager;
 mod memory;
 mod memory_cmd;
+mod mcp;
 mod python_runtime;
 mod rich_response;
 mod speech_runtime;
@@ -823,6 +824,11 @@ pub fn run() {
             cloud::t2t_cmd::t2t_approve_reply,
             cloud::t2t_cmd::t2t_decline_reply,
             cloud::t2t_autodraft::t2t_auto_draft,
+            mcp::cmd::mcp_list_servers,
+            mcp::cmd::mcp_add_server,
+            mcp::cmd::mcp_delete_server,
+            mcp::cmd::mcp_set_enabled,
+            mcp::cmd::mcp_ping_server,
             commands::inbox_recent,
             commands::inbox_scan_now,
             commands::inbox_mark_handled,

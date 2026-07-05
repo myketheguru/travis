@@ -280,3 +280,48 @@ pub fn read_only_registry(packs: &[&dyn crate::packs::PackHandle]) -> ToolRegist
     }
     reg
 }
+
+/// Extend a registry with MCP server tools discovered at startup.
+/// Iterates every enabled row in `mcp_server`, calls `tools/list` on
+/// each, and wraps every returned tool as [`crate::mcp::McpTool`].
+/// Silent on server failures — a dead server shouldn't block Travis
+/// from starting.
+pub async fn register_mcp_tools(
+    reg: &mut ToolRegistry,
+    pool: &sqlx::SqlitePool,
+    http: &reqwest::Client,
+) {
+    let servers = match crate::mcp::db::list(pool).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("mcp: failed to list servers: {e}");
+            return;
+        }
+    };
+    for server in servers {
+        if !server.enabled {
+            continue;
+        }
+        let client = crate::mcp::McpClient::new(
+            http.clone(),
+            server.url.clone(),
+            server.auth_token.clone(),
+        );
+        match client.list_tools().await {
+            Ok(tools) => {
+                for descriptor in tools {
+                    reg.register(Box::new(crate::mcp::McpTool::new(
+                        server.url.clone(),
+                        &server.slug,
+                        server.auth_token.clone(),
+                        descriptor,
+                    )));
+                }
+                tracing::info!("mcp: registered tools from {}", server.slug);
+            }
+            Err(e) => {
+                tracing::warn!("mcp: failed to list tools for {}: {e}", server.slug);
+            }
+        }
+    }
+}
