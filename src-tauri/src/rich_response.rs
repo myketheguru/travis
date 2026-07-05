@@ -269,6 +269,12 @@ Available part kinds and when to use each:
 - **calendar** — the user is asking about upcoming events or a time
   window.
 - **t2t_convo** — a Travis-to-Travis interaction is in progress.
+  ALWAYS include `from_display` + `to_display` (short names, not
+  user ids) and set `state` to reflect where the query is right
+  now. When rendering an INCOMING query (this user is being asked),
+  the client offers a draft-entry UI at delivered/considering; when
+  rendering an OUTGOING query, states show as waiting for the other
+  side.
 - **action_proposal** — you want to take a side effect (send email,
   invoice generation, book meeting) — emit this and let the user
   approve. Never take the action yourself.

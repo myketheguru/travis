@@ -35,6 +35,7 @@ import {
 } from "../lib/workspaces";
 import { VoiceDropdown } from "../components/VoiceDropdown";
 import { useAppStore } from "../stores/app";
+import { T2tSection } from "./T2tSection";
 import {
   cloudConnectedAccounts,
   cloudDisconnectAccount,
@@ -447,6 +448,10 @@ export default function Settings({ onClose }: { onClose: () => void }) {
             </div>
           </Section>
         )}
+
+        <Section title="Travis-to-Travis">
+          <T2tSection currentUserId={cloudUser?.id} />
+        </Section>
 
         <Section title="Identity">
           <Field label="Name">

@@ -17,6 +17,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import AskTab from "../manage/tabs/AskTab";
 import { AttentionStrip } from "./AttentionStrip";
 import { SuggestionRail } from "./SuggestionRail";
+import type { AttentionItem } from "./useAttentionItems";
 import { useCardLifecycle } from "../stores/cardLifecycle";
 import { useAppStore } from "../stores/app";
 import type { Suggestion } from "./useSuggestions";
@@ -43,6 +44,33 @@ export function Workspace() {
     [setPendingComposerText],
   );
 
+  // v0.24 (task 311) — click an attention chip -> compose a prompt
+  // that asks Travis to surface that item as a card. LLM fetches
+  // details + emits the appropriate rich response part.
+  const handleAttentionItem = useCallback(
+    (item: AttentionItem) => {
+      let prompt: string;
+      switch (item.kind) {
+        case "t2t_pending":
+          prompt = `Open the incoming Travis-to-Travis query "${item.label}" and show me the card.`;
+          break;
+        case "t2t_drafted":
+          prompt = `Open the T2T draft "${item.label}" so I can review + approve.`;
+          break;
+        case "workflow_awaiting_approval":
+          prompt = `Show me what needs approval — "${item.label}".`;
+          break;
+        case "workflow_running":
+          prompt = `Give me a status on "${item.label}".`;
+          break;
+        default:
+          prompt = `Show me "${item.label}".`;
+      }
+      setPendingComposerText(prompt);
+    },
+    [setPendingComposerText],
+  );
+
   const hasActiveState =
     (clearedAt && ageInMs(clearedAt) < 60_000) ||
     resurrectedIds.length > 0 ||
@@ -61,7 +89,7 @@ export function Workspace() {
       >
         <div className="flex items-center gap-2 pr-3">
           <div className="flex-1 min-w-0">
-            <AttentionStrip />
+            <AttentionStrip onItemClick={handleAttentionItem} />
           </div>
 
           <AnimatePresence>

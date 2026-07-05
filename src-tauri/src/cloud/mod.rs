@@ -32,6 +32,7 @@ pub mod files;
 pub mod sync;
 pub mod t2t;
 pub mod t2t_cmd;
+pub mod t2t_autodraft;
 
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};

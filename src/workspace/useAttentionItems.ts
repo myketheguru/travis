@@ -18,6 +18,7 @@
 import { useEffect, useState } from "react";
 import {
   cloudWorkflowRuns,
+  t2tAutoDraft,
   t2tInbox,
   type WorkflowRun,
   type T2tQuery,
@@ -44,6 +45,13 @@ export interface AttentionItem {
 }
 
 const POLL_MS = 30_000;
+
+/** Query IDs we've already dispatched a draft for in THIS session.
+ *  Prevents re-drafting the same query on every 30s poll. The cloud
+ *  side already checks for existing drafts + we intentionally bypass
+ *  auto-draft if a non-empty draft is present, but this keeps the
+ *  desktop from firing 20+ requests over a long session. */
+const draftedThisSession = new Set<string>();
 
 function normalizeT2t(inbox: T2tQuery[]): AttentionItem[] {
   return inbox
@@ -105,6 +113,25 @@ export function useAttentionItems() {
       ]);
       if (inboxResult.status === "fulfilled") {
         gathered.push(...normalizeT2t(inboxResult.value));
+
+        // Fire-and-forget auto-draft for pending queries that don't
+        // have a draft yet. Bounded by draftedThisSession so we don't
+        // hammer the LLM on every 30s tick.
+        for (const q of inboxResult.value) {
+          if (
+            q.status === "pending" &&
+            (!q.drafted_response || q.drafted_response.trim().length === 0) &&
+            !draftedThisSession.has(q.id)
+          ) {
+            draftedThisSession.add(q.id);
+            void t2tAutoDraft(q.id).catch((e) => {
+              // Draft failed — remove from set so a later poll can
+              // retry (e.g., if LLM was down transiently).
+              console.warn(`[t2t] auto-draft failed for ${q.id}:`, e);
+              draftedThisSession.delete(q.id);
+            });
+          }
+        }
       }
       if (runsResult.status === "fulfilled") {
         gathered.push(...normalizeWorkflow(runsResult.value));

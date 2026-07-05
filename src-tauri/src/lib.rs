@@ -822,6 +822,7 @@ pub fn run() {
             cloud::t2t_cmd::t2t_draft_reply,
             cloud::t2t_cmd::t2t_approve_reply,
             cloud::t2t_cmd::t2t_decline_reply,
+            cloud::t2t_autodraft::t2t_auto_draft,
             commands::inbox_recent,
             commands::inbox_scan_now,
             commands::inbox_mark_handled,

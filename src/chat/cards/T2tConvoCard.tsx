@@ -37,6 +37,11 @@ interface Props {
   finalResponse?: string;
   state: T2tConvoState;
   narration?: string;
+  /** 'sender' — this user asked the question (outbound).
+   *  'recipient' — this user is being asked (inbound).
+   *  Defaults to 'sender' since it's the more common LLM emit path.
+   *  Recipient view enables draft-entry on delivered/considering. */
+  viewSide?: "sender" | "recipient";
   /** Optional callback to refresh parent state after an action. */
   onStateChanged?: () => void;
 }
@@ -49,12 +54,19 @@ export function T2tConvoCard({
   draftedResponse,
   finalResponse,
   state,
+  viewSide = "sender",
   onStateChanged,
 }: Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(draftedResponse ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // v0.24 — recipient-side, on delivered/considering, the card offers a
+  // draft-entry surface so the user can type + save the response.
+  const isRecipient = viewSide === "recipient";
+  const needsDraftEntry =
+    isRecipient && (state === "delivered" || state === "considering");
 
   async function handleApprove() {
     setBusy(true);
@@ -82,6 +94,22 @@ export function T2tConvoCard({
     setError(null);
     try {
       await t2tDeclineReply(queryId);
+      onStateChanged?.();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Save the draft without sending — moves state to 'drafted' so the
+  // approve/decline UI appears next.
+  async function handleSaveDraft() {
+    if (!draft.trim() || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await t2tDraftReply(queryId, draft);
       onStateChanged?.();
     } catch (e) {
       setError(String(e));
@@ -131,6 +159,72 @@ export function T2tConvoCard({
       >
         {question}
       </div>
+
+      {/* Recipient draft-entry (delivered/considering + recipient view) */}
+      <AnimatePresence initial={false} mode="popLayout">
+        {needsDraftEntry && (
+          <motion.div
+            key="draft-entry"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+            className="overflow-hidden"
+          >
+            <div
+              className="mx-4 mb-3 rounded-lg border p-3"
+              style={{
+                borderColor: "rgba(110, 196, 232, 0.28)",
+                background: "rgba(110, 196, 232, 0.04)",
+              }}
+            >
+              <div
+                className="text-[10px] uppercase tracking-wider font-mono mb-2"
+                style={{ color: "rgb(110, 196, 232)" }}
+              >
+                Draft your reply
+              </div>
+              <textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                placeholder="Type your reply — save to review, then approve to send."
+                className="w-full bg-white/[0.02] border rounded-md p-2 text-sm text-white placeholder:text-white/40 focus:outline-none focus:border-[#6ec4e8]/40 min-h-[80px] resize-y"
+                style={{ borderColor: "rgba(255, 255, 255, 0.1)" }}
+              />
+              <div className="flex items-center gap-2 mt-2">
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleSaveDraft}
+                  disabled={busy || !draft.trim()}
+                  className="text-[11px] uppercase tracking-wider font-mono px-3 py-2 rounded-lg transition-colors disabled:opacity-40"
+                  style={{
+                    background: "rgba(110, 196, 232, 0.15)",
+                    color: "rgb(110, 196, 232)",
+                    border: "1px solid rgba(110, 196, 232, 0.4)",
+                  }}
+                >
+                  {busy ? "saving…" : "save draft"}
+                </motion.button>
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleDecline}
+                  disabled={busy}
+                  className="ml-auto text-[11px] uppercase tracking-wider font-mono px-3 py-2 rounded-lg transition-colors disabled:opacity-40"
+                  style={{
+                    background: "rgba(255, 100, 100, 0.06)",
+                    color: "rgba(255, 180, 180, 0.85)",
+                    border: "1px solid rgba(255, 100, 100, 0.25)",
+                  }}
+                >
+                  decline
+                </motion.button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Reply body (drafted / answered / declined) */}
       <AnimatePresence initial={false} mode="popLayout">

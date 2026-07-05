@@ -460,3 +460,10 @@ export function t2tApproveReply(id: string, finalResponse?: string): Promise<voi
 export function t2tDeclineReply(id: string, reason?: string): Promise<void> {
   return invoke<void>("t2t_decline_reply", { id, reason: reason ?? null });
 }
+
+/** v0.24 task 311 slice B — desktop-side auto-draft. Reads the query
+ *  from inbox, calls the local LLM to draft a short reply, POSTs it
+ *  via t2t_draft_reply. Skipped if a non-empty draft already exists. */
+export function t2tAutoDraft(queryId: string): Promise<string> {
+  return invoke<string>("t2t_auto_draft", { queryId });
+}
