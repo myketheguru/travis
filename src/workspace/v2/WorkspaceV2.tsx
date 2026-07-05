@@ -30,6 +30,7 @@ import { FocalStage } from "./FocalStage";
 import { OrbitalStack } from "./OrbitalStack";
 import { ThreadRail } from "./ThreadRail";
 import { ActionRail } from "./ActionRail";
+import { SettingsOverlay } from "./SettingsOverlay";
 import { useFocalContent } from "./useFocalContent";
 import AskTab from "../../manage/tabs/AskTab";
 
@@ -38,18 +39,19 @@ export function WorkspaceV2() {
   const activity = useAppStore((s) => s.activity);
   const { focal, orbits } = useFocalContent();
 
-  // ⌘, opens Settings via the same route App.tsx handles today. Full
-  // overlay lands in v2 Shell 6.
+  const setSettingsOverlayOpen = useAppStore((s) => s.setSettingsOverlayOpen);
+
+  // ⌘, / Ctrl+, opens Settings as an overlay card (v2 Shell 6).
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === ",") {
         e.preventDefault();
-        // TODO(v2-shell-6): open Settings as overlay card
+        setSettingsOverlayOpen(true);
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [setSettingsOverlayOpen]);
 
   return (
     <div className="relative flex flex-col h-full min-h-0 overflow-hidden">
@@ -64,6 +66,9 @@ export function WorkspaceV2() {
 
       {/* HUD: right-edge action rail (v2 Shell 4) */}
       <ActionRail focal={focal} />
+
+      {/* Settings overlay (v2 Shell 6) — mounts on top when open */}
+      <SettingsOverlay />
 
       {/* HUD: top-right attention compass — for now, reuse the strip */}
       <div
@@ -131,10 +136,13 @@ export function WorkspaceV2() {
 
 function OrbHud() {
   const activity = useAppStore((s) => s.activity);
+  const setSettingsOverlayOpen = useAppStore((s) => s.setSettingsOverlayOpen);
   const pulseColor = pulseColorFor(activity);
   return (
-    <div className="absolute top-3 left-3 z-20 pointer-events-none">
-      <motion.div
+    <div className="absolute top-3 left-3 z-20 pointer-events-auto">
+      <motion.button
+        whileHover={{ scale: 1.12 }}
+        whileTap={{ scale: 0.92 }}
         animate={{
           scale: activity === "thinking" || activity === "listening" ? [1, 1.08, 1] : 1,
         }}
@@ -143,11 +151,14 @@ function OrbHud() {
           repeat: Infinity,
           ease: [0.22, 1, 0.36, 1],
         }}
+        onClick={() => setSettingsOverlayOpen(true)}
         className="h-6 w-6 rounded-full"
         style={{
           background: `radial-gradient(circle at 35% 30%, ${pulseColor.core}, ${pulseColor.rim} 70%)`,
           boxShadow: `0 0 24px ${pulseColor.glow}`,
         }}
+        title="Open Settings (⌘,)"
+        aria-label="Open Settings"
       />
     </div>
   );

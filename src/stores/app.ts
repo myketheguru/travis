@@ -43,6 +43,10 @@ type AppState = {
   /// that shipped in v0.23-24. Persisted to localStorage. Users toggle
   /// via Settings; new users default to v2.
   uiSurface: "v2" | "classic";
+  /// v0.25 (v2 Shell 6) — whether the Settings overlay is open on top
+  /// of the current surface. Opened by ⌘, / Ctrl+, or by clicking the
+  /// orb; closed by Esc. Not persisted — session-local.
+  settingsOverlayOpen: boolean;
   setActivity: (a: Activity) => void;
   setStatus: (s: AppStatus) => void;
   setProfile: (p: UserProfile | null) => void;
@@ -54,6 +58,7 @@ type AppState = {
   setFocusedThread: (t: FocusedThread | null) => void;
   setPendingComposerText: (t: string | null) => void;
   setUiSurface: (s: "v2" | "classic") => void;
+  setSettingsOverlayOpen: (open: boolean) => void;
   pulse: () => void;
 };
 
@@ -204,6 +209,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     writeUiSurface(s);
     set({ uiSurface: s });
   },
+  settingsOverlayOpen: false,
+  setSettingsOverlayOpen: (open) => set({ settingsOverlayOpen: open }),
   pulse: () => {
     if (get().activity === "thinking" || get().activity === "listening") return;
     set({ activity: "typing" });
