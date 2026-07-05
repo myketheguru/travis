@@ -362,3 +362,43 @@ export function cloudWorkflowRunNow(input: RunNowInput): Promise<string> {
 export function cloudWorkflowRuns(since?: string): Promise<WorkflowRun[]> {
   return invoke<WorkflowRun[]>("cloud_workflow_runs", { since: since ?? null });
 }
+
+// ─── Travis-to-Travis ────────────────────────────────────────────
+// v0.22.15 (Shell 6) — light TS wrappers for the attention strip.
+
+export type T2tQueryStatus =
+  | "pending"
+  | "drafted"
+  | "approved"
+  | "declined"
+  | "answered"
+  | "expired";
+
+export interface T2tQuery {
+  id: string;
+  from_user_id: string;
+  to_user_id: string;
+  from_conversation_id?: string | null;
+  question: string;
+  context_json?: string | null;
+  status: T2tQueryStatus;
+  drafted_response?: string | null;
+  drafted_at?: string | null;
+  response?: string | null;
+  responded_at?: string | null;
+  declined_reason?: string | null;
+  created_at: string;
+  expires_at?: string | null;
+  from_email?: string | null;
+  from_name?: string | null;
+  to_email?: string | null;
+  to_name?: string | null;
+}
+
+export function t2tInbox(): Promise<T2tQuery[]> {
+  return invoke<T2tQuery[]>("t2t_inbox");
+}
+
+export function t2tOutbox(): Promise<T2tQuery[]> {
+  return invoke<T2tQuery[]>("t2t_outbox");
+}
