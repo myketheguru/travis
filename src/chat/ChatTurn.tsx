@@ -4,6 +4,8 @@ import { type ConversationMessage } from "../lib/conversation";
 import { type ParsedStep } from "../lib/steps";
 import { StepRow } from "./StepRow";
 import { MarkdownBody } from "./MarkdownBody";
+import { RichResponseRenderer } from "./cards/RichResponseRenderer";
+import { parseRichResponse } from "../lib/richResponse";
 import { ThinkingSection } from "./ThinkingSection";
 import { FileCard } from "./FileCard";
 
@@ -47,20 +49,40 @@ export function ChatTurn({
   // v0.22.13 — auto-speak Travis's replies when voice output is on in
   // Settings. Only speaks once per message (dedup by content) so a
   // parent re-render doesn't retrigger. Non-assistant messages skip.
+  //
+  // v0.22.15 — if the reply is a typed RichResponse, prefer the
+  // per-part `narration` fields (which are written for voice) over
+  // the raw markdown. This keeps Travis from reading out machine
+  // tokens like `doc#15` or the whole JSON envelope aloud.
   useEffect(() => {
     if (!isAssistant) return;
     const trimmed = message.content.trim();
     if (!trimmed) return;
     if (spokeThisMessageRef.current === trimmed) return;
     spokeThisMessageRef.current = trimmed;
-    // Strip doc# markers and other machine tokens before speaking.
-    const spoken = trimmed
-      .replace(/doc#\d+/g, "")
-      .replace(/```[\s\S]*?```/g, "")
-      .replace(/`[^`]*`/g, "")
-      .replace(/[*_#>~]/g, "")
-      .replace(/\s+/g, " ")
-      .trim();
+
+    const rich = parseRichResponse(trimmed);
+    let spoken: string;
+    if (rich) {
+      spoken = rich.parts
+        .map((p) => {
+          if (p.kind === "text") return p.markdown;
+          return (p as { narration?: string }).narration ?? "";
+        })
+        .filter((s) => s.length > 0)
+        .join(". ")
+        .replace(/\s+/g, " ")
+        .trim();
+    } else {
+      // Legacy markdown response — strip machine tokens for the mic.
+      spoken = trimmed
+        .replace(/doc#\d+/g, "")
+        .replace(/```[\s\S]*?```/g, "")
+        .replace(/`[^`]*`/g, "")
+        .replace(/[*_#>~]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
     if (!spoken) return;
     void import("../lib/voice").then((mod) => mod.speak(spoken));
   }, [isAssistant, message.content]);
@@ -195,7 +217,25 @@ export function ChatTurn({
                 </div>
               </div>
             ) : (
-              <MarkdownBody text={visibleContent} />
+              // v0.22.15 — God's-Eye rendering. If the assistant emitted a
+              // typed RichResponse, route each part through the renderer
+              // (map card, doc ref card, etc.). Fall back to markdown when
+              // the reply is genuinely prose. Only assistant messages go
+              // through this — user turns stay markdown.
+              (() => {
+                if (isAssistant) {
+                  const rich = parseRichResponse(visibleContent);
+                  if (rich) {
+                    return (
+                      <RichResponseRenderer
+                        response={rich}
+                        documentIds={assistantFileCardIds}
+                      />
+                    );
+                  }
+                }
+                return <MarkdownBody text={visibleContent} />;
+              })()
             )
           )}
 
