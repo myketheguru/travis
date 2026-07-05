@@ -161,6 +161,11 @@ function styleFor(kind: AttentionItem["kind"]): React.CSSProperties {
         background: "rgba(255, 255, 255, 0.04)",
         border: "1px solid rgba(255, 255, 255, 0.12)",
       };
+    case "peer_nearby":
+      return {
+        background: "rgba(129, 199, 132, 0.08)",
+        border: "1px solid rgba(129, 199, 132, 0.32)",
+      };
   }
 }
 
@@ -174,6 +179,8 @@ function dotFor(kind: AttentionItem["kind"]): string {
       return "rgb(255, 179, 92)";
     case "workflow_running":
       return "rgb(236, 236, 241)";
+    case "peer_nearby":
+      return "rgb(129, 199, 132)";
   }
 }
 
@@ -187,5 +194,7 @@ function glowFor(kind: AttentionItem["kind"]): string {
       return "rgba(255, 179, 92, 0.6)";
     case "workflow_running":
       return "rgba(236, 236, 241, 0.3)";
+    case "peer_nearby":
+      return "rgba(129, 199, 132, 0.5)";
   }
 }

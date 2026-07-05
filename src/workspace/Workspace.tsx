@@ -63,6 +63,9 @@ export function Workspace() {
         case "workflow_running":
           prompt = `Give me a status on "${item.label}".`;
           break;
+        case "peer_nearby":
+          prompt = `${item.label} — I want to pair with them via Travis-to-Travis. What's the next step?`;
+          break;
         default:
           prompt = `Show me "${item.label}".`;
       }

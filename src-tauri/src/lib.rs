@@ -44,6 +44,7 @@ mod llm;
 mod manager;
 mod memory;
 mod memory_cmd;
+mod discovery;
 mod mcp;
 mod python_runtime;
 mod rich_response;
@@ -829,6 +830,8 @@ pub fn run() {
             mcp::cmd::mcp_delete_server,
             mcp::cmd::mcp_set_enabled,
             mcp::cmd::mcp_ping_server,
+            discovery::cmd::discovery_peers,
+            discovery::cmd::discovery_start,
             commands::inbox_recent,
             commands::inbox_scan_now,
             commands::inbox_mark_handled,

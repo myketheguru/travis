@@ -18,8 +18,11 @@
 import { useEffect, useState } from "react";
 import {
   cloudWorkflowRuns,
+  discoveryPeers,
+  discoveryStart,
   t2tAutoDraft,
   t2tInbox,
+  type DiscoveredPeer,
   type WorkflowRun,
   type T2tQuery,
 } from "../lib/cloud";
@@ -28,7 +31,8 @@ export type AttentionKind =
   | "t2t_pending"
   | "t2t_drafted"
   | "workflow_running"
-  | "workflow_awaiting_approval";
+  | "workflow_awaiting_approval"
+  | "peer_nearby";
 
 export interface AttentionItem {
   /** Stable id — used as the React key + for deep-linking to the source. */
@@ -69,6 +73,17 @@ function normalizeT2t(inbox: T2tQuery[]): AttentionItem[] {
     }));
 }
 
+function normalizePeers(peers: DiscoveredPeer[]): AttentionItem[] {
+  return peers.map((p) => ({
+    id: `peer:${p.instance_name}`,
+    kind: "peer_nearby" as AttentionKind,
+    label: `${p.display_name ?? "Someone"}'s Travis · nearby`,
+    detail: p.host,
+    timestamp: new Date(p.last_seen * 1000).toISOString(),
+    href: `peer/${encodeURIComponent(p.instance_name)}`,
+  }));
+}
+
 function normalizeWorkflow(runs: WorkflowRun[]): AttentionItem[] {
   return runs
     .filter(
@@ -105,11 +120,18 @@ export function useAttentionItems() {
   useEffect(() => {
     let cancelled = false;
 
+    // Kick off discovery daemon once — cheap subsequent calls just
+    // return the current peer map from an in-memory cache.
+    void discoveryStart().catch(() => {
+      /* mDNS may not be permitted / firewalled — silent */
+    });
+
     async function tick() {
       const gathered: AttentionItem[] = [];
-      const [inboxResult, runsResult] = await Promise.allSettled([
+      const [inboxResult, runsResult, peersResult] = await Promise.allSettled([
         t2tInbox(),
         cloudWorkflowRuns(),
+        discoveryPeers(),
       ]);
       if (inboxResult.status === "fulfilled") {
         gathered.push(...normalizeT2t(inboxResult.value));
@@ -135,6 +157,9 @@ export function useAttentionItems() {
       }
       if (runsResult.status === "fulfilled") {
         gathered.push(...normalizeWorkflow(runsResult.value));
+      }
+      if (peersResult.status === "fulfilled") {
+        gathered.push(...normalizePeers(peersResult.value));
       }
       gathered.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
       if (!cancelled) {

@@ -512,3 +512,23 @@ export function mcpPingServer(url: string, authToken?: string): Promise<string[]
     authToken: authToken ?? null,
   });
 }
+
+// ─── Peer discovery (task 314) ───────────────────────────────────
+
+export interface DiscoveredPeer {
+  instance_name: string;
+  display_name?: string | null;
+  user_email?: string | null;
+  user_id?: string | null;
+  host: string;
+  port: number;
+  last_seen: number;
+}
+
+export function discoveryStart(): Promise<void> {
+  return invoke<void>("discovery_start");
+}
+
+export function discoveryPeers(): Promise<DiscoveredPeer[]> {
+  return invoke<DiscoveredPeer[]>("discovery_peers");
+}
