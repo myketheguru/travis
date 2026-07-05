@@ -26,10 +26,15 @@ import { useAppStore } from "../../stores/app";
 import { AttentionStrip } from "../AttentionStrip";
 import { SuggestionRail } from "../SuggestionRail";
 import { CanvasBackdrop } from "./CanvasBackdrop";
+import { FocalStage } from "./FocalStage";
+import { OrbitalStack } from "./OrbitalStack";
+import { useFocalContent } from "./useFocalContent";
 import AskTab from "../../manage/tabs/AskTab";
 
 export function WorkspaceV2() {
   const setPendingComposerText = useAppStore((s) => s.setPendingComposerText);
+  const activity = useAppStore((s) => s.activity);
+  const { focal, orbits } = useFocalContent();
 
   // ⌘, opens Settings via the same route App.tsx handles today. Full
   // overlay lands in v2 Shell 6.
@@ -62,15 +67,29 @@ export function WorkspaceV2() {
         </div>
       </div>
 
-      {/* Primary content region: focal-item layout will replace AskTab
-          in v2 Shell 3. Until then, mount AskTab so v2 is not a broken
-          preview — users can still work. */}
+      {/* Primary content region: focal card + orbital stack + AskTab
+          below. AskTab still owns the composer + chat scroll (v2
+          Shell 4 will lift the composer into the HUD). */}
       <div className="relative z-10 flex-1 min-h-0 flex flex-col">
         <SuggestionRail
           onSuggestionClick={(s) => setPendingComposerText(s.prompt)}
         />
-        <div className="flex-1 min-h-0">
-          <AskTab />
+        <div className="flex-1 min-h-0 flex flex-col md:flex-row gap-4 px-6 py-4 overflow-auto">
+          <div className="flex-1 min-w-0 flex items-start justify-center">
+            <FocalStage message={focal} pending={activity === "thinking"} />
+          </div>
+          <OrbitalStack orbits={orbits} />
+        </div>
+        {/* Composer band — AskTab handles input; we hide its scroll
+            using CSS since focal + orbits replace the visual reading
+            experience for v2. */}
+        <div
+          className="shrink-0 border-t"
+          style={{ borderColor: "rgba(255,255,255,0.06)" }}
+        >
+          <div className="max-h-[320px] overflow-hidden">
+            <AskTab />
+          </div>
         </div>
       </div>
 
