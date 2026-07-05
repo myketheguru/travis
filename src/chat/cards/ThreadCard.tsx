@@ -16,10 +16,11 @@
  * the routing so typing while the thread is focused adds to it.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { MessagePart } from "../../lib/richResponse";
 import { RichResponseRenderer } from "./RichResponseRenderer";
+import { useAppStore } from "../../stores/app";
 
 interface ThreadTurn {
   author: "user" | "travis";
@@ -38,6 +39,7 @@ interface Props {
 }
 
 export function ThreadCard({
+  threadId,
   title,
   summary,
   turns,
@@ -46,24 +48,62 @@ export function ThreadCard({
   onPin,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
+  const focusedThread = useAppStore((s) => s.focusedThread);
+  const setFocusedThread = useAppStore((s) => s.setFocusedThread);
   const lastTurn = turns.length > 0 ? turns[turns.length - 1] : null;
+
+  const isFocused =
+    focusedThread !== null &&
+    ((threadId != null && focusedThread.id === threadId) ||
+      (threadId == null && focusedThread.title === title));
 
   function toggle() {
     const next = !expanded;
     setExpanded(next);
-    if (next) onFocus?.();
+    if (next) {
+      setFocusedThread({ id: threadId ?? null, title });
+      onFocus?.();
+    } else if (isFocused) {
+      // Collapsing a focused thread defocuses it.
+      setFocusedThread(null);
+    }
   }
 
+  // Global esc handler: pressing escape while focused defocuses +
+  // collapses the thread. Enables the "esc to leave" chip semantics.
+  useEffect(() => {
+    if (!isFocused) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setFocusedThread(null);
+        setExpanded(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isFocused, setFocusedThread]);
+
   return (
-    <div
+    <motion.div
+      layout
       className="rounded-2xl overflow-hidden"
+      animate={{
+        boxShadow: isFocused
+          ? "0 6px 40px -12px rgba(124, 92, 255, 0.35)"
+          : "0 4px 24px -12px rgba(0, 0, 0, 0.5)",
+      }}
+      transition={{
+        layout: { duration: 0.32, ease: [0.22, 1, 0.36, 1] },
+        boxShadow: { duration: 0.28, ease: [0.22, 1, 0.36, 1] },
+      }}
       style={{
-        border: pinned
-          ? "1px solid rgba(189, 158, 255, 0.55)"
-          : "1px solid var(--hairline-2, rgba(255,255,255,0.1))",
+        border: isFocused
+          ? "1px solid rgba(124, 92, 255, 0.55)"
+          : pinned
+            ? "1px solid rgba(189, 158, 255, 0.55)"
+            : "1px solid var(--hairline-2, rgba(255,255,255,0.1))",
         background:
           "linear-gradient(180deg, rgba(124, 92, 255, 0.05), rgba(255, 255, 255, 0.015))",
-        boxShadow: "0 4px 24px -12px rgba(0, 0, 0, 0.5)",
       }}
     >
       {/* Hero header — always visible */}
@@ -204,6 +244,6 @@ export function ThreadCard({
           </motion.div>
         )}
       </AnimatePresence>
-    </div>
+    </motion.div>
   );
 }

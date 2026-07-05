@@ -152,6 +152,11 @@ export default function AskTab() {
   const [pendingDelete, setPendingDelete] = useState<number | null>(null);
   const setActivity = useAppStore((s) => s.setActivity);
   const pulse = useAppStore((s) => s.pulse);
+  // v0.22.15 (Shell 4) — context-aware composer. When a thread card is
+  // focused, the placeholder becomes "Continue <title>…" and the
+  // "adding to X" chip appears below. Escape or clicking away resets.
+  const focusedThread = useAppStore((s) => s.focusedThread);
+  const setFocusedThread = useAppStore((s) => s.setFocusedThread);
 
   // Smart scroll anchor: jumps to bottom on first paint; auto-tracks
   // bottom only when the user is already there. If they scroll up, new
@@ -901,6 +906,45 @@ export default function AskTab() {
           </div>
         )}
 
+        {/* v0.22.15 (Shell 4) — "adding to X · esc to leave" chip when
+            a thread is focused. Smooth in/out via AnimatePresence. */}
+        <AnimatePresence>
+          {focusedThread && (
+            <motion.div
+              key="thread-focus-chip"
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 4 }}
+              transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+              className="pb-1 flex items-center gap-2"
+            >
+              <span
+                className="inline-flex items-center gap-2 text-[11px] font-mono px-2.5 py-1 rounded-full"
+                style={{
+                  background: "rgba(124, 92, 255, 0.12)",
+                  border: "1px solid rgba(124, 92, 255, 0.35)",
+                  color: "rgba(236, 236, 241, 0.85)",
+                }}
+              >
+                <span
+                  className="h-1.5 w-1.5 rounded-full"
+                  style={{
+                    background: "rgb(124, 92, 255)",
+                    boxShadow: "0 0 6px rgba(124, 92, 255, 0.7)",
+                  }}
+                />
+                adding to {focusedThread.title}
+              </span>
+              <button
+                onClick={() => setFocusedThread(null)}
+                className="text-[10px] uppercase tracking-wider font-mono text-bone-3 hover:text-bone-2"
+              >
+                esc to leave
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         <div className="flex items-end gap-2">
           <button
             onClick={handlePickFile}
@@ -931,13 +975,15 @@ export default function AskTab() {
             }}
             onSubmit={submit}
             placeholder={
-              empty
-                ? attachedDocs.length > 0
-                  ? "Tell Travis what to do with the file(s)…"
-                  : "Type anything…"
-                : attachedDocs.length > 0
-                  ? "Add a note for the attachment(s)…"
-                  : "Continue…"
+              focusedThread
+                ? `Continue ${focusedThread.title}…`
+                : empty
+                  ? attachedDocs.length > 0
+                    ? "Tell Travis what to do with the file(s)…"
+                    : "Type anything…"
+                  : attachedDocs.length > 0
+                    ? "Add a note for the attachment(s)…"
+                    : "Continue…"
             }
             disabled={busy}
             maxRows={8}

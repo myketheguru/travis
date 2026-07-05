@@ -28,6 +28,11 @@ type AppState = {
   /// v0.20.3 — doc-only mode. When true, the chat pane is hidden and
   /// a floating overlay handles input. Persisted across launches.
   docFullscreen: boolean;
+  /// v0.22.15 (Shell 4) — id of the thread card the user has focused.
+  /// When set, the top-level composer routes its next turn INTO that
+  /// thread instead of creating a new top-level message. Also drives
+  /// the placeholder text ("Continue X…") + the "adding to X" chip.
+  focusedThread: FocusedThread | null;
   setActivity: (a: Activity) => void;
   setStatus: (s: AppStatus) => void;
   setProfile: (p: UserProfile | null) => void;
@@ -36,8 +41,13 @@ type AppState = {
   setViewerDocumentId: (id: number | null) => void;
   setChatPaneFraction: (f: number) => void;
   setDocFullscreen: (v: boolean) => void;
+  setFocusedThread: (t: FocusedThread | null) => void;
   pulse: () => void;
 };
+
+/// A thread the user has clicked into. `id` may be null for threads
+/// the client synthesized before we have a durable id.
+export type FocusedThread = { id: string | null; title: string };
 
 let pulseTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -154,6 +164,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     writeDocFullscreen(v);
     set({ docFullscreen: v });
   },
+  focusedThread: null,
+  setFocusedThread: (t) => set({ focusedThread: t }),
   pulse: () => {
     if (get().activity === "thinking" || get().activity === "listening") return;
     set({ activity: "typing" });
