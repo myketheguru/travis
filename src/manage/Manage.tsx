@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import { DocumentViewer } from "../chat/DocumentViewer";
 import { ResizableSplit } from "../chat/ResizableSplit";
 import { FloatingChatOverlay } from "../chat/FloatingChatOverlay";
-import AskTab from "./tabs/AskTab";
+import { Workspace } from "../workspace/Workspace";
 import TasksTab from "./tabs/TasksTab";
 import RemindersTab from "./tabs/RemindersTab";
 import EntitiesTab from "./tabs/EntitiesTab";
@@ -221,7 +221,11 @@ function renderActiveContent(active: Tab | undefined, schemas: PackSchema[] | nu
   void schemas;
   if (!active) return null;
   if (active.kind === "core") {
-    if (active.id === "ask") return <AskTab />;
+    // v0.22.15 (Shell 8) — Ask tab now renders the Workspace shell,
+    // which composes AttentionStrip + workspace controls above the
+    // existing AskTab surface. AskTab still holds the primary chat
+    // canvas; Workspace adds the peripheral chrome around it.
+    if (active.id === "ask") return <Workspace />;
     if (active.id === "threads") return <ThreadsTab />;
     if (active.id === "tasks") return <TasksTab />;
     if (active.id === "reminders") return <RemindersTab />;
