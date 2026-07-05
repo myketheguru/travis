@@ -25,6 +25,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useAppStore } from "../../stores/app";
 import { AttentionStrip } from "../AttentionStrip";
 import { SuggestionRail } from "../SuggestionRail";
+import { CanvasBackdrop } from "./CanvasBackdrop";
 import AskTab from "../../manage/tabs/AskTab";
 
 export function WorkspaceV2() {
@@ -45,7 +46,7 @@ export function WorkspaceV2() {
 
   return (
     <div className="relative flex flex-col h-full min-h-0 overflow-hidden">
-      {/* Canvas backdrop (v2 Shell 2 fills this with ambient depth) */}
+      {/* Canvas backdrop with ambient depth (v2 Shell 2) */}
       <CanvasBackdrop />
 
       {/* HUD: top-left orb (v2 Shell 4) */}
@@ -96,22 +97,6 @@ export function WorkspaceV2() {
         </motion.div>
       </AnimatePresence>
     </div>
-  );
-}
-
-/* ─── Canvas backdrop stub (v2 Shell 2) ─────────────────────────── */
-
-function CanvasBackdrop() {
-  return (
-    <div
-      className="absolute inset-0 z-0"
-      style={{
-        background:
-          "radial-gradient(circle at 20% 30%, rgba(124, 92, 255, 0.08), transparent 60%), " +
-          "radial-gradient(circle at 80% 70%, rgba(110, 196, 232, 0.06), transparent 55%), " +
-          "linear-gradient(180deg, rgba(255,255,255,0.01), transparent)",
-      }}
-    />
   );
 }
 
