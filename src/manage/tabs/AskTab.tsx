@@ -73,6 +73,20 @@ export default function AskTab() {
       return () => clearTimeout(id);
     }
   }, [busy]);
+
+  // v0.22.15 (Shell 9) — bridge from SuggestionRail: when a chip is
+  // clicked, the store's pendingComposerText is set. Reflect it in
+  // local q + focus + clear the pending so a re-mount doesn't repeat.
+  const pendingComposerText = useAppStore((s) => s.pendingComposerText);
+  const setPendingComposerText = useAppStore((s) => s.setPendingComposerText);
+  useEffect(() => {
+    if (pendingComposerText) {
+      setQ(pendingComposerText);
+      setPendingComposerText(null);
+      // Delay focus a tick so the input has re-rendered with the text.
+      setTimeout(() => inputRef.current?.focus(), 0);
+    }
+  }, [pendingComposerText, setPendingComposerText]);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   // v0.19.6 — bridge from DocumentsTab. The "attach to chat" button
   // in the library dispatches a window event; we listen here, look

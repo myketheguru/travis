@@ -16,19 +16,32 @@ import { useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import AskTab from "../manage/tabs/AskTab";
 import { AttentionStrip } from "./AttentionStrip";
+import { SuggestionRail } from "./SuggestionRail";
 import { useCardLifecycle } from "../stores/cardLifecycle";
+import { useAppStore } from "../stores/app";
+import type { Suggestion } from "./useSuggestions";
 
 export function Workspace() {
   const clearAll = useCardLifecycle((s) => s.clearAll);
   const clearedAt = useCardLifecycle((s) => s.clearedAt);
   const resurrectedIds = useCardLifecycle((s) => s.resurrectedIds);
   const pinnedIds = useCardLifecycle((s) => s.pinnedIds);
+  const setPendingComposerText = useAppStore((s) => s.setPendingComposerText);
 
   const handleClear = useCallback(() => {
     // No confirm — Clear is meant to feel instant. User can undo by
     // asking Travis to bring things back (Shell 7 resurrection).
     clearAll();
   }, [clearAll]);
+
+  const handleSuggestion = useCallback(
+    (s: Suggestion) => {
+      // Push the suggestion's prompt into the composer via the app
+      // store bridge; AskTab picks it up + focuses the input.
+      setPendingComposerText(s.prompt);
+    },
+    [setPendingComposerText],
+  );
 
   const hasActiveState =
     (clearedAt && ageInMs(clearedAt) < 60_000) ||
@@ -137,6 +150,11 @@ export function Workspace() {
           </AnimatePresence>
         </div>
       </div>
+
+      {/* Ambient suggestion rail (Shell 9) — proposes 3-5 next moves
+          based on time of day + patterns. Click a chip -> AskTab
+          composer fills with the prompt. */}
+      <SuggestionRail onSuggestionClick={handleSuggestion} />
 
       {/* Primary canvas: for now the existing chat surface. Shell 8+
           will progressively morph this into a card-canvas layout as

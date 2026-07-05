@@ -33,6 +33,11 @@ type AppState = {
   /// thread instead of creating a new top-level message. Also drives
   /// the placeholder text ("Continue X…") + the "adding to X" chip.
   focusedThread: FocusedThread | null;
+  /// v0.22.15 (Shell 9) — one-shot bridge for injecting text into the
+  /// composer from outside the composer (e.g., SuggestionRail chip
+  /// click). AskTab watches this; on change it fills its local input
+  /// and clears the pending value.
+  pendingComposerText: string | null;
   setActivity: (a: Activity) => void;
   setStatus: (s: AppStatus) => void;
   setProfile: (p: UserProfile | null) => void;
@@ -42,6 +47,7 @@ type AppState = {
   setChatPaneFraction: (f: number) => void;
   setDocFullscreen: (v: boolean) => void;
   setFocusedThread: (t: FocusedThread | null) => void;
+  setPendingComposerText: (t: string | null) => void;
   pulse: () => void;
 };
 
@@ -166,6 +172,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   focusedThread: null,
   setFocusedThread: (t) => set({ focusedThread: t }),
+  pendingComposerText: null,
+  setPendingComposerText: (t) => set({ pendingComposerText: t }),
   pulse: () => {
     if (get().activity === "thinking" || get().activity === "listening") return;
     set({ activity: "typing" });
