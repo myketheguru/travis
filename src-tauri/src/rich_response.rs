@@ -123,6 +123,35 @@ pub enum MessagePart {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         narration: Option<String>,
     },
+
+    /// A first-class thread — long-running open-ended context. Card
+    /// in the canvas that collapses to a summary + expands to full
+    /// chat with embedded sub-cards + thread-local composer.
+    Thread {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thread_id: Option<String>,
+        title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+        turns: Vec<ThreadTurn>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pinned: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        narration: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadTurn {
+    pub author: ThreadAuthor,
+    pub parts: Vec<MessagePart>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadAuthor {
+    User,
+    Travis,
 }
 
 // ─── Sub-payload types ────────────────────────────────────────────

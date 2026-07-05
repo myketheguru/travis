@@ -23,7 +23,8 @@ export type MessagePart =
   | ActionProposalPart
   | ListPart
   | ChartPart
-  | MediaPart;
+  | MediaPart
+  | ThreadPart;
 
 export interface BasePart {
   kind: MessagePart["kind"];
@@ -96,6 +97,23 @@ export interface MediaPart extends BasePart {
   url: string;
   media_kind: "image" | "video" | "audio";
   caption?: string;
+}
+
+/** A first-class thread. Long-running open-ended context. Collapses
+ *  to a summary in the canvas; expands to full scrollable chat with
+ *  embedded sub-cards + a thread-local composer. */
+export interface ThreadPart extends BasePart {
+  kind: "thread";
+  thread_id?: string;
+  title: string;
+  summary?: string;
+  turns: ThreadTurn[];
+  pinned?: boolean;
+}
+
+export interface ThreadTurn {
+  author: "user" | "travis";
+  parts: MessagePart[];
 }
 
 // ─── Sub-payloads ─────────────────────────────────────────────────

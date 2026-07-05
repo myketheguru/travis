@@ -13,6 +13,7 @@
 import type { MessagePart, RichResponse } from "../../lib/richResponse";
 import { MapCard } from "./MapCard";
 import { DocRefCard } from "./DocRefCard";
+import { ThreadCard } from "./ThreadCard";
 import { MarkdownBody } from "../MarkdownBody";
 
 export function RichResponseRenderer({
@@ -50,6 +51,18 @@ function PartRouter({
         <DocRefCard
           documentId={part.document_id}
           snippet={part.snippet}
+          narration={part.narration}
+        />
+      );
+
+    case "thread":
+      return (
+        <ThreadCard
+          threadId={part.thread_id}
+          title={part.title}
+          summary={part.summary}
+          turns={part.turns}
+          pinned={part.pinned}
           narration={part.narration}
         />
       );
