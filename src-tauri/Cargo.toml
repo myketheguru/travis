@@ -16,9 +16,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 # are kept as a build-time lever for distros / contributors who want
 # to ship narrow binaries — e.g. `--no-default-features --features
 # pack-tutoring` for a tutoring-only build.
-default = ["pack-lead-to-empower", "pack-tutoring"]
+default = ["pack-lead-to-empower", "pack-tutoring", "pack-everyday"]
 pack-lead-to-empower = []
 pack-tutoring        = []
+pack-everyday        = []
 
 [build-dependencies]
 tauri-build = { version = "~2.5", features = [] }

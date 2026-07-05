@@ -36,6 +36,9 @@ pub mod lead_to_empower;
 #[cfg(feature = "pack-tutoring")]
 pub mod tutoring;
 
+#[cfg(feature = "pack-everyday")]
+pub mod everyday;
+
 /// A bundled pack. All methods take `&self` so [`PackHandle`] can live behind
 /// a `&'static dyn PackHandle` reference returned from [`compiled_in_packs`].
 pub trait PackHandle: Send + Sync {
@@ -490,6 +493,8 @@ pub fn compiled_in_packs() -> &'static [&'static dyn PackHandle] {
         &lead_to_empower::LeadToEmpowerPack,
         #[cfg(feature = "pack-tutoring")]
         &tutoring::TutoringPack,
+        #[cfg(feature = "pack-everyday")]
+        &everyday::EverydayPack,
     ]
 }
 
