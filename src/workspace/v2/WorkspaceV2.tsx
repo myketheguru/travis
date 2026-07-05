@@ -31,27 +31,45 @@ import { OrbitalStack } from "./OrbitalStack";
 import { ThreadRail } from "./ThreadRail";
 import { ActionRail } from "./ActionRail";
 import { SettingsOverlay } from "./SettingsOverlay";
+import { OpeningGreeting } from "./OpeningGreeting";
+import { HistoryOverlay } from "./HistoryOverlay";
+import { ResumeChip } from "./ResumeChip";
 import { useFocalContent } from "./useFocalContent";
 import AskTab from "../../manage/tabs/AskTab";
 
 export function WorkspaceV2() {
   const setPendingComposerText = useAppStore((s) => s.setPendingComposerText);
   const activity = useAppStore((s) => s.activity);
+  const isFirstMoment = useAppStore((s) => s.isFirstMoment);
+  const noteUserActivity = useAppStore((s) => s.noteUserActivity);
+  const setHistoryOverlayOpen = useAppStore((s) => s.setHistoryOverlayOpen);
   const { focal, orbits } = useFocalContent();
 
   const setSettingsOverlayOpen = useAppStore((s) => s.setSettingsOverlayOpen);
 
-  // ⌘, / Ctrl+, opens Settings as an overlay card (v2 Shell 6).
+  // v2 Shell 6/10 — global shortcuts. ⌘, opens Settings overlay,
+  // ⌘K opens History overlay. Any keystroke that's not a modifier
+  // combo counts as user activity → fades the opening greeting.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === ",") {
         e.preventDefault();
         setSettingsOverlayOpen(true);
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        setHistoryOverlayOpen(true);
+        return;
+      }
+      // Bare printable keys count as the user starting to type.
+      if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key.length === 1) {
+        noteUserActivity();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [setSettingsOverlayOpen]);
+  }, [setSettingsOverlayOpen, setHistoryOverlayOpen, noteUserActivity]);
 
   return (
     <div className="relative flex flex-col h-full min-h-0 overflow-hidden">
@@ -70,6 +88,9 @@ export function WorkspaceV2() {
       {/* Settings overlay (v2 Shell 6) — mounts on top when open */}
       <SettingsOverlay />
 
+      {/* History overlay (v2 Shell 10) — ⌘K opens */}
+      <HistoryOverlay />
+
       {/* HUD: top-right attention compass — for now, reuse the strip */}
       <div
         className="absolute top-3 right-3 z-20 pointer-events-auto"
@@ -80,25 +101,53 @@ export function WorkspaceV2() {
         </div>
       </div>
 
-      {/* Primary content region: focal card + orbital stack + AskTab
-          below. AskTab still owns the composer + chat scroll (v2
-          Shell 4 will lift the composer into the HUD). */}
+      {/* Primary content region. In first-moment: the opening
+          greeting is centered on the canvas + the composer sits just
+          below, ready. Once user types, greeting fades → focal +
+          orbits take over. */}
       <div className="relative z-10 flex-1 min-h-0 flex flex-col">
         <SuggestionRail
-          onSuggestionClick={(s) => setPendingComposerText(s.prompt)}
+          onSuggestionClick={(s) => {
+            setPendingComposerText(s.prompt);
+            noteUserActivity();
+          }}
         />
         <div className="flex-1 min-h-0 flex flex-col md:flex-row gap-4 px-6 py-4 overflow-auto">
-          <div className="flex-1 min-w-0 flex items-start justify-center">
-            <FocalStage message={focal} pending={activity === "thinking"} />
+          <div className="flex-1 min-w-0 flex items-center justify-center">
+            <AnimatePresence mode="wait">
+              {isFirstMoment ? (
+                <OpeningGreeting key="opening" />
+              ) : (
+                <motion.div
+                  key="focal"
+                  className="w-full flex items-start justify-center"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
+                >
+                  <FocalStage
+                    message={focal}
+                    pending={activity === "thinking"}
+                  />
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
-          <OrbitalStack orbits={orbits} />
+          {!isFirstMoment && <OrbitalStack orbits={orbits} />}
         </div>
+
+        {/* Resume chip lands just above the composer band */}
+        <ResumeChip />
+
         {/* Composer band — AskTab handles input; we hide its scroll
             using CSS since focal + orbits replace the visual reading
-            experience for v2. */}
+            experience. Wrapped in an activity-aware container so any
+            interaction inside AskTab counts as user activity. */}
         <div
           className="shrink-0 border-t"
           style={{ borderColor: "rgba(255,255,255,0.06)" }}
+          onMouseDown={noteUserActivity}
+          onKeyDown={noteUserActivity}
         >
           <div className="max-h-[320px] overflow-hidden">
             <AskTab />

@@ -15,6 +15,7 @@ import { packAlerts, type AlertResult } from "./lib/packs";
 import Onboarding from "./onboarding/Onboarding";
 import Settings from "./settings/Settings";
 import Manage from "./manage/Manage";
+import { WorkspaceV2 } from "./workspace/v2/WorkspaceV2";
 import { SignIn } from "./components/SignIn";
 import { checkForUpdate, installUpdate } from "./lib/updater";
 import { MigrationPrompt } from "./components/MigrationPrompt";
@@ -90,6 +91,7 @@ export default function App() {
 function AppInner() {
   const status = useAppStore((s) => s.status);
   const profile = useAppStore((s) => s.profile);
+  const uiSurface = useAppStore((s) => s.uiSurface);
   const setStatus = useAppStore((s) => s.setStatus);
   const setProfile = useAppStore((s) => s.setProfile);
   const pulse = useAppStore((s) => s.pulse);
@@ -425,6 +427,28 @@ function AppInner() {
       )}
     </AnimatePresence>
   );
+
+  // v0.26 (v2 Shell 7) — immersive is the whole app. When uiSurface is
+  // v2 (the default), skip Manage/Settings/Splash view routing entirely
+  // and render WorkspaceV2 full-window. Settings + History are overlays
+  // inside WorkspaceV2; no route change ever fires.
+  if (uiSurface === "v2") {
+    return (
+      <>
+        <HealthBanner />
+        {updateBanner}
+        <motion.div
+          key="immersive"
+          className="h-full w-full"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+        >
+          <WorkspaceV2 />
+        </motion.div>
+      </>
+    );
+  }
 
   if (view === "settings") {
     return (

@@ -47,6 +47,13 @@ type AppState = {
   /// of the current surface. Opened by ⌘, / Ctrl+, or by clicking the
   /// orb; closed by Esc. Not persisted — session-local.
   settingsOverlayOpen: boolean;
+  /// v0.26 (v2 Shell 10) — history overlay (conversation switcher).
+  /// Opened by ⌘K; closed by Esc or click outside. Session-local.
+  historyOverlayOpen: boolean;
+  /// v0.26 (v2 Shell 8) — true when the immersive canvas should show the
+  /// opening greeting. Computed at mount from lastActivityAt: true on
+  /// cold boot OR when idle >= 24h. Fades to false on first keystroke.
+  isFirstMoment: boolean;
   setActivity: (a: Activity) => void;
   setStatus: (s: AppStatus) => void;
   setProfile: (p: UserProfile | null) => void;
@@ -59,6 +66,11 @@ type AppState = {
   setPendingComposerText: (t: string | null) => void;
   setUiSurface: (s: "v2" | "classic") => void;
   setSettingsOverlayOpen: (open: boolean) => void;
+  setHistoryOverlayOpen: (open: boolean) => void;
+  /// Called on any real user activity — first keystroke, pill click,
+  /// mic press, etc. Fades the opening greeting AND writes now to
+  /// localStorage as lastActivityAt so the 24h idle rule can re-arm.
+  noteUserActivity: () => void;
   pulse: () => void;
 };
 
@@ -73,6 +85,8 @@ const ACTIVE_CONV_KEY = "travis.activeConversationId";
 const CHAT_PANE_FRACTION_KEY = "travis.chatPaneFraction";
 const DOC_FULLSCREEN_KEY = "travis.docFullscreen";
 const UI_SURFACE_KEY = "travis.uiSurface";
+const LAST_ACTIVITY_KEY = "travis.lastActivityAt";
+const IDLE_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 
 const readUiSurface = (): "v2" | "classic" => {
   try {
@@ -87,6 +101,33 @@ const readUiSurface = (): "v2" | "classic" => {
 const writeUiSurface = (s: "v2" | "classic") => {
   try {
     if (typeof localStorage !== "undefined") localStorage.setItem(UI_SURFACE_KEY, s);
+  } catch {
+    /* private mode */
+  }
+};
+
+/// v0.26 (v2 Shell 8) — the immersive canvas shows the opening greeting
+/// when this is the FIRST render of the current session AND either the
+/// user has never opened the app OR the last recorded activity was
+/// >= 24h ago. Called once at store-init.
+const computeInitialFirstMoment = (): boolean => {
+  try {
+    if (typeof localStorage === "undefined") return true;
+    const raw = localStorage.getItem(LAST_ACTIVITY_KEY);
+    if (!raw) return true;
+    const last = Number(raw);
+    if (!Number.isFinite(last)) return true;
+    return Date.now() - last >= IDLE_THRESHOLD_MS;
+  } catch {
+    return true;
+  }
+};
+
+const stampActivityNow = () => {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(LAST_ACTIVITY_KEY, String(Date.now()));
+    }
   } catch {
     /* private mode */
   }
@@ -211,6 +252,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   settingsOverlayOpen: false,
   setSettingsOverlayOpen: (open) => set({ settingsOverlayOpen: open }),
+  historyOverlayOpen: false,
+  setHistoryOverlayOpen: (open) => set({ historyOverlayOpen: open }),
+  isFirstMoment: computeInitialFirstMoment(),
+  noteUserActivity: () => {
+    stampActivityNow();
+    // Only clear isFirstMoment if it was true — avoid pointless re-renders.
+    if (get().isFirstMoment) set({ isFirstMoment: false });
+  },
   pulse: () => {
     if (get().activity === "thinking" || get().activity === "listening") return;
     set({ activity: "typing" });
