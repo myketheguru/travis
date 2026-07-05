@@ -28,6 +28,28 @@ import {
 
 type View = "splash" | "settings" | "manage" | "feed";
 
+/// v0.22.15 (Shell 10) — cold-open persistence. When set, the user
+/// has landed in the workspace at least once — subsequent launches
+/// skip the splash and jump straight into Manage with the composer
+/// focused. Set by App.tsx after a successful workspace entry.
+const HAS_LANDED_KEY = "travis.hasLandedInWorkspace";
+
+function readHasLanded(): boolean {
+  try {
+    return typeof localStorage !== "undefined" && localStorage.getItem(HAS_LANDED_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function markHasLanded(): void {
+  try {
+    if (typeof localStorage !== "undefined") localStorage.setItem(HAS_LANDED_KEY, "true");
+  } catch {
+    /* private mode / quota — non-fatal */
+  }
+}
+
 // v2 Phase 1 — Tri-state cloud sign-in gate. Resolved at launch and
 // after sign-in. Null while we're still checking; the empty render
 // avoids a flash of the sign-in screen for already-signed-in users.
@@ -215,6 +237,15 @@ function AppInner() {
         // templating. Failing it leaves the user at Splash with no
         // name, which is still better than re-onboarding.
         console.error("getUserProfile failed (non-fatal)", e);
+      }
+
+      // v0.22.15 (Shell 10) — cold-open flow. A returning onboarded
+      // user who has previously landed in the workspace skips splash
+      // + jumps straight into Manage with the composer focused. First
+      // launch after onboarding still shows the splash so the user
+      // sees the orb + gets oriented once.
+      if (readHasLanded()) {
+        setView((cur) => (cur === "splash" ? "manage" : cur));
       }
     }
   }, [setStatus, setProfile]);
@@ -464,7 +495,12 @@ function AppInner() {
           status={status}
           name={profile?.name ?? null}
           onOpenSettings={() => setView("settings")}
-          onOpenManage={() => setView("manage")}
+          onOpenManage={() => {
+            // v0.22.15 (Shell 10) — mark that the user has entered the
+            // workspace so subsequent launches skip the splash.
+            markHasLanded();
+            setView("manage");
+          }}
           onOpenFeed={() => setView("feed")}
         />
       </motion.div>
