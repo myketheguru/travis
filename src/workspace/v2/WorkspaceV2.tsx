@@ -34,6 +34,7 @@ import { SettingsOverlay } from "./SettingsOverlay";
 import { OpeningGreeting } from "./OpeningGreeting";
 import { HistoryOverlay } from "./HistoryOverlay";
 import { ResumeChip } from "./ResumeChip";
+import { SpeechScene } from "./SpeechScene";
 import { useFocalContent } from "./useFocalContent";
 import AskTab from "../../manage/tabs/AskTab";
 
@@ -84,6 +85,10 @@ export function WorkspaceV2() {
 
       {/* HUD: right-edge action rail (v2 Shell 4) */}
       <ActionRail focal={focal} />
+
+      {/* Speech scene (v2 Shell 11) — spheroid overlays when user or
+          Travis is actively speaking. Fades back to canvas on silence. */}
+      <SpeechScene />
 
       {/* Settings overlay (v2 Shell 6) — mounts on top when open */}
       <SettingsOverlay />
