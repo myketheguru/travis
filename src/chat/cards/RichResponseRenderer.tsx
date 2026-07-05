@@ -16,6 +16,7 @@ import { MapCard } from "./MapCard";
 import { DocRefCard } from "./DocRefCard";
 import { ThreadCard } from "./ThreadCard";
 import { T2tConvoCard } from "./T2tConvoCard";
+import { ListCard } from "./ListCard";
 import { MarkdownBody } from "../MarkdownBody";
 import { useCardLifecycle } from "../../stores/cardLifecycle";
 
@@ -98,10 +99,18 @@ function PartRouter({
         />
       );
 
+    case "list":
+      return (
+        <ListCard
+          title={part.title}
+          rows={part.rows}
+          narration={part.narration}
+        />
+      );
+
     case "entity":
     case "calendar":
     case "action_proposal":
-    case "list":
     case "chart":
     case "media":
       // Not shipped yet — fall back to a small placeholder card so we

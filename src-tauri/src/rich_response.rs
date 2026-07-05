@@ -278,7 +278,11 @@ Available part kinds and when to use each:
 - **action_proposal** — you want to take a side effect (send email,
   invoice generation, book meeting) — emit this and let the user
   approve. Never take the action yourself.
-- **list** — the answer is multiple items with common shape.
+- **list** — the answer is multiple items with common shape. Use for
+  'show me my tasks / reminders / saved places / entities / open
+  cases' style questions — these replace what used to be dedicated
+  Manage tabs. Row actions carry a `verb` the LLM understands + a
+  human `label` (e.g., verb='complete', label='mark done').
 - **chart** — numeric answer that would read better as a sparkline
   or bar.
 - **media** — the answer includes an image, video, or audio clip.
