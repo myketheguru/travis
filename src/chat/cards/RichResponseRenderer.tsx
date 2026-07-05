@@ -15,6 +15,7 @@ import type { MessagePart, RichResponse } from "../../lib/richResponse";
 import { MapCard } from "./MapCard";
 import { DocRefCard } from "./DocRefCard";
 import { ThreadCard } from "./ThreadCard";
+import { T2tConvoCard } from "./T2tConvoCard";
 import { MarkdownBody } from "../MarkdownBody";
 import { useCardLifecycle } from "../../stores/cardLifecycle";
 
@@ -81,9 +82,22 @@ function PartRouter({
         />
       );
 
+    case "t2t_convo":
+      return (
+        <T2tConvoCard
+          queryId={part.query_id}
+          fromDisplay={part.from_display}
+          toDisplay={part.to_display}
+          question={part.question}
+          draftedResponse={part.drafted_response}
+          finalResponse={part.final_response}
+          state={part.state}
+          narration={part.narration}
+        />
+      );
+
     case "entity":
     case "calendar":
-    case "t2t_convo":
     case "action_proposal":
     case "list":
     case "chart":

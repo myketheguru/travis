@@ -32,6 +32,7 @@ pub mod remember_constraint;
 pub mod run_python;
 pub mod search_conversations;
 pub mod search_memory;
+pub mod t2t_tools;
 pub mod update_document;
 pub mod web_fetch;
 
@@ -272,6 +273,8 @@ pub fn read_only_registry(packs: &[&dyn crate::packs::PackHandle]) -> ToolRegist
     reg.register(Box::new(pack_templates::SavePackTemplateTool));
     reg.register(Box::new(pack_templates::FindPackTemplateTool));
     reg.register(Box::new(pack_templates::GetPackTemplateTool));
+    reg.register(Box::new(t2t_tools::T2tListContactsTool));
+    reg.register(Box::new(t2t_tools::T2tAskTool));
     for pack in packs {
         pack.register_tools(&mut reg);
     }

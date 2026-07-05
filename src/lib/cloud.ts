@@ -402,3 +402,61 @@ export function t2tInbox(): Promise<T2tQuery[]> {
 export function t2tOutbox(): Promise<T2tQuery[]> {
   return invoke<T2tQuery[]>("t2t_outbox");
 }
+
+export interface T2tRelationship {
+  id: string;
+  from_user_id: string;
+  to_user_id: string;
+  status: "pending" | "active" | "revoked";
+  invited_at?: string | null;
+  accepted_at?: string | null;
+  revoked_at?: string | null;
+  reason?: string | null;
+  other_email?: string | null;
+  other_name?: string | null;
+}
+
+export function t2tListRelationships(): Promise<T2tRelationship[]> {
+  return invoke<T2tRelationship[]>("t2t_list_relationships");
+}
+
+export function t2tInvite(email: string, reason?: string): Promise<string> {
+  return invoke<string>("t2t_invite", { email, reason: reason ?? null });
+}
+
+export function t2tAccept(id: string): Promise<void> {
+  return invoke<void>("t2t_accept", { id });
+}
+
+export function t2tRevoke(id: string, reason?: string): Promise<void> {
+  return invoke<void>("t2t_revoke", { id, reason: reason ?? null });
+}
+
+export function t2tSendQuery(
+  toUserId: string,
+  question: string,
+  fromConversationId?: string,
+  expiresAfterDays?: number,
+): Promise<string> {
+  return invoke<string>("t2t_send_query", {
+    toUserId,
+    question,
+    fromConversationId: fromConversationId ?? null,
+    expiresAfterDays: expiresAfterDays ?? null,
+  });
+}
+
+export function t2tDraftReply(id: string, draftedResponse: string): Promise<void> {
+  return invoke<void>("t2t_draft_reply", { id, draftedResponse });
+}
+
+export function t2tApproveReply(id: string, finalResponse?: string): Promise<void> {
+  return invoke<void>("t2t_approve_reply", {
+    id,
+    finalResponse: finalResponse ?? null,
+  });
+}
+
+export function t2tDeclineReply(id: string, reason?: string): Promise<void> {
+  return invoke<void>("t2t_decline_reply", { id, reason: reason ?? null });
+}
