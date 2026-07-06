@@ -48,3 +48,7 @@ src-tauri/.env
 
 # Bundled CPython runtime (v0.18.0+) — fetched at build time
 src-tauri/resources/python/
+
+# v0.26.4 — whisper model is fetched at build via scripts/fetch-whisper.mjs.
+# ~148 MB; well over GitHub's 100 MB file limit. Do not commit.
+src-tauri/resources/whisper/*.bin

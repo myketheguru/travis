@@ -262,17 +262,43 @@ fn explain_error(status: u16, bytes: &[u8]) -> String {
                 format!("Daily {lane} lane budget is out. Switching lane or coming back tomorrow.")
             }
             _ => {
-                // v0.26.2 — 'upstream LLM error' means the cloud got a
-                // non-2xx from Anthropic. Try to surface the actual
-                // Anthropic status + a slice of its body so the user (and
-                // logs) see the real cause instead of the wrapper string.
+                // v0.26.4 — 'upstream LLM error' means the cloud got a
+                // non-2xx from an upstream. Could be Anthropic directly
+                // OR Cloudflare AI Gateway (which sits in front). Parse
+                // the body and label the source distinctly.
                 if b.error.as_deref() == Some("upstream LLM error") {
                     let upstream_status = b.status.unwrap_or(status);
                     let raw = b.body.as_deref().unwrap_or("");
-                    // If the Anthropic body is JSON like {"type":"error",
-                    // "error":{"type":"...","message":"..."}}, drill in.
-                    let detail = serde_json::from_str::<serde_json::Value>(raw)
-                        .ok()
+                    let parsed = serde_json::from_str::<serde_json::Value>(raw).ok();
+
+                    // AI Gateway error shape: { name: "AiGatewayError",
+                    //   error: [{code, message}], internalCode, ... }
+                    let is_ai_gateway = parsed
+                        .as_ref()
+                        .and_then(|v| v.get("name").and_then(|n| n.as_str()))
+                        == Some("AiGatewayError");
+                    if is_ai_gateway {
+                        let internal = parsed
+                            .as_ref()
+                            .and_then(|v| v.get("internalCode"))
+                            .and_then(|c| c.as_i64());
+                        let msg = parsed
+                            .as_ref()
+                            .and_then(|v| v.get("message"))
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("");
+                        return match internal {
+                            Some(code) => format!(
+                                "AI Gateway {upstream_status} (code {code}): {msg}"
+                            ),
+                            None => format!("AI Gateway {upstream_status}: {msg}"),
+                        };
+                    }
+
+                    // Anthropic error shape: { type:"error",
+                    //   error:{ type:"...", message:"..." } }
+                    let detail = parsed
+                        .as_ref()
                         .and_then(|v| {
                             let msg = v
                                 .get("error")
