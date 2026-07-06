@@ -87,6 +87,27 @@ export default function AskTab() {
       setTimeout(() => inputRef.current?.focus(), 0);
     }
   }, [pendingComposerText, setPendingComposerText]);
+
+  // v0.27 (v2 Shell 14) — bridge from the new v2 Composer. When the
+  // canvas-level composer's Enter fires, the text is written to the
+  // store as pendingComposerSubmit. We reflect it into q + fire
+  // submit() the same way the ambient wake-word handler does. AskTab
+  // stays invisibly mounted so the old submit pipeline keeps working.
+  const pendingComposerSubmit = useAppStore((s) => s.pendingComposerSubmit);
+  const setPendingComposerSubmit = useAppStore(
+    (s) => s.setPendingComposerSubmit,
+  );
+  useEffect(() => {
+    if (!pendingComposerSubmit || busy) return;
+    const text = pendingComposerSubmit;
+    setPendingComposerSubmit(null);
+    flushSync(() => setQ(text));
+    // Same tick pattern as the ambient wake-word handler — let React
+    // commit the state update before submit reads its captured q.
+    window.setTimeout(() => {
+      submitRef.current?.();
+    }, 0);
+  }, [pendingComposerSubmit, busy, setPendingComposerSubmit]);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   // v0.19.6 — bridge from DocumentsTab. The "attach to chat" button
   // in the library dispatches a window event; we listen here, look

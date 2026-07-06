@@ -1,59 +1,56 @@
 /**
  * WorkspaceV2 — canvas-first workspace with HUD overlays.
  *
- * The v2 redesign. Full-bleed canvas backdrop with ambient depth,
- * cards positioned by a focal-item layout engine, HUD elements at
- * fixed edge positions:
- *   TL: orb (activity states)
- *   TR: attention compass
- *   L:  active-thread rail
- *   R:  contextual action rail
- *   B:  command pill (bottom center)
+ * v0.27 (v2 Shells 13-17) — the canvas is context-aware. It becomes
+ * whatever Travis is doing right now:
+ *   chat  → focus-shifting message stream (default with any convo)
+ *   voice → spheroid + Listening/Speaking caption
+ *   map   → full-bleed animated route + info overlay
+ *   idle  → splash-style greeting (cold boot / 10min inactivity)
+ * See canvas/useCanvasMode.ts for the derivation logic.
  *
- * Video-game HUD reference: minimal chrome, focal point centered,
- * peripheral info that fades in when relevant. See INTERFACE.md v2
- * for the design principles.
+ * Composer is always visible at the bottom with a bordered emphasis so
+ * the user always knows where to type. AskTab remains mounted invisibly
+ * to reuse its submit pipeline; the Composer bridges via
+ * appStore.pendingComposerSubmit.
  *
- * v2 Shell 1: this file scaffolds the surface + wires the settings
- * toggle. Subsequent shells (330-335) fill in each HUD element and
- * the canvas layout engine. Until then, this renders a placeholder
- * that clearly says 'v2 in progress' so users who opt in see what's
- * coming and can toggle back to classic.
+ * HUD overlays:
+ *   TL: orb (activity)
+ *   TR: attention compass (compact chip)
+ *   L:  thread rail
+ *   R:  action rail
+ *   BR: quick-access dock (settings, history, docs)
  */
 import { useEffect } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import { useAppStore } from "../../stores/app";
-import { AttentionStrip } from "../AttentionStrip";
-import { SuggestionRail } from "../SuggestionRail";
+import { AttentionCompass } from "./AttentionCompass";
 import { CanvasBackdrop } from "./CanvasBackdrop";
-import { FocalStage } from "./FocalStage";
-import { OrbitalStack } from "./OrbitalStack";
 import { ThreadRail } from "./ThreadRail";
 import { ActionRail } from "./ActionRail";
 import { SettingsOverlay } from "./SettingsOverlay";
-import { OpeningGreeting } from "./OpeningGreeting";
 import { HistoryOverlay } from "./HistoryOverlay";
 import { ResumeChip } from "./ResumeChip";
-import { SpeechScene } from "./SpeechScene";
 import { QuickAccessDock } from "./QuickAccessDock";
 import { DocumentsOverlay } from "./DocumentsOverlay";
+import { CanvasStage } from "./canvas/CanvasStage";
+import { useCanvasMode } from "./canvas/useCanvasMode";
+import { Composer } from "./Composer";
 import { useFocalContent } from "./useFocalContent";
 import AskTab from "../../manage/tabs/AskTab";
 
 export function WorkspaceV2() {
-  const setPendingComposerText = useAppStore((s) => s.setPendingComposerText);
-  const activity = useAppStore((s) => s.activity);
-  const isFirstMoment = useAppStore((s) => s.isFirstMoment);
   const noteUserActivity = useAppStore((s) => s.noteUserActivity);
   const setHistoryOverlayOpen = useAppStore((s) => s.setHistoryOverlayOpen);
   const setDocumentsOverlayOpen = useAppStore((s) => s.setDocumentsOverlayOpen);
-  const { focal, orbits } = useFocalContent();
-
   const setSettingsOverlayOpen = useAppStore((s) => s.setSettingsOverlayOpen);
+  const canvasMode = useAppStore((s) => s.canvasMode);
+  const { focal } = useFocalContent();
 
-  // v2 Shell 6/10 — global shortcuts. ⌘, opens Settings overlay,
-  // ⌘K opens History overlay. Any keystroke that's not a modifier
-  // combo counts as user activity → fades the opening greeting.
+  // Derive canvasMode from activity + focal + inactivity.
+  useCanvasMode();
+
+  // Global shortcuts.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === ",") {
@@ -71,133 +68,98 @@ export function WorkspaceV2() {
         setDocumentsOverlayOpen(true);
         return;
       }
-      // Bare printable keys count as the user starting to type.
       if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key.length === 1) {
         noteUserActivity();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [setSettingsOverlayOpen, setHistoryOverlayOpen, noteUserActivity]);
+  }, [
+    setSettingsOverlayOpen,
+    setHistoryOverlayOpen,
+    setDocumentsOverlayOpen,
+    noteUserActivity,
+  ]);
+
+  // In map / voice modes, softly dim the rails so the canvas can shine.
+  const railOpacity = canvasMode === "map" || canvasMode === "voice" ? 0.35 : 1;
 
   return (
-    <div className="relative flex flex-col h-full min-h-0 overflow-hidden">
-      {/* Canvas backdrop with ambient depth (v2 Shell 2) */}
+    <div
+      className="relative h-full min-h-0 overflow-hidden"
+      onMouseDown={noteUserActivity}
+    >
+      {/* Base canvas backdrop — ambient depth behind everything */}
       <CanvasBackdrop />
 
-      {/* HUD: top-left orb (v2 Shell 4) */}
+      {/* The context-aware canvas — chat, voice, map, or idle */}
+      <div className="absolute inset-0 z-10">
+        <CanvasStage />
+      </div>
+
+      {/* HUD: orb TL */}
       <OrbHud />
 
-      {/* HUD: left-edge thread rail (v2 Shell 4) */}
-      <ThreadRail />
+      {/* HUD: attention compass TR — compact chip (v0.27 shrink) */}
+      <motion.div
+        animate={{ opacity: railOpacity }}
+        transition={{ duration: 0.32 }}
+        className="absolute top-3 right-3 z-20 pointer-events-auto"
+      >
+        <AttentionCompass />
+      </motion.div>
 
-      {/* HUD: right-edge action rail (v2 Shell 4) */}
-      <ActionRail focal={focal} />
+      {/* HUD: thread rail L */}
+      <motion.div
+        animate={{ opacity: railOpacity }}
+        transition={{ duration: 0.32 }}
+      >
+        <ThreadRail />
+      </motion.div>
 
-      {/* Speech scene (v2 Shell 11) — spheroid overlays when user or
-          Travis is actively speaking. Fades back to canvas on silence. */}
-      <SpeechScene />
+      {/* HUD: action rail R — hidden in voice / idle / map modes */}
+      {canvasMode === "chat" && <ActionRail focal={focal} />}
 
-      {/* Quick-access dock (v2 Shell 12b) — bottom-right, visible entries
-          to Settings / History / Documents / Classic-switch. */}
+      {/* Bottom-right quick-access dock */}
       <QuickAccessDock />
 
-      {/* Overlays — mount on top when opened via the dock / shortcuts */}
+      {/* Resume chip lands just above the composer */}
+      <div className="absolute bottom-[86px] left-0 right-0 z-30 pointer-events-none">
+        <ResumeChip />
+      </div>
+
+      {/* Always-visible composer — the anchor for every mode */}
+      <Composer />
+
+      {/* AskTab stays mounted for its submit pipeline. Hidden off-canvas
+          so it stays functional but never renders visually. When
+          Composer sets pendingComposerSubmit, AskTab picks it up and
+          fires its real submit. */}
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          left: -99999,
+          top: -99999,
+          width: 800,
+          height: 600,
+          overflow: "hidden",
+          opacity: 0,
+          pointerEvents: "none",
+        }}
+      >
+        <AskTab />
+      </div>
+
+      {/* Overlays */}
       <SettingsOverlay />
       <HistoryOverlay />
       <DocumentsOverlay />
-
-      {/* HUD: top-right attention compass — for now, reuse the strip */}
-      <div
-        className="absolute top-3 right-3 z-20 pointer-events-auto"
-        style={{ maxWidth: "60%" }}
-      >
-        <div className="rounded-full border border-white/10 bg-black/20 backdrop-blur">
-          <AttentionStrip />
-        </div>
-      </div>
-
-      {/* Primary content region. In first-moment: the opening
-          greeting is centered on the canvas + the composer sits just
-          below, ready. Once user types, greeting fades → focal +
-          orbits take over. */}
-      <div className="relative z-10 flex-1 min-h-0 flex flex-col">
-        <SuggestionRail
-          onSuggestionClick={(s) => {
-            setPendingComposerText(s.prompt);
-            noteUserActivity();
-          }}
-        />
-        <div className="flex-1 min-h-0 flex flex-col md:flex-row gap-4 px-6 py-4 overflow-auto">
-          <div className="flex-1 min-w-0 flex items-center justify-center">
-            <AnimatePresence mode="wait">
-              {isFirstMoment ? (
-                <OpeningGreeting key="opening" />
-              ) : (
-                <motion.div
-                  key="focal"
-                  className="w-full flex items-start justify-center"
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
-                >
-                  <FocalStage
-                    message={focal}
-                    pending={activity === "thinking"}
-                  />
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-          {!isFirstMoment && <OrbitalStack orbits={orbits} />}
-        </div>
-
-        {/* Resume chip lands just above the composer band */}
-        <ResumeChip />
-
-        {/* Composer band — AskTab handles input; we hide its scroll
-            using CSS since focal + orbits replace the visual reading
-            experience. Wrapped in an activity-aware container so any
-            interaction inside AskTab counts as user activity. */}
-        <div
-          className="shrink-0 border-t"
-          style={{ borderColor: "rgba(255,255,255,0.06)" }}
-          onMouseDown={noteUserActivity}
-          onKeyDown={noteUserActivity}
-        >
-          <div className="max-h-[320px] overflow-hidden">
-            <AskTab />
-          </div>
-        </div>
-      </div>
-
-      {/* v2 preview badge — visible until Shell 3-6 land */}
-      <AnimatePresence>
-        <motion.div
-          key="v2-badge"
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1], delay: 0.2 }}
-          className="absolute bottom-3 left-3 z-20"
-        >
-          <div
-            className="text-[10px] font-mono uppercase tracking-[0.24em] px-2.5 py-1 rounded-full"
-            style={{
-              background: "rgba(124, 92, 255, 0.10)",
-              color: "rgb(189, 158, 255)",
-              border: "1px solid rgba(189, 158, 255, 0.35)",
-            }}
-            title="Canvas + HUD lands over the next few sprints. Toggle 'Interface' in Settings to switch back."
-          >
-            v2 preview
-          </div>
-        </motion.div>
-      </AnimatePresence>
     </div>
   );
 }
 
-/* ─── Orb stub (v2 Shell 4) ─────────────────────────────────────── */
+/* ─── Orb (TL) ───────────────────────────────────────────────────── */
 
 function OrbHud() {
   const activity = useAppStore((s) => s.activity);
@@ -209,7 +171,8 @@ function OrbHud() {
         whileHover={{ scale: 1.12 }}
         whileTap={{ scale: 0.92 }}
         animate={{
-          scale: activity === "thinking" || activity === "listening" ? [1, 1.08, 1] : 1,
+          scale:
+            activity === "thinking" || activity === "listening" ? [1, 1.08, 1] : 1,
         }}
         transition={{
           duration: 1.6,

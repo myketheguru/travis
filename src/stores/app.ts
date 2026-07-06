@@ -63,6 +63,23 @@ type AppState = {
   /// by voice.speak during TTS playback (word-boundary envelope).
   /// Decays to 0 when nothing is writing.
   speechAmplitude: number;
+  /// v0.27 (v2 Shell 13) — canvas mode selector. Drives which surface
+  /// takes over the immersive canvas:
+  ///   chat  — focus-shifting message stream (default when there's
+  ///           any conversation)
+  ///   voice — spheroid center + Listening/Speaking caption
+  ///           (auto when activity is listening/speaking)
+  ///   map   — full-bleed animated map (auto when the latest response
+  ///           is a map part)
+  ///   idle  — splash-style greeting (cold boot / 10min inactivity)
+  /// The value is derived reactively in useCanvasMode(); this store
+  /// field is the last computed result so components can subscribe.
+  canvasMode: "idle" | "chat" | "voice" | "map";
+  /// v0.27 (v2 Shell 14) — composer submit bridge. When set, the
+  /// hidden AskTab picks it up, drops the text into its textarea, and
+  /// fires submit(). Difference vs pendingComposerText: that just fills
+  /// the input for the user to review; this triggers immediate send.
+  pendingComposerSubmit: string | null;
   setActivity: (a: Activity) => void;
   setStatus: (s: AppStatus) => void;
   setProfile: (p: UserProfile | null) => void;
@@ -78,6 +95,8 @@ type AppState = {
   setHistoryOverlayOpen: (open: boolean) => void;
   setDocumentsOverlayOpen: (open: boolean) => void;
   setSpeechAmplitude: (a: number) => void;
+  setCanvasMode: (m: "idle" | "chat" | "voice" | "map") => void;
+  setPendingComposerSubmit: (t: string | null) => void;
   /// Called on any real user activity — first keystroke, pill click,
   /// mic press, etc. Fades the opening greeting AND writes now to
   /// localStorage as lastActivityAt so the 24h idle rule can re-arm.
@@ -269,6 +288,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   setDocumentsOverlayOpen: (open) => set({ documentsOverlayOpen: open }),
   speechAmplitude: 0,
   setSpeechAmplitude: (a) => set({ speechAmplitude: Math.max(0, Math.min(1, a)) }),
+  canvasMode: "idle",
+  setCanvasMode: (m) => set({ canvasMode: m }),
+  pendingComposerSubmit: null,
+  setPendingComposerSubmit: (t) => set({ pendingComposerSubmit: t }),
   isFirstMoment: computeInitialFirstMoment(),
   noteUserActivity: () => {
     stampActivityNow();
