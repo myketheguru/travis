@@ -53,11 +53,11 @@ export function useCanvasMode() {
       return;
     }
 
-    // Map — latest assistant message has a map part.
+    // Map — latest assistant message has a map part in any position.
     if (focal) {
       const rich = parseRichResponse(focal.content);
-      const firstKind = rich?.parts[0]?.kind;
-      if (firstKind === "map") {
+      const hasMap = rich?.parts.some((p) => p.kind === "map") ?? false;
+      if (hasMap) {
         if (canvasMode !== "map") setCanvasMode("map");
         return;
       }

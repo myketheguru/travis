@@ -21,9 +21,14 @@ interface FocalContent {
   orbits: ConversationMessage[];
   shelf: ConversationMessage[];
   totalMessages: number;
+  /** v0.27.2 — full chronological message stream (user + assistant),
+   *  for ChatCanvas which renders BOTH sides of the exchange. The
+   *  focal/orbits/shelf split above is preserved for legacy consumers
+   *  that only care about assistant responses. */
+  allMessages: ConversationMessage[];
 }
 
-const POLL_MS = 3000;
+const POLL_MS = 1200;
 const ORBIT_COUNT = 4;
 
 export function useFocalContent(): FocalContent {
@@ -67,5 +72,6 @@ export function useFocalContent(): FocalContent {
     orbits,
     shelf,
     totalMessages: assistantMessages.length,
+    allMessages: messages,
   };
 }

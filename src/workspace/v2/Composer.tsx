@@ -1,20 +1,14 @@
 /**
- * Composer — v2 Shell 14.
+ * Composer — v0.27.2 — voice + text.
  *
  * Always-visible bottom-pinned input. Distinct border + soft glow so
- * the user always knows where to type. Renders across the immersive
- * canvas at all times regardless of canvas mode. Autofocuses on mount
- * and re-focuses on mode changes.
- *
- * Submit path: writes text to the store as `pendingComposerSubmit`.
- * The hidden AskTab picks it up and fires its real submit function —
- * that path was too complex to reimplement in one pass, so we bridge.
- * When AskTab's classic composer eventually gets extracted into a
- * hook, this component can call it directly.
+ * the user always knows where to type. Enter submits. Voice button on
+ * the left drops a transcript straight in and submits.
  */
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { useAppStore } from "../../stores/app";
+import { VoiceInputButton } from "../../chat/VoiceInputButton";
 
 export function Composer() {
   const [text, setText] = useState("");
@@ -29,12 +23,10 @@ export function Composer() {
   );
   const noteUserActivity = useAppStore((s) => s.noteUserActivity);
 
-  // Autofocus on mount + when canvas mode changes.
   useEffect(() => {
     inputRef.current?.focus();
   }, [canvasMode]);
 
-  // Auto-grow up to maxRows.
   useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
@@ -42,8 +34,8 @@ export function Composer() {
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   }, [text]);
 
-  function handleSubmit() {
-    const trimmed = text.trim();
+  function handleSubmit(overrideText?: string) {
+    const trimmed = (overrideText ?? text).trim();
     if (!trimmed) return;
     setPendingComposerSubmit(trimmed);
     setText("");
@@ -74,13 +66,19 @@ export function Composer() {
               : "rgba(255, 255, 255, 0.16)",
           }}
           transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
-          className="rounded-2xl px-4 py-3 flex items-end gap-2"
+          className="rounded-2xl px-3 py-2.5 flex items-end gap-2"
           style={{
             background: "rgba(12, 12, 16, 0.85)",
             border: "1px solid rgba(255, 255, 255, 0.16)",
             backdropFilter: "blur(14px)",
           }}
         >
+          <div className="shrink-0 pb-0.5">
+            <VoiceInputButton
+              disabled={isPending}
+              onTranscript={(t) => handleSubmit(t)}
+            />
+          </div>
           <textarea
             ref={inputRef}
             value={text}
@@ -91,7 +89,7 @@ export function Composer() {
             placeholder={placeholder}
             disabled={isPending}
             rows={1}
-            className="flex-1 resize-none bg-transparent text-[14.5px] focus:outline-none placeholder:text-white/35 leading-relaxed disabled:opacity-50"
+            className="flex-1 resize-none bg-transparent text-[14.5px] focus:outline-none placeholder:text-white/35 leading-relaxed disabled:opacity-50 px-1"
             style={{
               color: "rgba(236, 236, 241, 0.98)",
               minHeight: 24,
@@ -101,7 +99,7 @@ export function Composer() {
           <SubmitButton
             enabled={text.trim().length > 0 && !isPending}
             pending={isPending}
-            onClick={handleSubmit}
+            onClick={() => handleSubmit()}
           />
         </motion.div>
         {focusedThread && (

@@ -12,11 +12,17 @@ import { motion } from "framer-motion";
 import { useFocalContent } from "../useFocalContent";
 import { parseRichResponse, type MapPart } from "../../../lib/richResponse";
 
+import { ChatCanvas } from "./ChatCanvas";
+
 export function MapCanvas() {
   const { focal } = useFocalContent();
   const mapPart = extractMapPart(focal?.content);
 
-  if (!mapPart) return null;
+  // Defensive fallback — if useCanvasMode flipped us here but no map
+  // part is actually available (e.g. because the response was plain
+  // text about a place), gracefully drop back to ChatCanvas so the
+  // user never sees a blank screen.
+  if (!mapPart) return <ChatCanvas />;
 
   const { route } = mapPart;
   const distanceKm = (route.distance_meters / 1000).toFixed(1);
@@ -169,6 +175,5 @@ function extractMapPart(content: string | undefined): MapPart | null {
   if (!content) return null;
   const rich = parseRichResponse(content);
   if (!rich) return null;
-  const first = rich.parts[0];
-  return first?.kind === "map" ? first : null;
+  return (rich.parts.find((p) => p.kind === "map") as MapPart | undefined) ?? null;
 }

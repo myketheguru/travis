@@ -1,17 +1,16 @@
 /**
- * ChatCanvas — v2 Shell 14.
+ * ChatCanvas — v0.27.2 rewrite.
  *
- * The conversation IS the canvas. Vertical column of assistant + user
- * messages. Latest is center-stage, largest, 100% opacity. Older ones
- * scale + fade as they age. Scrolling shifts focus — the message
- * closest to the vertical center becomes the "focused" one at full
- * opacity, adjacent messages soften.
+ * Renders BOTH user and assistant messages chronologically. Latest
+ * message is centered + full opacity; older messages scale + fade as
+ * they age. Scrolling shifts focus naturally.
  *
- * This replaces FocalStage + OrbitalStack + AskTab-chat-below in the
- * v2 canvas. AskTab stays mounted invisibly to keep the submit
- * pipeline working; ChatCanvas reads its messages via useFocalContent.
+ * Optimistic composer: when pendingComposerSubmit is set, we show the
+ * user's message immediately (before the DB round-trip) so the canvas
+ * feels alive. The optimistic bubble is replaced by the real DB row
+ * on the next poll.
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { motion } from "framer-motion";
 import { useAppStore } from "../../../stores/app";
 import { useFocalContent } from "../useFocalContent";
@@ -20,26 +19,54 @@ import { RichResponseRenderer } from "../../../chat/cards/RichResponseRenderer";
 import { MarkdownBody } from "../../../chat/MarkdownBody";
 import type { ConversationMessage } from "../../../lib/conversation";
 
+interface RenderMessage {
+  id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  pending?: boolean;
+  optimistic?: boolean;
+}
+
 export function ChatCanvas() {
   const activity = useAppStore((s) => s.activity);
-  const { focal, orbits } = useFocalContent();
+  const pendingComposerSubmit = useAppStore((s) => s.pendingComposerSubmit);
+  const { allMessages } = useFocalContent();
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const lastPendingRef = useRef<string | null>(null);
 
-  // Autoscroll the focal message into view whenever it changes.
+  const optimistic = useOptimisticSubmit(
+    pendingComposerSubmit,
+    allMessages,
+    lastPendingRef,
+  );
+
+  const rendered: RenderMessage[] = useMemo(() => {
+    const base: RenderMessage[] = allMessages
+      .filter((m) => m.role === "user" || m.role === "assistant" || m.role === "system")
+      .map((m) => ({
+        id: String(m.id),
+        role: m.role as RenderMessage["role"],
+        content: m.content,
+      }));
+    if (optimistic) base.push(optimistic);
+    if (activity === "thinking") {
+      base.push({
+        id: "__pending_assistant__",
+        role: "assistant",
+        content: "",
+        pending: true,
+      });
+    }
+    return base;
+  }, [allMessages, optimistic, activity]);
+
   useEffect(() => {
-    if (!focal || !scrollRef.current) return;
-    const el = scrollRef.current.querySelector<HTMLElement>(
-      `[data-msg-id="${focal.id}"]`,
-    );
-    el?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [focal?.id]);
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }, [rendered.length, activity]);
 
-  // Combined ordered list — user might see: [oldest orbit, ..., newest orbit, focal]
-  // orbits comes back newest-first (see useFocalContent); reverse for chronological.
-  const chronological = [...orbits].reverse();
-
-  // Empty state
-  if (!focal && chronological.length === 0) {
+  if (rendered.length === 0) {
     return <EmptyChatCanvas />;
   }
 
@@ -47,67 +74,83 @@ export function ChatCanvas() {
     <div
       ref={scrollRef}
       className="absolute inset-0 overflow-y-auto scroll-smooth"
-      style={{
-        // Reserve room at bottom for the pinned composer (140px).
-        paddingBottom: "160px",
-        paddingTop: "20vh",
-      }}
+      style={{ paddingBottom: "160px", paddingTop: "18vh" }}
     >
-      <div className="max-w-3xl mx-auto px-6 flex flex-col gap-8">
-        {chronological.map((m, i) => (
+      <div className="max-w-3xl mx-auto px-6 flex flex-col gap-6">
+        {rendered.map((m, i) => (
           <MessageBlock
             key={m.id}
             message={m}
-            focusLevel={levelFor(i, chronological.length)}
+            focusLevel={levelFor(i, rendered.length)}
           />
         ))}
-        {focal && (
-          <MessageBlock
-            key={focal.id}
-            message={focal}
-            focusLevel={1}
-            pending={activity === "thinking"}
-          />
-        )}
-        {/* Trailing spacer so the focal can center visually. */}
-        <div style={{ height: "30vh" }} />
+        <div style={{ height: "18vh" }} />
       </div>
     </div>
   );
 }
 
 /**
- * levelFor — map the message's position in the orbits stack to an
- * opacity + scale factor. Newest orbit gets 0.7; oldest ~0.2.
+ * Synthesize a user bubble the instant Composer fires
+ * pendingComposerSubmit. Cleared once the matching user message
+ * appears in the polled thread.
  */
+function useOptimisticSubmit(
+  pending: string | null,
+  allMessages: ConversationMessage[],
+  lastRef: React.MutableRefObject<string | null>,
+): RenderMessage | null {
+  if (pending) lastRef.current = pending;
+  const seen = lastRef.current;
+  if (!seen) return null;
+  const alreadyThere = allMessages
+    .slice(-6)
+    .some((m) => m.role === "user" && m.content.trim() === seen.trim());
+  if (alreadyThere) {
+    lastRef.current = null;
+    return null;
+  }
+  return {
+    id: "__optimistic_user__",
+    role: "user",
+    content: seen,
+    optimistic: true,
+  };
+}
+
 function levelFor(index: number, total: number): number {
   if (total === 0) return 0.5;
-  // Newer messages (higher index) get more focus.
-  const normalized = (index + 1) / total; // 1/n … 1
-  return 0.2 + normalized * 0.5;
+  const dist = total - 1 - index;
+  if (dist === 0) return 1;
+  if (dist === 1) return 0.75;
+  if (dist === 2) return 0.55;
+  if (dist === 3) return 0.42;
+  return 0.32;
 }
 
 function MessageBlock({
   message,
   focusLevel,
-  pending,
 }: {
-  message: ConversationMessage;
+  message: RenderMessage;
   focusLevel: number;
-  pending?: boolean;
 }) {
   const isUser = message.role === "user";
-  const rich = !isUser ? parseRichResponse(message.content) : null;
+  const rich = !isUser && message.content
+    ? parseRichResponse(message.content)
+    : null;
 
   return (
     <motion.div
       data-msg-id={message.id}
       layout
+      initial={{ opacity: 0, y: 12 }}
       animate={{
         opacity: focusLevel,
-        scale: 0.9 + focusLevel * 0.1,
+        y: 0,
+        scale: 0.94 + focusLevel * 0.06,
       }}
-      transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+      transition={{ duration: 0.34, ease: [0.22, 1, 0.36, 1] }}
       className="w-full"
     >
       {isUser ? (
@@ -115,10 +158,12 @@ function MessageBlock({
           <div
             className="rounded-2xl px-4 py-2.5 max-w-[80%]"
             style={{
-              background: "rgba(124, 92, 255, 0.10)",
-              border: "1px solid rgba(124, 92, 255, 0.30)",
-              color: "rgba(236, 236, 241, 0.95)",
-              fontSize: 15 + focusLevel * 3, // 15px … 18px
+              background: "rgba(124, 92, 255, 0.14)",
+              border: message.optimistic
+                ? "1px dashed rgba(189, 158, 255, 0.45)"
+                : "1px solid rgba(124, 92, 255, 0.32)",
+              color: "rgba(236, 236, 241, 0.98)",
+              fontSize: 14 + focusLevel * 3,
               lineHeight: 1.5,
             }}
           >
@@ -132,21 +177,42 @@ function MessageBlock({
             style={{ color: `rgba(236, 236, 241, ${0.35 * focusLevel})` }}
           >
             Travis
-            {pending && <span className="ml-2 opacity-70">· thinking…</span>}
-          </div>
-          <div
-            style={{
-              fontSize: 15 + focusLevel * 3,
-              lineHeight: 1.55,
-              color: `rgba(236, 236, 241, ${0.75 + focusLevel * 0.2})`,
-            }}
-          >
-            {rich ? (
-              <RichResponseRenderer response={rich} />
-            ) : (
-              <MarkdownBody text={message.content} />
+            {message.pending && (
+              <span className="ml-2 opacity-70">· thinking…</span>
             )}
           </div>
+          {message.pending ? (
+            <div className="flex gap-1.5 mt-1" aria-label="Travis is thinking">
+              {[0, 1, 2].map((i) => (
+                <motion.span
+                  key={i}
+                  className="w-1.5 h-1.5 rounded-full"
+                  style={{ background: "rgba(189, 158, 255, 0.7)" }}
+                  animate={{ opacity: [0.3, 1, 0.3] }}
+                  transition={{
+                    duration: 1.1,
+                    repeat: Infinity,
+                    delay: i * 0.15,
+                    ease: [0.42, 0, 0.58, 1],
+                  }}
+                />
+              ))}
+            </div>
+          ) : (
+            <div
+              style={{
+                fontSize: 14 + focusLevel * 3,
+                lineHeight: 1.55,
+                color: `rgba(236, 236, 241, ${0.75 + focusLevel * 0.2})`,
+              }}
+            >
+              {rich ? (
+                <RichResponseRenderer response={rich} />
+              ) : (
+                <MarkdownBody text={message.content} />
+              )}
+            </div>
+          )}
         </div>
       )}
     </motion.div>

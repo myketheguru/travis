@@ -27,7 +27,6 @@ import { useAppStore } from "../../stores/app";
 import { AttentionCompass } from "./AttentionCompass";
 import { CanvasBackdrop } from "./CanvasBackdrop";
 import { ThreadRail } from "./ThreadRail";
-import { ActionRail } from "./ActionRail";
 import { SettingsOverlay } from "./SettingsOverlay";
 import { HistoryOverlay } from "./HistoryOverlay";
 import { ResumeChip } from "./ResumeChip";
@@ -45,7 +44,7 @@ export function WorkspaceV2() {
   const setDocumentsOverlayOpen = useAppStore((s) => s.setDocumentsOverlayOpen);
   const setSettingsOverlayOpen = useAppStore((s) => s.setSettingsOverlayOpen);
   const canvasMode = useAppStore((s) => s.canvasMode);
-  const { focal } = useFocalContent();
+  useFocalContent();
 
   // Derive canvasMode from activity + focal + inactivity.
   useCanvasMode();
@@ -117,10 +116,7 @@ export function WorkspaceV2() {
         <ThreadRail />
       </motion.div>
 
-      {/* HUD: action rail R — hidden in voice / idle / map modes */}
-      {canvasMode === "chat" && <ActionRail focal={focal} />}
-
-      {/* Bottom-right quick-access dock */}
+      {/* Left-middle quick-access dock (v0.27.2) */}
       <QuickAccessDock />
 
       {/* Resume chip lands just above the composer */}
