@@ -2620,17 +2620,19 @@ pub async fn journal_ingest(
                     let err_str = e.to_string();
                     let kind = crate::health::classify_llm_error(&err_str);
                     state.health.report(&app, kind, format!("LLM call failed: {err_str}"));
-                    // v0.26.2 — if the LLM failure looks like an auth loss,
-                    // fire a Tauri event so the frontend can drop back into
-                    // the SignIn view instead of showing a dead-end error.
-                    // 'requires sign-in' is the message from the local JWT
-                    // check; 'unauthorized' / '401' comes back from cloud
-                    // when the JWT was rejected.
+                    // v0.26.3 — narrower auth-lost trigger. Only signal
+                    // when the error is unambiguously about the user's
+                    // cloud session — NOT when it's an upstream Anthropic
+                    // authentication error (which is a cloud-side config
+                    // issue, not the user's problem) and NOT on generic
+                    // 'unauthorized' strings that could come from other
+                    // sources.
                     let lower = err_str.to_lowercase();
-                    if lower.contains("requires sign-in")
-                        || lower.contains("unauthorized")
-                        || lower.contains("invalid x-api-key")
-                    {
+                    let looks_like_local_auth_loss =
+                        lower.contains("requires sign-in") || lower.contains("not signed in");
+                    let looks_like_cloud_401 =
+                        lower.contains("cloud 401") || lower.contains("authentication_error");
+                    if looks_like_local_auth_loss || looks_like_cloud_401 {
                         use tauri::Emitter;
                         let _ = app.emit("cloud://auth-lost", ());
                     }

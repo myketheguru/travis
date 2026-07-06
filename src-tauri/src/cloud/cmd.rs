@@ -27,6 +27,14 @@ pub struct CloudStatus {
 
 /// Check whether a session is active and the JWT is still accepted by
 /// the backend. Called at app launch + whenever we want to gate the UI.
+///
+/// v0.26.3 — DOES NOT clear the JWT on a single 401 anymore. That
+/// aggressive wipe was the root of the sign-in doom loop: any transient
+/// race between issuing a fresh token and its first /me call could kill
+/// the token from disk, and the next attempt would find nothing to
+/// send. We now report invalid_token: true and let the caller decide
+/// what to do — the frontend redirects to SignIn, and the actual clear
+/// only happens on explicit sign-out.
 #[tauri::command]
 pub async fn cloud_status(state: State<'_, AppState>) -> Result<CloudStatus, String> {
     let Some(client) = CloudClient::current(state.http.clone()) else {
@@ -37,14 +45,61 @@ pub async fn cloud_status(state: State<'_, AppState>) -> Result<CloudStatus, Str
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("unauthorized") {
-                // Stale JWT. Clear it so subsequent calls start clean.
-                let _ = clear_jwt();
+                tracing::warn!("cloud_status: /me returned 401. Reporting invalid_token but NOT clearing the JWT — a transient race here has caused sign-in doom loops before.");
                 Ok(CloudStatus { signed_in: false, user: None, invalid_token: true })
             } else {
                 Err(format!("cloud unreachable: {msg}"))
             }
         }
     }
+}
+
+/// v0.26.3 — Diagnostic. Reports what the auth state looks like on
+/// disk so the frontend can display it when sign-in loops. Never
+/// exposed as a normal UI concern; only used by an 'about auth'
+/// button in Settings.
+#[tauri::command]
+pub async fn cloud_debug_auth() -> Result<CloudAuthDebug, String> {
+    use crate::cloud::{app_data_dir, read_jwt};
+    let dir = app_data_dir();
+    let dir_str = dir
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "<uninitialized>".into());
+    let jwt_path = dir
+        .as_ref()
+        .map(|p| p.join("cloud_jwt").display().to_string())
+        .unwrap_or_else(|| "<uninitialized>".into());
+    let file_exists = dir
+        .as_ref()
+        .map(|p| p.join("cloud_jwt").exists())
+        .unwrap_or(false);
+    let file_size = dir
+        .as_ref()
+        .and_then(|p| std::fs::metadata(p.join("cloud_jwt")).ok())
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let has_readable_jwt = read_jwt().is_some();
+    let jwt_len = read_jwt().map(|s| s.len()).unwrap_or(0);
+    Ok(CloudAuthDebug {
+        app_data_dir: dir_str,
+        jwt_file_path: jwt_path,
+        jwt_file_exists: file_exists,
+        jwt_file_size: file_size,
+        has_readable_jwt,
+        jwt_length: jwt_len,
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudAuthDebug {
+    pub app_data_dir: String,
+    pub jwt_file_path: String,
+    pub jwt_file_exists: bool,
+    pub jwt_file_size: u64,
+    pub has_readable_jwt: bool,
+    pub jwt_length: usize,
 }
 
 // v3 Slice 4 (final) — cloud_sign_in_with_google removed from the IPC
