@@ -300,6 +300,53 @@ function AppInner() {
     };
   }, []);
 
+  // v0.26.2 — Auth loss detection.
+  //   1. Rust cloud paths (journal LLM error handler, etc.) emit
+  //      'cloud://auth-lost' whenever they see an auth-related error.
+  //      We flip the cloud gate back to signed_out immediately.
+  //   2. Every 5 min while signed in, poll cloudStatus() as a
+  //      background heartbeat. If the JWT was revoked server-side
+  //      without a local call to trigger it, this catches it within
+  //      ~5 min instead of letting the user hit a broken message.
+  useEffect(() => {
+    let unlistenAuth: (() => void) | null = null;
+    listen<null>("cloud://auth-lost", () => {
+      console.warn("[auth] cloud://auth-lost received — forcing sign-in");
+      setCloud({ kind: "signed_out" });
+    })
+      .then((fn) => {
+        unlistenAuth = fn;
+      })
+      .catch(() => {});
+    return () => {
+      if (unlistenAuth) unlistenAuth();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (cloud.kind !== "signed_in") return;
+    let cancelled = false;
+    const HEARTBEAT_MS = 5 * 60 * 1000;
+    async function tick() {
+      try {
+        const status = await cloudStatus();
+        if (cancelled) return;
+        if (!status.signedIn || status.invalidToken) {
+          console.warn("[auth] periodic /me poll failed — forcing sign-in");
+          setCloud({ kind: "signed_out" });
+        }
+      } catch {
+        // Cloud unreachable during heartbeat — leave the gate alone.
+        // Network blips shouldn't kick the user out.
+      }
+    }
+    const handle = setInterval(tick, HEARTBEAT_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(handle);
+    };
+  }, [cloud.kind]);
+
   // v0.22.2 — listen for the travis://update event the Rust deep-link
   // handler dispatches. Triggers an update check + install via the
   // existing tauri-plugin-updater wrappers in lib/updater.

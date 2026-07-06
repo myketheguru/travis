@@ -2617,12 +2617,27 @@ pub async fn journal_ingest(
             let turn_res = provider.chat_with_tools(current_messages.clone(), opts).await;
             match turn_res {
                 Err(e) => {
-                    let kind = crate::health::classify_llm_error(&e.to_string());
-                    state.health.report(&app, kind, format!("LLM call failed: {e}"));
+                    let err_str = e.to_string();
+                    let kind = crate::health::classify_llm_error(&err_str);
+                    state.health.report(&app, kind, format!("LLM call failed: {err_str}"));
+                    // v0.26.2 — if the LLM failure looks like an auth loss,
+                    // fire a Tauri event so the frontend can drop back into
+                    // the SignIn view instead of showing a dead-end error.
+                    // 'requires sign-in' is the message from the local JWT
+                    // check; 'unauthorized' / '401' comes back from cloud
+                    // when the JWT was rejected.
+                    let lower = err_str.to_lowercase();
+                    if lower.contains("requires sign-in")
+                        || lower.contains("unauthorized")
+                        || lower.contains("invalid x-api-key")
+                    {
+                        use tauri::Emitter;
+                        let _ = app.emit("cloud://auth-lost", ());
+                    }
                     break 'outer (
                         fallback_extraction(&raw),
                         false,
-                        Some(e.to_string()),
+                        Some(err_str),
                         last_dump,
                     );
                 }
