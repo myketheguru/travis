@@ -100,6 +100,15 @@ struct AnthropicErrorBody {
     fallbacks: Option<Vec<FallbackLane>>,
     #[serde(default, rename = "canEnableOverage")]
     can_enable_overage: Option<bool>,
+    /// v0.26.2 — when the cloud LLM route returns
+    /// `{error:"upstream LLM error", status, body}`, `status` is the
+    /// upstream Anthropic HTTP status and `body` is the raw text of
+    /// Anthropic's error response. Preserved here so explain_error
+    /// can surface it instead of the generic wrapper.
+    #[serde(default)]
+    status: Option<u16>,
+    #[serde(default)]
+    body: Option<String>,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -252,9 +261,45 @@ fn explain_error(status: u16, bytes: &[u8]) -> String {
                 let lane = b.lane.as_deref().unwrap_or("this");
                 format!("Daily {lane} lane budget is out. Switching lane or coming back tomorrow.")
             }
-            _ => b
-                .error
-                .unwrap_or_else(|| format!("travis cloud {status}")),
+            _ => {
+                // v0.26.2 — 'upstream LLM error' means the cloud got a
+                // non-2xx from Anthropic. Try to surface the actual
+                // Anthropic status + a slice of its body so the user (and
+                // logs) see the real cause instead of the wrapper string.
+                if b.error.as_deref() == Some("upstream LLM error") {
+                    let upstream_status = b.status.unwrap_or(status);
+                    let raw = b.body.as_deref().unwrap_or("");
+                    // If the Anthropic body is JSON like {"type":"error",
+                    // "error":{"type":"...","message":"..."}}, drill in.
+                    let detail = serde_json::from_str::<serde_json::Value>(raw)
+                        .ok()
+                        .and_then(|v| {
+                            let msg = v
+                                .get("error")
+                                .and_then(|e| e.get("message"))
+                                .and_then(|m| m.as_str())
+                                .map(String::from);
+                            let ty = v
+                                .get("error")
+                                .and_then(|e| e.get("type"))
+                                .and_then(|t| t.as_str())
+                                .map(String::from);
+                            match (ty, msg) {
+                                (Some(t), Some(m)) => Some(format!("{t}: {m}")),
+                                (Some(t), None) => Some(t),
+                                (None, Some(m)) => Some(m),
+                                _ => None,
+                            }
+                        })
+                        .unwrap_or_else(|| {
+                            let trimmed: String = raw.chars().take(240).collect();
+                            trimmed
+                        });
+                    return format!("Anthropic {upstream_status}: {detail}");
+                }
+                b.error
+                    .unwrap_or_else(|| format!("travis cloud {status}"))
+            }
         },
         None => format!(
             "travis cloud {status}: {}",
