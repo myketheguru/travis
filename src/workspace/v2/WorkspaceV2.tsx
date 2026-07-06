@@ -35,6 +35,8 @@ import { OpeningGreeting } from "./OpeningGreeting";
 import { HistoryOverlay } from "./HistoryOverlay";
 import { ResumeChip } from "./ResumeChip";
 import { SpeechScene } from "./SpeechScene";
+import { QuickAccessDock } from "./QuickAccessDock";
+import { DocumentsOverlay } from "./DocumentsOverlay";
 import { useFocalContent } from "./useFocalContent";
 import AskTab from "../../manage/tabs/AskTab";
 
@@ -44,6 +46,7 @@ export function WorkspaceV2() {
   const isFirstMoment = useAppStore((s) => s.isFirstMoment);
   const noteUserActivity = useAppStore((s) => s.noteUserActivity);
   const setHistoryOverlayOpen = useAppStore((s) => s.setHistoryOverlayOpen);
+  const setDocumentsOverlayOpen = useAppStore((s) => s.setDocumentsOverlayOpen);
   const { focal, orbits } = useFocalContent();
 
   const setSettingsOverlayOpen = useAppStore((s) => s.setSettingsOverlayOpen);
@@ -61,6 +64,11 @@ export function WorkspaceV2() {
       if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
         e.preventDefault();
         setHistoryOverlayOpen(true);
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && (e.key === "d" || e.key === "D")) {
+        e.preventDefault();
+        setDocumentsOverlayOpen(true);
         return;
       }
       // Bare printable keys count as the user starting to type.
@@ -90,11 +98,14 @@ export function WorkspaceV2() {
           Travis is actively speaking. Fades back to canvas on silence. */}
       <SpeechScene />
 
-      {/* Settings overlay (v2 Shell 6) — mounts on top when open */}
-      <SettingsOverlay />
+      {/* Quick-access dock (v2 Shell 12b) — bottom-right, visible entries
+          to Settings / History / Documents / Classic-switch. */}
+      <QuickAccessDock />
 
-      {/* History overlay (v2 Shell 10) — ⌘K opens */}
+      {/* Overlays — mount on top when opened via the dock / shortcuts */}
+      <SettingsOverlay />
       <HistoryOverlay />
+      <DocumentsOverlay />
 
       {/* HUD: top-right attention compass — for now, reuse the strip */}
       <div

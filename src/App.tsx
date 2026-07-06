@@ -262,6 +262,25 @@ function AppInner() {
     return () => window.removeEventListener("keydown", onKey);
   }, [pulse]);
 
+  // v0.26 (v2 Shell 11b) — wire voice.speak's amplitude callback to the
+  // app store so the SpeechScene spheroid can pulse with Travis's TTS
+  // envelope. Registration is one-time; the callback captures the
+  // latest setSpeechAmplitude via zustand's stable reference.
+  const setSpeechAmplitude = useAppStore((s) => s.setSpeechAmplitude);
+  useEffect(() => {
+    let cancelled = false;
+    void import("./lib/voice").then((mod) => {
+      if (cancelled) return;
+      mod.setSpeechAmplitudeSink(setSpeechAmplitude);
+    });
+    return () => {
+      cancelled = true;
+      void import("./lib/voice").then((mod) =>
+        mod.setSpeechAmplitudeSink(null),
+      );
+    };
+  }, [setSpeechAmplitude]);
+
   // v0.22.2 — listen for the travis://update event the Rust deep-link
   // handler dispatches. Triggers an update check + install via the
   // existing tauri-plugin-updater wrappers in lib/updater.

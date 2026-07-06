@@ -20,6 +20,7 @@ import { useAppStore } from "../../stores/app";
 
 export function SpeechScene() {
   const activity = useAppStore((s) => s.activity);
+  const amplitude = useAppStore((s) => s.speechAmplitude);
   const mode: SpeechMode | null =
     activity === "listening"
       ? "user"
@@ -29,14 +30,20 @@ export function SpeechScene() {
 
   return (
     <AnimatePresence>
-      {mode && <SpeechSceneImpl key={mode} mode={mode} />}
+      {mode && <SpeechSceneImpl key={mode} mode={mode} amplitude={amplitude} />}
     </AnimatePresence>
   );
 }
 
 type SpeechMode = "user" | "travis";
 
-function SpeechSceneImpl({ mode }: { mode: SpeechMode }) {
+function SpeechSceneImpl({
+  mode,
+  amplitude,
+}: {
+  mode: SpeechMode;
+  amplitude: number;
+}) {
   const palette = mode === "user" ? SILVER : BRONZE;
 
   return (
@@ -51,7 +58,7 @@ function SpeechSceneImpl({ mode }: { mode: SpeechMode }) {
           `radial-gradient(circle at 50% 55%, ${palette.wash}, transparent 65%)`,
       }}
     >
-      <Spheroid palette={palette} />
+      <Spheroid palette={palette} amplitude={amplitude} />
     </motion.div>
   );
 }
@@ -88,19 +95,34 @@ const BRONZE: Palette = {
   fold: "rgba(200, 140, 80, 0.28)",
 };
 
-function Spheroid({ palette }: { palette: Palette }) {
+function Spheroid({
+  palette,
+  amplitude,
+}: {
+  palette: Palette;
+  amplitude: number;
+}) {
+  // Map amplitude 0..1 -> scale bump 0..0.18 and glow multiplier 1..2.2.
+  // Base scale sits at 1 so silence -> resting spheroid.
+  const scaleBump = 1 + amplitude * 0.18;
+  const glowMultiplier = 1 + amplitude * 1.2;
   return (
     <motion.svg
       viewBox="-200 -200 400 400"
       width="min(56vmin, 520px)"
       height="min(56vmin, 520px)"
       style={{
-        filter: `drop-shadow(0 0 80px ${palette.glow}) drop-shadow(0 0 32px ${palette.glow})`,
+        filter: `drop-shadow(0 0 ${80 * glowMultiplier}px ${palette.glow}) drop-shadow(0 0 ${
+          32 * glowMultiplier
+        }px ${palette.glow})`,
       }}
       initial={{ scale: 0.92, opacity: 0 }}
-      animate={{ scale: 1, opacity: 1 }}
+      animate={{ scale: scaleBump, opacity: 1 }}
       exit={{ scale: 0.92, opacity: 0 }}
-      transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+      transition={{
+        scale: { duration: 0.12, ease: [0.22, 1, 0.36, 1] },
+        opacity: { duration: 0.5, ease: [0.22, 1, 0.36, 1] },
+      }}
       aria-hidden
     >
       <defs>

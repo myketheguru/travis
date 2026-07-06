@@ -11,6 +11,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { speechRuntimeEnsure, speechTranscribe } from "../lib/speechRuntime";
+import { useAppStore } from "../stores/app";
 
 type State =
   | { kind: "idle" }
@@ -35,6 +36,9 @@ export function VoiceInputButton({ onTranscript, disabled }: Props) {
   const samplesRef = useRef<Float32Array[]>([]);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  // v0.26 (v2 Shell 11b) — pipe live RMS amplitude into the store so
+  // the SpeechScene spheroid can pulse with what the mic hears.
+  const setSpeechAmplitude = useAppStore((s) => s.setSpeechAmplitude);
 
   const cleanup = () => {
     processorRef.current?.disconnect();
@@ -50,6 +54,8 @@ export function VoiceInputButton({ onTranscript, disabled }: Props) {
     samplesRef.current = [];
     processorRef.current = null;
     sourceRef.current = null;
+    // Zero the amplitude signal so the spheroid can fade out cleanly.
+    setSpeechAmplitude(0);
   };
 
   useEffect(() => cleanup, []);
@@ -83,6 +89,14 @@ export function VoiceInputButton({ onTranscript, disabled }: Props) {
         const input = e.inputBuffer.getChannelData(0);
         // Copy — otherwise the underlying buffer gets recycled.
         samplesRef.current.push(new Float32Array(input));
+        // Compute RMS of this ~85ms buffer (4096 samples @ 48kHz or
+        // similar) and pipe it to the store. Mapped to [0..1] with
+        // a soft compressor — RMS rarely exceeds 0.5 on speech.
+        let sumSq = 0;
+        for (let i = 0; i < input.length; i++) sumSq += input[i] * input[i];
+        const rms = Math.sqrt(sumSq / input.length);
+        const scaled = Math.min(1, rms * 5.5);
+        setSpeechAmplitude(scaled);
       };
       source.connect(processor);
       processor.connect(ctx.destination);

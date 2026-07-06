@@ -84,6 +84,14 @@ export async function defaultVoice(): Promise<SpeechSynthesisVoice | null> {
   return cleaned.find((v) => v.lang === "en-US") ?? cleaned[0] ?? english[0] ?? voices[0];
 }
 
+/** v0.26 (v2 Shell 11b) — external hook so voice.speak can drive the
+ *  speech-scene spheroid without importing the app store from a lib.
+ *  App.tsx registers this once at mount. */
+let onSpeechAmplitude: ((amp: number) => void) | null = null;
+export function setSpeechAmplitudeSink(fn: ((amp: number) => void) | null) {
+  onSpeechAmplitude = fn;
+}
+
 /** Speak `text` with the current preferences. Cancels any in-flight
  *  utterance. Returns a promise that resolves when speech finishes
  *  (or immediately if voice is disabled). */
@@ -108,8 +116,48 @@ export async function speak(text: string): Promise<void> {
     u.rate = 1.05;
     u.pitch = 1.0;
     u.volume = 0.9;
-    u.onend = () => resolve();
-    u.onerror = () => resolve();
+
+    // v0.26 (v2 Shell 11b) — SpeechSynthesis doesn't expose amplitude,
+    // so we synthesize an envelope: pulse to ~0.75 on each word
+    // boundary, decay toward 0 between. Gives the spheroid a talking
+    // rhythm rather than a flat 'is speaking' state.
+    let decayTimer: number | null = null;
+    const stopEnvelope = () => {
+      if (decayTimer != null) {
+        window.clearInterval(decayTimer);
+        decayTimer = null;
+      }
+      onSpeechAmplitude?.(0);
+    };
+    let currentAmp = 0;
+    const decayStep = () => {
+      currentAmp = Math.max(0, currentAmp - 0.06);
+      onSpeechAmplitude?.(currentAmp);
+      if (currentAmp <= 0.001 && decayTimer != null) {
+        window.clearInterval(decayTimer);
+        decayTimer = null;
+      }
+    };
+    u.onboundary = () => {
+      // Small random variance so pulses don't feel mechanical.
+      currentAmp = 0.65 + Math.random() * 0.2;
+      onSpeechAmplitude?.(currentAmp);
+      if (decayTimer == null) {
+        decayTimer = window.setInterval(decayStep, 45);
+      }
+    };
+    u.onstart = () => {
+      currentAmp = 0.4;
+      onSpeechAmplitude?.(currentAmp);
+    };
+    u.onend = () => {
+      stopEnvelope();
+      resolve();
+    };
+    u.onerror = () => {
+      stopEnvelope();
+      resolve();
+    };
     speechSynthesis.speak(u);
   });
 }

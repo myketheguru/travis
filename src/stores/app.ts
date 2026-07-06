@@ -50,10 +50,19 @@ type AppState = {
   /// v0.26 (v2 Shell 10) — history overlay (conversation switcher).
   /// Opened by ⌘K; closed by Esc or click outside. Session-local.
   historyOverlayOpen: boolean;
+  /// v0.26 (v2 Shell 12b) — documents overlay. Opened via the dock or
+  /// ⌘D. Session-local.
+  documentsOverlayOpen: boolean;
   /// v0.26 (v2 Shell 8) — true when the immersive canvas should show the
   /// opening greeting. Computed at mount from lastActivityAt: true on
   /// cold boot OR when idle >= 24h. Fades to false on first keystroke.
   isFirstMoment: boolean;
+  /// v0.26 (v2 Shell 11b) — instantaneous speech energy (0..1), used by
+  /// the speech-scene spheroid to scale + intensify. Written by
+  /// VoiceInputButton during STT capture (RMS of current samples) and
+  /// by voice.speak during TTS playback (word-boundary envelope).
+  /// Decays to 0 when nothing is writing.
+  speechAmplitude: number;
   setActivity: (a: Activity) => void;
   setStatus: (s: AppStatus) => void;
   setProfile: (p: UserProfile | null) => void;
@@ -67,6 +76,8 @@ type AppState = {
   setUiSurface: (s: "v2" | "classic") => void;
   setSettingsOverlayOpen: (open: boolean) => void;
   setHistoryOverlayOpen: (open: boolean) => void;
+  setDocumentsOverlayOpen: (open: boolean) => void;
+  setSpeechAmplitude: (a: number) => void;
   /// Called on any real user activity — first keystroke, pill click,
   /// mic press, etc. Fades the opening greeting AND writes now to
   /// localStorage as lastActivityAt so the 24h idle rule can re-arm.
@@ -254,6 +265,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSettingsOverlayOpen: (open) => set({ settingsOverlayOpen: open }),
   historyOverlayOpen: false,
   setHistoryOverlayOpen: (open) => set({ historyOverlayOpen: open }),
+  documentsOverlayOpen: false,
+  setDocumentsOverlayOpen: (open) => set({ documentsOverlayOpen: open }),
+  speechAmplitude: 0,
+  setSpeechAmplitude: (a) => set({ speechAmplitude: Math.max(0, Math.min(1, a)) }),
   isFirstMoment: computeInitialFirstMoment(),
   noteUserActivity: () => {
     stampActivityNow();
