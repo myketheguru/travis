@@ -281,6 +281,25 @@ function AppInner() {
     };
   }, [setSpeechAmplitude]);
 
+  // v0.26 (v2 Shell 12) — Global wake shortcut. When Ctrl+Alt+Space is
+  // pressed anywhere on the system, Rust brings the main window forward
+  // and emits 'travis://wake'. Here we dispatch a DOM event so the
+  // VoiceInputButton (or a follow-up mic-arm hook) can auto-start
+  // recording without the user having to click.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    listen<null>("travis://wake", () => {
+      window.dispatchEvent(new CustomEvent("travis:wake"));
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
   // v0.22.2 — listen for the travis://update event the Rust deep-link
   // handler dispatches. Triggers an update check + install via the
   // existing tauri-plugin-updater wrappers in lib/updater.

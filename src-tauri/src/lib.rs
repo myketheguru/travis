@@ -84,7 +84,7 @@ use crate::packs::lead_to_empower::{domain_cmd, pdf_cmd};
 use std::sync::Arc;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Manager, WindowEvent};
+use tauri::{Emitter, Manager, WindowEvent};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 pub struct AppState {
@@ -130,6 +130,16 @@ pub fn run() {
     #[cfg(not(target_os = "macos"))]
     let primary_shortcut = Shortcut::new(Some(Modifiers::CONTROL), Code::KeyJ);
 
+    // v0.26 (v2 Shell 12) — wake shortcut: Ctrl+Alt+Space brings Travis
+    // forward + arms listening mode. Global — works even when Travis is
+    // minimized or another app is focused. Practical alternative to a
+    // true audio wake-word engine, which would need a native background
+    // audio pipeline.
+    let wake_shortcut = Shortcut::new(
+        Some(Modifiers::CONTROL | Modifiers::ALT),
+        Code::Space,
+    );
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -140,10 +150,24 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
-                    if event.state() == ShortcutState::Pressed
-                        && shortcut == &primary_shortcut
-                    {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    if shortcut == &primary_shortcut {
                         let _ = overlay::toggle(app);
+                        return;
+                    }
+                    if shortcut == &wake_shortcut {
+                        // Bring the main window forward, focus it, and
+                        // emit an event the frontend uses to arm the
+                        // mic. Errors are silent — this is a UX-nice
+                        // path, not load-bearing.
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.unminimize();
+                            let _ = win.set_focus();
+                        }
+                        let _ = app.emit("travis://wake", ());
                     }
                 })
                 .build(),
@@ -464,6 +488,7 @@ pub fn run() {
             }
 
             handle.global_shortcut().register(primary_shortcut)?;
+            handle.global_shortcut().register(wake_shortcut)?;
 
             // System tray: keeps Travis alive when the main window is closed.
             // Left-click toggles the main window; menu has explicit Open/Quit.

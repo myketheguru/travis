@@ -60,6 +60,24 @@ export function VoiceInputButton({ onTranscript, disabled }: Props) {
 
   useEffect(() => cleanup, []);
 
+  // v0.26 (v2 Shell 12) — global wake shortcut. App.tsx dispatches
+  // 'travis:wake' when Ctrl+Alt+Space is pressed system-wide. Auto-arm
+  // the mic if we're currently idle. If a recording is in flight, the
+  // event is a no-op (beginRecording bails). We don't need this to be
+  // press-and-hold-aware — user tap-starts, taps again (or hits mic)
+  // to stop.
+  useEffect(() => {
+    function onWake() {
+      if (state.kind === "idle" || state.kind === "error") {
+        void beginRecording();
+      }
+    }
+    window.addEventListener("travis:wake", onWake as EventListener);
+    return () =>
+      window.removeEventListener("travis:wake", onWake as EventListener);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.kind]);
+
   async function beginRecording() {
     if (disabled) return;
     if (state.kind !== "idle" && state.kind !== "error") return;
