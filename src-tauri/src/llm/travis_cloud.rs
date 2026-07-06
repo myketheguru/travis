@@ -109,6 +109,13 @@ struct AnthropicErrorBody {
     status: Option<u16>,
     #[serde(default)]
     body: Option<String>,
+    /// v0.27 — cloud's new sanitized error envelope for infra failures.
+    /// When `error == "temporary_issue"`, `incident_id` carries the
+    /// short slug ("inc_a3b7") the user can reference in support.
+    /// The raw upstream detail lives server-side; the desktop shows a
+    /// calm, non-technical message.
+    #[serde(default, rename = "incident_id")]
+    incident_id: Option<String>,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -211,6 +218,20 @@ fn mark_block_cache_breakpoint(msg: &mut Value) {
 
 fn explain_error(status: u16, bytes: &[u8]) -> String {
     let parsed = serde_json::from_slice::<AnthropicErrorBody>(bytes).ok();
+    // v0.27 — check the sanitized-envelope case FIRST. When the cloud
+    // decides an incident is user-invisible (infra failure, upstream
+    // rejection), we NEVER surface raw upstream text. The user sees a
+    // calm sentence + the incident slug for support reference.
+    if let Some(b) = parsed.as_ref() {
+        if b.error.as_deref() == Some("temporary_issue") {
+            return match b.incident_id.as_deref() {
+                Some(id) => format!(
+                    "Travis is having a moment. We're on it. ({id})"
+                ),
+                None => "Travis is having a moment. We're on it.".to_string(),
+            };
+        }
+    }
     match parsed {
         Some(b) => match b.code.as_deref() {
             Some("model_not_allowed_for_tier") => {
