@@ -55,28 +55,23 @@ env:
 
 jobs:
   build:
-    # v0.28.2 — macOS whisper.cpp build broke on macos-latest's newer
-    # Xcode libc++ (LIBCPP_EXPORTED_FROM_ABI conflicts). Windows + Linux
-    # ship regardless; macOS is opportunistic until we pin a working
-    # combination of whisper-rs + macos runner. This keeps releases
-    # flowing for the platforms our users are actually on.
-    continue-on-error: ${{ matrix.optional == true }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
-            optional: true
+          # v0.28.2 — pinned macos-13 (Ventura). macos-latest ships a
+          # newer Xcode whose libc++ redefines _LIBCPP_EXPORTED_FROM_ABI
+          # which breaks whisper.cpp's ggml compile with 20+ errors.
+          # macos-13 has the stable ABI whisper.cpp expects.
+          - platform: macos-13
             args: --target universal-apple-darwin
             artifact: macos
             bundle_path: src-tauri/target/universal-apple-darwin/release/bundle
           - platform: ubuntu-22.04
-            optional: false
             args: ''
             artifact: linux
             bundle_path: src-tauri/target/release/bundle
           - platform: windows-latest
-            optional: false
             args: ''
             artifact: windows
             bundle_path: src-tauri/target/release/bundle
@@ -104,7 +99,7 @@ jobs:
       - name: Set up Rust (with macOS targets when needed)
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.platform == 'macos-13' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
