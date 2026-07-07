@@ -103,6 +103,20 @@ pub fn spawn_capture(app: AppHandle) -> Result<VoiceHandle, String> {
 
 fn capture_thread_main(app: AppHandle, rx: Receiver<Cmd>) -> Result<(), String> {
     let host = cpal::default_host();
+
+    // v0.28.1 — enumerate all input devices for diagnostics so we can
+    // tell whether Windows is defaulting us to a bad device (loopback,
+    // 'Stereo Mix', disconnected mic).
+    if let Ok(devices) = host.input_devices() {
+        for (idx, d) in devices.enumerate() {
+            tracing::info!(
+                "[voice] input device #{}: {:?}",
+                idx,
+                d.name().unwrap_or_else(|_| "<unknown>".into())
+            );
+        }
+    }
+
     let device = host
         .default_input_device()
         .ok_or_else(|| "no default input device".to_string())?;
@@ -114,7 +128,7 @@ fn capture_thread_main(app: AppHandle, rx: Receiver<Cmd>) -> Result<(), String> 
     let channels = config.channels() as usize;
 
     tracing::info!(
-        "[voice] cpal input: {:?} @ {} Hz, {} channel(s), format {:?}",
+        "[voice] cpal SELECTED input: {:?} @ {} Hz, {} channel(s), format {:?}",
         device.name().unwrap_or_else(|_| "<unknown>".into()),
         input_hz,
         channels,
@@ -187,6 +201,14 @@ fn tick_loop(app: AppHandle, audio: Arc<Mutex<AudioBuf>>, rx: Receiver<Cmd>, inp
         let rms = rms_of(&decimated);
         last_rms_seen = rms;
         utterance.extend_from_slice(&decimated);
+        // v0.28.1 — cap the rolling buffer so we don't leak memory
+        // when VAD never fires (mic delivering silence forever).
+        // 30s at 16kHz = 480k samples.
+        const MAX_UTTERANCE_SAMPLES: usize = 30 * TARGET_HZ as usize;
+        if utterance.len() > MAX_UTTERANCE_SAMPLES {
+            let drop = utterance.len() - MAX_UTTERANCE_SAMPLES;
+            utterance.drain(..drop);
+        }
         step_vad(&app, &mut vad_state, &mut vad_edge_at, rms, barge_in_arm);
 
         if last_amp_emit.elapsed() >= Duration::from_millis(AMPLITUDE_EMIT_MS) {
