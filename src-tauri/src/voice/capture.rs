@@ -80,28 +80,31 @@ pub fn spawn_capture(app: AppHandle) -> Result<VoiceHandle, String> {
     let (tx, rx) = channel::<Cmd>();
     let (started_tx, started_rx) = channel::<Result<(), String>>();
 
+    let started_tx_thread = started_tx.clone();
     std::thread::spawn(move || {
-        match capture_thread_main(app, rx) {
-            Ok(_) => {
-                let _ = started_tx.send(Ok(()));
-            }
-            Err(e) => {
-                let _ = started_tx.send(Err(e));
-            }
+        if let Err(e) = capture_thread_main(app, rx, started_tx_thread.clone()) {
+            // If capture_thread_main errored before signalling start,
+            // relay the error to the outer waiter.
+            let _ = started_tx_thread.send(Err(e));
         }
     });
 
-    // Wait briefly for the thread to signal 'stream up' or an error.
-    // A hung thread here would be a serious platform issue; 3s is
-    // more than enough for cpal + default input device.
-    match started_rx.recv_timeout(Duration::from_secs(3)) {
+    // Wait for the worker to signal 'stream up' (fires from inside
+    // capture_thread_main once stream.play() succeeds) or an error.
+    // v0.28.1 fix — previously the send never fired until Stop, so
+    // this always timed out at 3s even when cpal was fine.
+    match started_rx.recv_timeout(Duration::from_secs(5)) {
         Ok(Ok(())) => Ok(VoiceHandle { tx }),
         Ok(Err(e)) => Err(e),
         Err(_) => Err("cpal init timed out".to_string()),
     }
 }
 
-fn capture_thread_main(app: AppHandle, rx: Receiver<Cmd>) -> Result<(), String> {
+fn capture_thread_main(
+    app: AppHandle,
+    rx: Receiver<Cmd>,
+    started_tx: Sender<Result<(), String>>,
+) -> Result<(), String> {
     let host = cpal::default_host();
 
     // v0.28.1 — enumerate all input devices for diagnostics so we can
@@ -117,9 +120,10 @@ fn capture_thread_main(app: AppHandle, rx: Receiver<Cmd>) -> Result<(), String> 
         }
     }
 
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| "no default input device".to_string())?;
+    // v0.28.1 — Windows commonly defaults to "Stereo Mix" (system
+    // audio loopback) which records NOTHING when nothing is playing.
+    // Prefer a real mic if the default looks like a loopback.
+    let device = pick_input_device(&host)?;
     let config = device
         .default_input_config()
         .map_err(|e| format!("default input config: {e}"))?;
@@ -150,12 +154,52 @@ fn capture_thread_main(app: AppHandle, rx: Receiver<Cmd>) -> Result<(), String> 
         .play()
         .map_err(|e| format!("start cpal stream: {e}"))?;
 
-    // From this point the Stream MUST stay pinned to this thread —
-    // it's !Send. The Stream is dropped at the end of this fn scope,
-    // which is when we receive Cmd::Stop.
+    // v0.28.1 — signal 'started' to the outer spawn_capture waiter
+    // NOW that the stream is playing. Previously this send happened
+    // AFTER tick_loop returned (i.e. on Cmd::Stop), so voice_start
+    // always timed out at 3s even though cpal was fine.
+    let _ = started_tx.send(Ok(()));
+
     tick_loop(app, audio, rx, input_hz);
     drop(stream);
     Ok(())
+}
+
+/// v0.28.1 — Windows quirk: `default_input_device()` frequently
+/// returns "Stereo Mix" (a system-audio loopback) even when a real
+/// microphone is enumerated. If the default name matches known
+/// loopback-y strings, walk the input_devices list and pick the first
+/// entry whose name looks like a real mic instead.
+fn pick_input_device(host: &cpal::Host) -> Result<cpal::Device, String> {
+    let default = host
+        .default_input_device()
+        .ok_or_else(|| "no default input device".to_string())?;
+    let default_name = default.name().unwrap_or_default().to_lowercase();
+    let looks_like_loopback = default_name.contains("stereo mix")
+        || default_name.contains("loopback")
+        || default_name.contains("what u hear");
+    if !looks_like_loopback {
+        return Ok(default);
+    }
+    tracing::warn!(
+        "[voice] default input {:?} looks like a loopback; searching for a real mic",
+        default.name().unwrap_or_default()
+    );
+    if let Ok(devices) = host.input_devices() {
+        for d in devices {
+            let name = d.name().unwrap_or_default().to_lowercase();
+            if name.contains("microphone")
+                || name.contains("mic array")
+                || name.contains("headset")
+                || name.contains("input")
+            {
+                tracing::info!("[voice] override to {:?}", d.name().unwrap_or_default());
+                return Ok(d);
+            }
+        }
+    }
+    // No obvious mic — fall back to the default anyway; user can pick.
+    Ok(default)
 }
 
 fn tick_loop(app: AppHandle, audio: Arc<Mutex<AudioBuf>>, rx: Receiver<Cmd>, input_hz: u32) {

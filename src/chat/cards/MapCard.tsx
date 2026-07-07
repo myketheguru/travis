@@ -37,6 +37,30 @@ function fmtDuration(seconds: number): string {
 }
 
 export function MapCard({ route, narration }: Props) {
+  // v0.28.1 — guard against malformed rich responses. The LLM
+  // occasionally emits a map part shell without a route (or with a
+  // partially-typed one) which used to crash rendering + blank the
+  // whole app. Now: soft fallback.
+  if (!route || typeof route.distance_meters !== "number") {
+    return (
+      <div
+        className="rounded-2xl px-4 py-3 text-[13px] leading-relaxed"
+        style={{
+          border: "1px solid rgba(255, 179, 92, 0.35)",
+          background: "rgba(255, 179, 92, 0.08)",
+          color: "rgba(236, 236, 241, 0.85)",
+        }}
+      >
+        <div
+          className="text-[10px] uppercase tracking-[0.22em] font-mono mb-1.5"
+          style={{ color: "rgba(255, 179, 92, 0.9)" }}
+        >
+          map data missing
+        </div>
+        {narration ?? "Travis wanted to show a map here, but the response was incomplete."}
+      </div>
+    );
+  }
   return (
     <div
       className="rounded-2xl overflow-hidden"
