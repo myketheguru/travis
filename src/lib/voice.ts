@@ -166,3 +166,13 @@ export async function speak(text: string): Promise<void> {
 export function cancelSpeech(): void {
   if (typeof speechSynthesis !== "undefined") speechSynthesis.cancel();
 }
+
+// v0.28 — barge-in wiring. The native VAD fires this event whenever it
+// detects speech-start while Travis is speaking. Registering here so
+// TTS gets interrupted the moment the user starts talking, matching
+// natural conversation feel.
+if (typeof window !== "undefined") {
+  window.addEventListener("travis:piper-stop", () => {
+    cancelSpeech();
+  });
+}

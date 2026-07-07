@@ -34,6 +34,7 @@ import { QuickAccessDock } from "./QuickAccessDock";
 import { DocumentsOverlay } from "./DocumentsOverlay";
 import { CanvasStage } from "./canvas/CanvasStage";
 import { useCanvasMode } from "./canvas/useCanvasMode";
+import { useNativeVoice } from "../../voice/useNativeVoice";
 import { Composer } from "./Composer";
 import { useFocalContent } from "./useFocalContent";
 import AskTab from "../../manage/tabs/AskTab";
@@ -48,6 +49,11 @@ export function WorkspaceV2() {
 
   // Derive canvasMode from activity + focal + inactivity.
   useCanvasMode();
+
+  // v0.28 — native mic pipeline: cpal capture, VAD, auto-transcribe
+  // on end-of-utterance, barge-in during Piper playback. Enabled by
+  // default; a Settings toggle will let users opt out.
+  useNativeVoice({ enabled: true });
 
   // Global shortcuts.
   useEffect(() => {

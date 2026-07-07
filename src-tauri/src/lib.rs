@@ -50,6 +50,7 @@ mod python_runtime;
 mod rich_response;
 mod sentry;
 mod speech_runtime;
+mod voice;
 mod overlay;
 mod packs;
 mod packs_cmd;
@@ -376,6 +377,7 @@ pub fn run() {
             // other surfaces, and we want a separate lock.
             handle.manage(python_runtime::cmd::BootstrapState::new());
             handle.manage(speech_runtime::cmd::SpeechBootstrapState::new());
+            handle.manage(voice::cmd::VoiceState::new());
 
             // v0.21.8 — reveal the main window NOW that AppState is
             // managed. We keep it hidden in tauri.conf.json
@@ -964,6 +966,10 @@ pub fn run() {
             speech_runtime::cmd::speech_runtime_status,
             speech_runtime::cmd::speech_runtime_ensure,
             speech_runtime::cmd::speech_transcribe,
+            voice::cmd::voice_start,
+            voice::cmd::voice_stop,
+            voice::cmd::voice_set_barge_in,
+            voice::cmd::voice_finalize_transcript,
             steps::cmd::list_steps,
             workflows::cmd::get_active_workflow,
             identity_cmd::list_entities,

@@ -1,6 +1,6 @@
 [package]
 name = "travis"
-version = "0.27.6"
+version = "0.28.0"
 description = "Travis — local-first AI operations assistant"
 authors = ["myketheguru"]
 edition = "2021"
@@ -84,6 +84,11 @@ urlencoding = "2"
 # no API cost. Models download lazily via the same bootstrap pattern
 # as the Python runtime — user sees the sleek loader.
 whisper-rs = { version = "0.13", default-features = false }
+# v0.28 — native mic capture (kills the WebView AudioContext dance).
+# cpal talks directly to WASAPI on Windows, CoreAudio on macOS, ALSA
+# on Linux. Lower latency, no permission prompts per WebView, no
+# suspended-context bugs, respects the OS's chosen input device.
+cpal = "0.15"
 # v0.24 task 314 — Travis-to-Travis peer discovery via multicast DNS.
 # Pure Rust; works across macOS, Windows, Linux. Advertises Travis's
 # presence on the LAN + browses for other Travises so users don't need
