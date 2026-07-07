@@ -95,6 +95,18 @@ function AppInner() {
   const setStatus = useAppStore((s) => s.setStatus);
   const setProfile = useAppStore((s) => s.setProfile);
   const pulse = useAppStore((s) => s.pulse);
+
+  // v0.27.5 — pre-warm whisper the moment the app is signed-in +
+  // onboarded. Loading the model takes seconds first-run; if we don't
+  // pre-warm, the user's first mic tap eats that delay. Silent
+  // fire-and-forget; a failure just means the first tap will warm.
+  useEffect(() => {
+    if (status?.onboarded) {
+      void import("./lib/speechRuntime").then((m) =>
+        m.speechRuntimeEnsure().catch(() => {}),
+      );
+    }
+  }, [status?.onboarded]);
   const [view, setView] = useState<View>("splash");
   const [pendingUpdate, setPendingUpdate] = useState<UpdateInfo | null>(null);
   const [updateDismissed, setUpdateDismissed] = useState<string | null>(null);

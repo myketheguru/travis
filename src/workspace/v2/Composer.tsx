@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { useAppStore } from "../../stores/app";
 import { VoiceInputButton } from "../../chat/VoiceInputButton";
+import { MicMeter } from "./MicMeter";
 
 export function Composer() {
   const [text, setText] = useState("");
@@ -77,6 +78,14 @@ export function Composer() {
             disabled={isPending}
             onTranscript={(t) => handleSubmit(t)}
           />
+          {/* v0.27.5 — live level meter appears while the mic is
+              armed. Gives an at-a-glance answer to 'is my mic
+              actually picking anything up?' before we transcribe. */}
+          {(activity === "listening" || activity === "speaking") && (
+            <div className="shrink-0 flex items-center">
+              <MicMeter />
+            </div>
+          )}
           <textarea
             ref={inputRef}
             value={text}

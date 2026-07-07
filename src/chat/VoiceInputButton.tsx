@@ -42,6 +42,10 @@ export function VoiceInputButton({ onTranscript, disabled }: Props) {
   // to voice mode the instant the mic is armed (spheroid appears
   // immediately, not after the first sample).
   const setActivity = useAppStore((s) => s.setActivity);
+  // v0.27.5 — peak RMS observed during a capture. Used to distinguish
+  // 'mic muted / no sound' from 'silence in speech' when whisper
+  // returns nothing.
+  const peakRmsRef = useRef<number>(0);
 
   const cleanup = () => {
     processorRef.current?.disconnect();
@@ -123,9 +127,11 @@ export function VoiceInputButton({ onTranscript, disabled }: Props) {
         let sumSq = 0;
         for (let i = 0; i < input.length; i++) sumSq += input[i] * input[i];
         const rms = Math.sqrt(sumSq / input.length);
+        if (rms > peakRmsRef.current) peakRmsRef.current = rms;
         const scaled = Math.min(1, rms * 5.5);
         setSpeechAmplitude(scaled);
       };
+      peakRmsRef.current = 0;
       source.connect(processor);
       processor.connect(ctx.destination);
       setState({ kind: "recording", started: Date.now() });
@@ -150,6 +156,21 @@ export function VoiceInputButton({ onTranscript, disabled }: Props) {
       setState({ kind: "idle" });
       return;
     }
+    // v0.27.5 — before spending the transcribe round-trip, check that
+    // the mic actually captured meaningful energy. Peak RMS below
+    // ~0.01 means the mic was muted, no sound was picked up, or the
+    // gain was too low. Skip whisper + tell the user directly.
+    const peak = peakRmsRef.current;
+    if (peak < 0.01) {
+      cleanup();
+      setState({
+        kind: "error",
+        message: "no audio picked up — check your mic",
+      });
+      // Auto-clear the error after a moment so the button returns to idle.
+      window.setTimeout(() => setState({ kind: "idle" }), 2600);
+      return;
+    }
     setState({ kind: "transcribing" });
     try {
       const total = samplesRef.current.reduce((n, c) => n + c.length, 0);
@@ -162,8 +183,19 @@ export function VoiceInputButton({ onTranscript, disabled }: Props) {
       cleanup();
       const text = await speechTranscribe(merged);
       const trimmed = text.trim();
-      if (trimmed.length > 0) onTranscript(trimmed);
-      setState({ kind: "idle" });
+      if (trimmed.length > 0) {
+        onTranscript(trimmed);
+        setState({ kind: "idle" });
+      } else {
+        // Mic had energy but whisper couldn't hear speech — usually
+        // means the user made a sound but didn't say a word. Tell
+        // them; don't just silently drop back to idle.
+        setState({
+          kind: "error",
+          message: "didn't catch that — try speaking closer to the mic",
+        });
+        window.setTimeout(() => setState({ kind: "idle" }), 2600);
+      }
     } catch (e) {
       cleanup();
       setState({
