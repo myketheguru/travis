@@ -12,6 +12,7 @@ export const nativeVoice = {
   start: () => invoke<{ started: boolean }>("voice_start"),
   stop: () => invoke<void>("voice_stop"),
   setBargeIn: (on: boolean) => invoke<void>("voice_set_barge_in", { on }),
+  setArmed: (on: boolean) => invoke<void>("voice_set_armed", { on }),
   finalizeTranscript: () => invoke<string>("voice_finalize_transcript"),
 };
 

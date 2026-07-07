@@ -80,6 +80,20 @@ type AppState = {
   /// fires submit(). Difference vs pendingComposerText: that just fills
   /// the input for the user to review; this triggers immediate send.
   pendingComposerSubmit: string | null;
+  /// v0.28.2 — ambient listening mode. When true, the native mic
+  /// pipeline transcribes ALL detected speech + saves it locally,
+  /// but does NOT submit to the LLM unless the user explicitly
+  /// arms (mic button, spacebar longpress) or a wake word triggers.
+  /// Meant for capturing meetings, calls, or your own thinking
+  /// so you can follow up with Travis later.
+  ambientListening: boolean;
+  /// v0.28.2 — captured ambient transcripts this session. Growing
+  /// list; the user can review them from the canvas.
+  ambientTranscripts: {
+    id: string;
+    text: string;
+    occurredAt: string;
+  }[];
   setActivity: (a: Activity) => void;
   setStatus: (s: AppStatus) => void;
   setProfile: (p: UserProfile | null) => void;
@@ -97,6 +111,9 @@ type AppState = {
   setSpeechAmplitude: (a: number) => void;
   setCanvasMode: (m: "idle" | "chat" | "voice" | "map") => void;
   setPendingComposerSubmit: (t: string | null) => void;
+  setAmbientListening: (on: boolean) => void;
+  appendAmbientTranscript: (text: string) => void;
+  clearAmbientTranscripts: () => void;
   /// Called on any real user activity — first keystroke, pill click,
   /// mic press, etc. Fades the opening greeting AND writes now to
   /// localStorage as lastActivityAt so the 24h idle rule can re-arm.
@@ -293,6 +310,38 @@ export const useAppStore = create<AppState>((set, get) => ({
   setCanvasMode: (m) => set({ canvasMode: m }),
   pendingComposerSubmit: null,
   setPendingComposerSubmit: (t) => set({ pendingComposerSubmit: t }),
+  ambientListening: (() => {
+    try {
+      if (typeof localStorage === "undefined") return false;
+      return localStorage.getItem("travis.ambientListening") === "1";
+    } catch {
+      return false;
+    }
+  })(),
+  ambientTranscripts: [],
+  setAmbientListening: (on) => {
+    try {
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem("travis.ambientListening", on ? "1" : "0");
+      }
+    } catch {
+      /* private mode */
+    }
+    set({ ambientListening: on });
+  },
+  appendAmbientTranscript: (text) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const entry = {
+      id: `amb_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      text: trimmed,
+      occurredAt: new Date().toISOString(),
+    };
+    set((s) => ({
+      ambientTranscripts: [...s.ambientTranscripts, entry].slice(-500),
+    }));
+  },
+  clearAmbientTranscripts: () => set({ ambientTranscripts: [] }),
   isFirstMoment: computeInitialFirstMoment(),
   noteUserActivity: () => {
     stampActivityNow();

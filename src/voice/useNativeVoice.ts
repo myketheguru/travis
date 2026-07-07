@@ -1,24 +1,29 @@
 /**
- * useNativeVoice — v0.28.
+ * useNativeVoice — v0.28.2.
  *
- * Owns the native mic pipeline lifecycle on the frontend side. When
- * enabled, calls voice_start on mount, subscribes to all voice://*
- * events, wires them to the app store + auto-transcribe flow, and
- * cleans up on unmount.
+ * Owns the native mic pipeline lifecycle on the frontend side. Native
+ * cpal + VAD run continuously (so amplitude events + spheroid can
+ * react to ambient audio). Actual capture-for-submission only happens
+ * when the mic is ARMED — via the mic button, the spacebar longpress,
+ * or (later) a wake word.
  *
- * Behavior wired here:
- *   - voice://amplitude   -> setSpeechAmplitude
- *   - voice://speech-start -> setActivity('listening')
- *   - voice://speech-end   -> call finalizeTranscript, submit result
- *   - voice://barge-in     -> stop Piper (via 'travis:piper-stop' event)
+ *   voice://amplitude   -> setSpeechAmplitude  (always)
+ *   voice://speech-start -> setActivity('listening')  (only when armed)
+ *   voice://speech-end  -> finalizeTranscript + submit  (only when armed)
+ *   voice://barge-in    -> dispatch 'travis:piper-stop'
  *
- * Silence between utterances is normal — the mic stays on but VAD
- * suppresses noise. Consumers control ON/OFF via the `enabled` flag.
+ * The arm/disarm surface is exposed via a window event so buttons +
+ * global shortcuts can trigger it without wiring props through the
+ * component tree.
+ *   window.dispatchEvent(new CustomEvent('travis:arm-voice'))
+ *
+ * Every side-effect is best-effort. Never throws.
  */
 import { useEffect, useRef } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { nativeVoice, onVoiceEvent } from "../lib/nativeVoice";
 import { useAppStore } from "../stores/app";
+import { playCue } from "./cues";
 
 interface Options {
   enabled: boolean;
@@ -30,9 +35,14 @@ export function useNativeVoice({ enabled }: Options) {
   const setPendingComposerSubmit = useAppStore(
     (s) => s.setPendingComposerSubmit,
   );
-  // Whether Travis (Piper) is currently speaking — drives barge-in arm.
   const activity = useAppStore((s) => s.activity);
+  const ambientListening = useAppStore((s) => s.ambientListening);
+  const appendAmbientTranscript = useAppStore(
+    (s) => s.appendAmbientTranscript,
+  );
   const finalizingRef = useRef(false);
+  const ambientRef = useRef(ambientListening);
+  ambientRef.current = ambientListening;
 
   useEffect(() => {
     if (!enabled) return;
@@ -41,72 +51,122 @@ export function useNativeVoice({ enabled }: Options) {
 
     (async () => {
       try {
-        const result = await nativeVoice.start();
-        console.log("[voice] native start ok:", result);
+        await nativeVoice.start();
       } catch (err) {
-        console.error("[voice] native start FAILED:", err);
+        // Fail silent — user shouldn't see a mic startup error blow up
+        // the UI. Console remains for diagnostics.
+        console.warn("[voice] native start failed:", err);
         return;
       }
       if (cancelled) return;
 
-      let ampSeen = 0;
       unlisteners.push(
         await onVoiceEvent<number>("voice://amplitude", (a) => {
           setSpeechAmplitude(a);
-          // Log first amplitude event to confirm the pipeline is
-          // actually delivering. Subsequent events would spam.
-          if (ampSeen === 0) {
-            console.log("[voice] first amplitude event, value =", a);
-          }
-          ampSeen++;
         }),
       );
       unlisteners.push(
         await onVoiceEvent<null>("voice://speech-start", () => {
-          console.log("[voice] speech-start");
+          // Only fires when armed (Rust-side gate). Set listening
+          // activity so the canvas flips to voice + spheroid appears.
           setActivity("listening");
         }),
       );
       unlisteners.push(
         await onVoiceEvent<null>("voice://speech-end", async () => {
-          console.log("[voice] speech-end -> finalize");
           if (finalizingRef.current) return;
           finalizingRef.current = true;
+          const wasIntent = useAppStore.getState().activity === "listening";
+          if (wasIntent) playCue("heard");
           try {
             const text = await nativeVoice.finalizeTranscript();
-            console.log("[voice] transcript:", JSON.stringify(text));
             const trimmed = text.trim();
             if (trimmed.length > 0) {
-              setPendingComposerSubmit(trimmed);
+              if (wasIntent) {
+                setPendingComposerSubmit(trimmed);
+              } else if (ambientRef.current) {
+                // Ambient capture — save transcript for later review,
+                // do NOT submit to LLM. User can browse ambient
+                // transcripts from the canvas.
+                appendAmbientTranscript(trimmed);
+              }
             }
           } catch (err) {
             console.warn("[voice] finalizeTranscript failed:", err);
           } finally {
-            setActivity("idle");
+            if (wasIntent) setActivity("idle");
             finalizingRef.current = false;
+            if (wasIntent) {
+              // Only auto-disarm when this was an intent capture.
+              // If ambient is on, stay armed so the next utterance
+              // still gets caught.
+              try {
+                if (!ambientRef.current) await nativeVoice.setArmed(false);
+              } catch {
+                /* best effort */
+              }
+            }
           }
         }),
       );
       unlisteners.push(
         await onVoiceEvent<null>("voice://barge-in", () => {
-          // Signal Piper to stop playback immediately; TTS player listens.
           window.dispatchEvent(new CustomEvent("travis:piper-stop"));
         }),
       );
     })();
 
+    // Arm/disarm surface via window events so buttons / shortcuts
+    // don't need direct access to nativeVoice.
+    const onArm = () => {
+      playCue("wake");
+      setActivity("listening");
+      void nativeVoice.setArmed(true).catch(() => {});
+    };
+    const onDisarm = () => {
+      void nativeVoice.setArmed(false).catch(() => {});
+      setActivity("idle");
+    };
+    window.addEventListener("travis:arm-voice", onArm);
+    window.addEventListener("travis:disarm-voice", onDisarm);
+
+    // Ambient listening: when the user has flipped ambient mode on,
+    // we ALSO tell Rust to accumulate every VAD-bounded utterance so
+    // we can grab transcripts even without an explicit arm. The
+    // distinction is: ambient captures go to the transcript store
+    // (for later reference) instead of the composer submit path.
+    // Rust-side "armed" is a superset here — ambient toggling on
+    // sets armed=true so the utterance buffer accumulates; individual
+    // transcripts get routed to ambient vs submit based on whether
+    // the user explicitly requested attention (via the button).
+    const setAmbientArm = (on: boolean) => {
+      void nativeVoice.setArmed(on).catch(() => {});
+    };
+    if (ambientListening) setAmbientArm(true);
+
     return () => {
       cancelled = true;
+      window.removeEventListener("travis:arm-voice", onArm);
+      window.removeEventListener("travis:disarm-voice", onDisarm);
       unlisteners.forEach((u) => u());
-      void nativeVoice.stop();
+      void nativeVoice.stop().catch(() => {});
       setSpeechAmplitude(0);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled]);
 
-  // Arm barge-in whenever Travis is speaking (Piper playback).
   useEffect(() => {
     if (!enabled) return;
-    void nativeVoice.setBargeIn(activity === "speaking");
+    void nativeVoice.setBargeIn(activity === "speaking").catch(() => {});
   }, [enabled, activity]);
+
+  // v0.28.2 — cue on the transition from speaking -> idle so the user
+  // hears a soft "over to you" bell when Travis finishes talking.
+  const prevActivityRef = useRef(activity);
+  useEffect(() => {
+    if (prevActivityRef.current === "speaking" && activity !== "speaking") {
+      playCue("done");
+    }
+    prevActivityRef.current = activity;
+  }, [activity]);
 }

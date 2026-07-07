@@ -25,6 +25,7 @@ import { useEffect } from "react";
 import { motion } from "framer-motion";
 import { useAppStore } from "../../stores/app";
 import { AttentionCompass } from "./AttentionCompass";
+import { AmbientToggle } from "./AmbientToggle";
 import { CanvasBackdrop } from "./CanvasBackdrop";
 import { ThreadRail } from "./ThreadRail";
 import { SettingsOverlay } from "./SettingsOverlay";
@@ -111,7 +112,7 @@ export function WorkspaceV2() {
       if (holdTimer != null) return;
       holdTimer = window.setTimeout(() => {
         waking = true;
-        window.dispatchEvent(new CustomEvent("travis:wake"));
+        window.dispatchEvent(new CustomEvent("travis:arm-voice"));
       }, 1500);
     }
     function onUp(e: KeyboardEvent) {
@@ -121,7 +122,7 @@ export function WorkspaceV2() {
         holdTimer = null;
       }
       if (waking) {
-        window.dispatchEvent(new CustomEvent("travis:wake-end"));
+        window.dispatchEvent(new CustomEvent("travis:disarm-voice"));
         waking = false;
       }
     }
@@ -153,12 +154,13 @@ export function WorkspaceV2() {
       {/* HUD: orb TL */}
       <OrbHud />
 
-      {/* HUD: attention compass TR — compact chip (v0.27 shrink) */}
+      {/* HUD: TR row — ambient toggle + attention compass */}
       <motion.div
         animate={{ opacity: railOpacity }}
         transition={{ duration: 0.32 }}
-        className="absolute top-3 right-3 z-20 pointer-events-auto"
+        className="absolute top-3 right-3 z-20 pointer-events-auto flex items-center gap-2"
       >
+        <AmbientToggle />
         <AttentionCompass />
       </motion.div>
 

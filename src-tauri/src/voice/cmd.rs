@@ -66,6 +66,20 @@ pub async fn voice_set_barge_in(
     Ok(())
 }
 
+/// v0.28.2 — arm/disarm the capture. Only armed utterances get
+/// accumulated + transcribed. Manual arms from the mic button or
+/// spacebar longpress. Wake word (when wired in) will also arm.
+#[tauri::command]
+pub async fn voice_set_armed(
+    on: bool,
+    state: State<'_, VoiceState>,
+) -> Result<(), String> {
+    if let Some(handle) = state.inner.lock().unwrap().as_ref() {
+        handle.set_armed(on);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn voice_finalize_transcript(
     app: AppHandle,

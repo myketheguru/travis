@@ -46,27 +46,40 @@ export function useCanvasMode() {
   }, []);
 
   useEffect(() => {
-    // Voice takes priority — spheroid should always win when Travis or
-    // the user is actively speaking.
+    // v0.28.2 — airtight priority ladder. Only the FIRST matching
+    // condition wins per tick. Every branch either flips the mode
+    // (guarded so we only setCanvasMode when different, to avoid
+    // spurious renders) or returns.
+    //
+    //  1. Voice — activity says something is happening on the audio
+    //     path. Highest priority; wins over content/idle so we never
+    //     hide the spheroid mid-utterance.
     if (activity === "listening" || activity === "speaking") {
       if (canvasMode !== "voice") setCanvasMode("voice");
       return;
     }
 
-    // Map — latest assistant message has a map part in any position.
+    //  2. Map — latest assistant response contains a map part
+    //     anywhere in its rich payload. Wrapped in try so a malformed
+    //     rich response can never propagate + crash the mode logic.
     if (focal) {
-      const rich = parseRichResponse(focal.content);
-      const hasMap = rich?.parts.some((p) => p.kind === "map") ?? false;
+      let hasMap = false;
+      try {
+        const rich = parseRichResponse(focal.content);
+        hasMap = rich?.parts.some((p) => p.kind === "map") ?? false;
+      } catch {
+        hasMap = false;
+      }
       if (hasMap) {
         if (canvasMode !== "map") setCanvasMode("map");
         return;
       }
     }
 
-    // Idle — cold boot with no history OR user has been inactive
-    // for IDLE_MS regardless of whether there is a prior conversation.
-    // The old gate (`noMessages && ...`) never let idle kick in when
-    // any focal message existed — that was the v0.27.5 bug.
+    //  3. Idle — user hasn't touched anything for IDLE_MS OR it's the
+    //     first moment of the session AND no conversation has started.
+    //     The old `noMessages && ...` gate never let idle kick in when
+    //     any focal message existed — fixed in v0.27.6.
     const idleForAWhile = Date.now() - lastActiveRef.current > IDLE_MS;
     const noMessages = focal === null;
     if (idleForAWhile || (noMessages && isFirstMoment)) {
@@ -74,7 +87,7 @@ export function useCanvasMode() {
       return;
     }
 
-    // Default — chat.
+    //  4. Chat — default.
     if (canvasMode !== "chat") setCanvasMode("chat");
   }, [activity, focal, isFirstMoment, canvasMode, setCanvasMode]);
 

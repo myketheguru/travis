@@ -969,6 +969,7 @@ pub fn run() {
             voice::cmd::voice_start,
             voice::cmd::voice_stop,
             voice::cmd::voice_set_barge_in,
+            voice::cmd::voice_set_armed,
             voice::cmd::voice_finalize_transcript,
             steps::cmd::list_steps,
             workflows::cmd::get_active_workflow,

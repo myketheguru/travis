@@ -34,6 +34,13 @@ const VAD_HANGOVER_MS: u64 = 700;
 enum Cmd {
     Stop,
     SetBargeIn(bool),
+    /// v0.28.2 — arm/disarm capture. When armed, the next speech-end
+    /// fires voice://transcript-ready and the accumulated utterance
+    /// is kept for finalizeTranscript. When unarmed, VAD still runs
+    /// (for wake-word + amplitude events) but the utterance is
+    /// discarded on end-of-speech so no wasted whisper cycles + no
+    /// unintended submissions.
+    SetArmed(bool),
     TakeUtterance(Sender<Vec<f32>>),
 }
 
@@ -56,6 +63,9 @@ impl VoiceHandle {
     }
     pub fn set_barge_in(&self, on: bool) {
         let _ = self.tx.send(Cmd::SetBargeIn(on));
+    }
+    pub fn set_armed(&self, on: bool) {
+        let _ = self.tx.send(Cmd::SetArmed(on));
     }
     pub fn stop(&self) {
         let _ = self.tx.send(Cmd::Stop);
@@ -205,14 +215,10 @@ fn pick_input_device(host: &cpal::Host) -> Result<cpal::Device, String> {
 fn tick_loop(app: AppHandle, audio: Arc<Mutex<AudioBuf>>, rx: Receiver<Cmd>, input_hz: u32) {
     let mut utterance: Vec<f32> = Vec::with_capacity(TARGET_HZ as usize * 10);
     let mut barge_in_arm = false;
+    let mut armed_for_submit = false;
     let mut vad_state = VadState::Silent;
     let mut vad_edge_at: Option<Instant> = None;
     let mut last_amp_emit = Instant::now();
-    // v0.28.1 diagnostic — periodic RMS + state log so we can tell
-    // whether the mic is actually delivering audio and if VAD is
-    // seeing it. Log line every 500ms; look for "rms=0.000" = mic
-    // giving nothing OR "rms=0.005 silent" = mic works but too quiet
-    // for current thresholds.
     let mut last_diag = Instant::now();
     let mut last_rms_seen: f32 = 0.0;
 
@@ -222,6 +228,16 @@ fn tick_loop(app: AppHandle, audio: Arc<Mutex<AudioBuf>>, rx: Receiver<Cmd>, inp
             match cmd {
                 Cmd::Stop => return,
                 Cmd::SetBargeIn(on) => barge_in_arm = on,
+                Cmd::SetArmed(on) => {
+                    armed_for_submit = on;
+                    if on {
+                        // Fresh arm starts a clean utterance buffer.
+                        utterance.clear();
+                        tracing::info!("[voice] ARMED — capturing next utterance");
+                    } else {
+                        tracing::info!("[voice] disarmed");
+                    }
+                }
                 Cmd::TakeUtterance(reply) => {
                     let taken = std::mem::take(&mut utterance);
                     let _ = reply.send(taken);
@@ -237,23 +253,42 @@ fn tick_loop(app: AppHandle, audio: Arc<Mutex<AudioBuf>>, rx: Receiver<Cmd>, inp
 
         if incoming.is_empty() {
             // Feed near-zero into VAD so hangover timers still fire.
-            step_vad(&app, &mut vad_state, &mut vad_edge_at, 0.0, barge_in_arm);
+            step_vad(
+                &app,
+                &mut vad_state,
+                &mut vad_edge_at,
+                0.0,
+                barge_in_arm,
+                armed_for_submit,
+            );
             continue;
         }
 
         let decimated = decimate(&incoming, input_hz, TARGET_HZ);
         let rms = rms_of(&decimated);
         last_rms_seen = rms;
-        utterance.extend_from_slice(&decimated);
-        // v0.28.1 — cap the rolling buffer so we don't leak memory
-        // when VAD never fires (mic delivering silence forever).
-        // 30s at 16kHz = 480k samples.
-        const MAX_UTTERANCE_SAMPLES: usize = 30 * TARGET_HZ as usize;
-        if utterance.len() > MAX_UTTERANCE_SAMPLES {
-            let drop = utterance.len() - MAX_UTTERANCE_SAMPLES;
-            utterance.drain(..drop);
+        // v0.28.2 — only accumulate the utterance when armed. When
+        // disarmed we drop the samples on the floor after VAD reads
+        // them; no wasted memory, no accidental transcription of
+        // ambient conversation.
+        if armed_for_submit {
+            utterance.extend_from_slice(&decimated);
+            const MAX_UTTERANCE_SAMPLES: usize = 30 * TARGET_HZ as usize;
+            if utterance.len() > MAX_UTTERANCE_SAMPLES {
+                let drop = utterance.len() - MAX_UTTERANCE_SAMPLES;
+                utterance.drain(..drop);
+            }
         }
-        step_vad(&app, &mut vad_state, &mut vad_edge_at, rms, barge_in_arm);
+        // VAD still runs when disarmed — it drives amplitude events
+        // for the spheroid + will eventually drive wake-word detection.
+        step_vad(
+            &app,
+            &mut vad_state,
+            &mut vad_edge_at,
+            rms,
+            barge_in_arm,
+            armed_for_submit,
+        );
 
         if last_amp_emit.elapsed() >= Duration::from_millis(AMPLITUDE_EMIT_MS) {
             let payload = (rms.min(0.5) * 2.0).min(1.0);
@@ -292,6 +327,7 @@ fn step_vad(
     edge_at: &mut Option<Instant>,
     rms: f32,
     barge_in_arm: bool,
+    armed_for_submit: bool,
 ) {
     let now = Instant::now();
     match *state {
@@ -309,8 +345,18 @@ fn step_vad(
                 if now.duration_since(edge) >= Duration::from_millis(VAD_ONSET_MS) {
                     *state = VadState::Speech;
                     *edge_at = None;
-                    tracing::info!("[voice] speech-start (rms {:.4})", rms);
-                    let _ = app.emit("voice://speech-start", ());
+                    tracing::info!(
+                        "[voice] speech-start rms={:.4} armed={}",
+                        rms,
+                        armed_for_submit
+                    );
+                    // Only emit speech-start to the frontend when
+                    // armed. Otherwise we would flip the canvas to
+                    // voice mode + show the spheroid every time
+                    // someone in the room made noise.
+                    if armed_for_submit {
+                        let _ = app.emit("voice://speech-start", ());
+                    }
                     if barge_in_arm {
                         let _ = app.emit("voice://barge-in", ());
                     }
@@ -331,8 +377,13 @@ fn step_vad(
                 if now.duration_since(edge) >= Duration::from_millis(VAD_HANGOVER_MS) {
                     *state = VadState::Silent;
                     *edge_at = None;
-                    tracing::info!("[voice] speech-end");
-                    let _ = app.emit("voice://speech-end", ());
+                    tracing::info!("[voice] speech-end (armed={})", armed_for_submit);
+                    // v0.28.2 — only fire the speech-end event to the
+                    // frontend when armed, so the frontend never runs
+                    // finalizeTranscript on ambient speech.
+                    if armed_for_submit {
+                        let _ = app.emit("voice://speech-end", ());
+                    }
                 }
             }
         }

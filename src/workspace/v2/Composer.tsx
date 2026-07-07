@@ -8,7 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { useAppStore } from "../../stores/app";
-import { VoiceInputButton } from "../../chat/VoiceInputButton";
+import { VoiceArmButton } from "./VoiceArmButton";
 import { MicMeter } from "./MicMeter";
 
 export function Composer() {
@@ -74,10 +74,7 @@ export function Composer() {
             backdropFilter: "blur(14px)",
           }}
         >
-          <VoiceInputButton
-            disabled={isPending}
-            onTranscript={(t) => handleSubmit(t)}
-          />
+          <VoiceArmButton disabled={isPending} />
           {/* v0.27.5 — live level meter appears while the mic is
               armed. Gives an at-a-glance answer to 'is my mic
               actually picking anything up?' before we transcribe. */}
