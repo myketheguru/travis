@@ -181,18 +181,6 @@ const writeDiag = (v: boolean) => {
   }
 };
 
-const readActiveConv = (): number | null => {
-  try {
-    if (typeof localStorage === "undefined") return null;
-    const raw = localStorage.getItem(ACTIVE_CONV_KEY);
-    if (!raw) return null;
-    const n = Number.parseInt(raw, 10);
-    return Number.isFinite(n) && n > 0 ? n : null;
-  } catch {
-    return null;
-  }
-};
-
 const writeActiveConv = (id: number | null) => {
   try {
     if (typeof localStorage === "undefined") return;
@@ -241,12 +229,25 @@ const writeDocFullscreen = (v: boolean) => {
   }
 };
 
+// v0.28.1 — always start with a fresh chat on launch. Previously we
+// restored activeConversationId from localStorage, which meant every
+// restart continued the old conversation. Users wanted the app to
+// feel clean-slate on open. Prior conversations are still reachable
+// via the History overlay (⌘K).
+try {
+  if (typeof localStorage !== "undefined") {
+    localStorage.removeItem(ACTIVE_CONV_KEY);
+  }
+} catch {
+  /* private mode */
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   activity: "idle",
   status: null,
   profile: null,
   showDiagnostics: readDiag(),
-  activeConversationId: readActiveConv(),
+  activeConversationId: null,
   viewerDocumentId: null,
   chatPaneFraction: readChatPaneFraction(),
   docFullscreen: readDocFullscreen(),

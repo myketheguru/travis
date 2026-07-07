@@ -19,10 +19,16 @@ export function MapCanvas() {
   const mapPart = extractMapPart(focal?.content);
 
   // Defensive fallback — if useCanvasMode flipped us here but no map
-  // part is actually available (e.g. because the response was plain
-  // text about a place), gracefully drop back to ChatCanvas so the
-  // user never sees a blank screen.
-  if (!mapPart) return <ChatCanvas />;
+  // part is actually available OR the map part is missing its route
+  // (LLM emitted a partial rich response), gracefully drop back to
+  // ChatCanvas so the user never sees a blank screen.
+  if (
+    !mapPart ||
+    !mapPart.route ||
+    typeof mapPart.route.distance_meters !== "number"
+  ) {
+    return <ChatCanvas />;
+  }
 
   const { route } = mapPart;
   const distanceKm = (route.distance_meters / 1000).toFixed(1);
