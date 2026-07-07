@@ -59,11 +59,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # v0.28.2 — pinned macos-13 (Ventura). macos-latest ships a
-          # newer Xcode whose libc++ redefines _LIBCPP_EXPORTED_FROM_ABI
-          # which breaks whisper.cpp's ggml compile with 20+ errors.
-          # macos-13 has the stable ABI whisper.cpp expects.
-          - platform: macos-13
+          # v0.28.4 — moved from macos-13 to macos-14. macos-13
+          # runners have very scarce availability (hours-long queues).
+          # macos-14 (Sonoma, Apple Silicon) still has the libc++ ABI
+          # whisper.cpp expects and much better runner availability.
+          - platform: macos-14
             args: --target universal-apple-darwin
             artifact: macos
             bundle_path: src-tauri/target/universal-apple-darwin/release/bundle
@@ -99,7 +99,7 @@ jobs:
       - name: Set up Rust (with macOS targets when needed)
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-13' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.platform == 'macos-14' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
