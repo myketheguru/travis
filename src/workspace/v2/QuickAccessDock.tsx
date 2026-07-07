@@ -1,21 +1,26 @@
 /**
- * QuickAccessDock — v0.27.2 — vertical left-mid rail with hover popovers.
- *
- * Previously bottom-right; hid behind the composer on small windows.
- * Moved to a vertical column on the left middle edge with popover
- * labels on hover so the icons alone stay compact.
+ * QuickAccessDock — v0.27.2 vertical left-mid rail with hover popovers.
+ * v0.27.3 hotfix: no closure-capture selectors — those triggered an
+ * infinite re-render loop on mount and blanked the app after onboarding.
  */
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAppStore } from "../../stores/app";
 
 export function QuickAccessDock() {
+  // All setters are pulled once via stable store selectors. No closures
+  // constructed during render — that was the v0.27.2 blank-screen bug.
+  const setHistoryOverlayOpen = useAppStore((s) => s.setHistoryOverlayOpen);
+  const setDocumentsOverlayOpen = useAppStore((s) => s.setDocumentsOverlayOpen);
+  const setSettingsOverlayOpen = useAppStore((s) => s.setSettingsOverlayOpen);
+  const setUiSurface = useAppStore((s) => s.setUiSurface);
+
   return (
     <div
-      className="absolute left-3 top-1/2 -translate-y-1/2 z-20 pointer-events-auto flex flex-col gap-1.5"
+      className="absolute left-3 top-1/2 z-20 pointer-events-auto flex flex-col gap-1.5"
       style={{
-        // Nudge down slightly from ThreadRail so they don't overlap
-        // visually when both are showing.
+        // Nudge down slightly from the thread rail so they don't
+        // overlap visually when both are showing.
         transform: "translateY(calc(-50% + 128px))",
       }}
     >
@@ -23,24 +28,24 @@ export function QuickAccessDock() {
         label="History"
         shortcut="⌘K"
         icon={<ClockIcon />}
-        useOpen={(s) => s.setHistoryOverlayOpen}
+        onClick={() => setHistoryOverlayOpen(true)}
       />
       <DockRow
         label="Documents"
         shortcut="⌘D"
         icon={<DocIcon />}
-        useOpen={(s) => s.setDocumentsOverlayOpen}
+        onClick={() => setDocumentsOverlayOpen(true)}
       />
       <DockRow
         label="Settings"
         shortcut="⌘,"
         icon={<GearIcon />}
-        useOpen={(s) => s.setSettingsOverlayOpen}
+        onClick={() => setSettingsOverlayOpen(true)}
       />
       <DockRow
         label="Classic view"
         icon={<SwapIcon />}
-        useOpen={() => (open) => useAppStore.getState().setUiSurface(open ? "classic" : "v2")}
+        onClick={() => setUiSurface("classic")}
       />
     </div>
   );
@@ -50,17 +55,14 @@ function DockRow({
   label,
   shortcut,
   icon,
-  useOpen,
+  onClick,
 }: {
   label: string;
   shortcut?: string;
   icon: React.ReactNode;
-  useOpen: (
-    s: ReturnType<typeof useAppStore.getState>,
-  ) => (open: boolean) => void;
+  onClick: () => void;
 }) {
   const [hover, setHover] = useState(false);
-  const open = useAppStore(useOpen);
 
   return (
     <div
@@ -71,7 +73,7 @@ function DockRow({
       <motion.button
         whileHover={{ scale: 1.06 }}
         whileTap={{ scale: 0.94 }}
-        onClick={() => open(true)}
+        onClick={onClick}
         className="w-9 h-9 rounded-full flex items-center justify-center transition-colors backdrop-blur"
         style={{
           color: "rgba(236, 236, 241, 0.75)",
