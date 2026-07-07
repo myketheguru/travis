@@ -209,12 +209,27 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
                     anywhere to think out loud. I'll learn the rest by working
                     with you.
                   </p>
+                  {/* v0.27.4 — request the permissions Travis will
+                       need at runtime BEFORE letting the user in, so
+                       we never interrupt an actual interaction with
+                       a prompt. Mic + notifications are the two the
+                       app relies on. Denials are non-fatal — features
+                       will just prompt again later. */}
                   <button
-                    onClick={onDone}
+                    onClick={async () => {
+                      await requestRuntimePermissions();
+                      onDone();
+                    }}
                     className="mt-3 px-6 py-2.5 rounded-full bg-bone/95 text-ink text-sm font-medium hover:bg-bone transition-colors"
                   >
-                    Enter
+                    Grant access &amp; enter
                   </button>
+                  <div
+                    className="text-[11px] tracking-wide mt-1"
+                    style={{ color: "rgba(236,236,241,0.42)" }}
+                  >
+                    microphone + notifications
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -223,4 +238,33 @@ export default function Onboarding({ onDone }: { onDone: () => void }) {
       </div>
     </main>
   );
+}
+
+/**
+ * requestRuntimePermissions — v0.27.4.
+ *
+ * Pre-warm the two permissions the app needs so the first real use
+ * doesn't get interrupted by a browser/OS prompt. Mic: getUserMedia
+ * then immediately close the stream. Notifications: standard
+ * requestPermission. All errors swallowed — permissions are best
+ * effort at onboarding time; features that need them will re-prompt.
+ */
+async function requestRuntimePermissions(): Promise<void> {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach((t) => t.stop());
+  } catch {
+    // User denied or no mic — degrade gracefully; the mic button will
+    // re-prompt when tapped.
+  }
+  try {
+    if (
+      typeof Notification !== "undefined" &&
+      Notification.permission === "default"
+    ) {
+      await Notification.requestPermission();
+    }
+  } catch {
+    // Same posture — non-fatal.
+  }
 }

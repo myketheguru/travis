@@ -66,19 +66,17 @@ export function Composer() {
               : "rgba(255, 255, 255, 0.16)",
           }}
           transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
-          className="rounded-2xl px-3 py-2.5 flex items-end gap-2"
+          className="rounded-2xl px-3 py-2 flex items-center gap-2"
           style={{
             background: "rgba(12, 12, 16, 0.85)",
             border: "1px solid rgba(255, 255, 255, 0.16)",
             backdropFilter: "blur(14px)",
           }}
         >
-          <div className="shrink-0 pb-0.5">
-            <VoiceInputButton
-              disabled={isPending}
-              onTranscript={(t) => handleSubmit(t)}
-            />
-          </div>
+          <VoiceInputButton
+            disabled={isPending}
+            onTranscript={(t) => handleSubmit(t)}
+          />
           <textarea
             ref={inputRef}
             value={text}

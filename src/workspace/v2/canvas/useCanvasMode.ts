@@ -17,7 +17,7 @@ import { useAppStore } from "../../../stores/app";
 import { useFocalContent } from "../useFocalContent";
 import { parseRichResponse } from "../../../lib/richResponse";
 
-const IDLE_MS = 10 * 60 * 1000;
+const IDLE_MS = 5 * 60 * 1000;
 
 export function useCanvasMode() {
   const activity = useAppStore((s) => s.activity);

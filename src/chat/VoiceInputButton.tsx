@@ -27,7 +27,6 @@ interface Props {
 }
 
 const SAMPLE_RATE = 16000;
-const MIN_HOLD_MS = 200; // avoid accidental clicks
 
 export function VoiceInputButton({ onTranscript, disabled }: Props) {
   const [state, setState] = useState<State>({ kind: "idle" });
@@ -39,6 +38,10 @@ export function VoiceInputButton({ onTranscript, disabled }: Props) {
   // v0.26 (v2 Shell 11b) — pipe live RMS amplitude into the store so
   // the SpeechScene spheroid can pulse with what the mic hears.
   const setSpeechAmplitude = useAppStore((s) => s.setSpeechAmplitude);
+  // v0.27.4 — drive the app's activity signal so the canvas can flip
+  // to voice mode the instant the mic is armed (spheroid appears
+  // immediately, not after the first sample).
+  const setActivity = useAppStore((s) => s.setActivity);
 
   const cleanup = () => {
     processorRef.current?.disconnect();
@@ -56,6 +59,9 @@ export function VoiceInputButton({ onTranscript, disabled }: Props) {
     sourceRef.current = null;
     // Zero the amplitude signal so the spheroid can fade out cleanly.
     setSpeechAmplitude(0);
+    // v0.27.4 — release the voice activity signal on any cleanup so
+    // the canvas flips back out of voice mode.
+    setActivity("idle");
   };
 
   useEffect(() => cleanup, []);
@@ -82,6 +88,10 @@ export function VoiceInputButton({ onTranscript, disabled }: Props) {
     if (disabled) return;
     if (state.kind !== "idle" && state.kind !== "error") return;
     setState({ kind: "requesting" });
+    // v0.27.4 — flip activity to listening BEFORE getUserMedia so the
+    // canvas can immediately show the spheroid + 'Listening…' caption
+    // rather than a delayed switch when audio finally starts flowing.
+    setActivity("listening");
     try {
       // Kick the model bootstrap early — it's a no-op if cached.
       speechRuntimeEnsure().catch(() => {});
@@ -131,8 +141,11 @@ export function VoiceInputButton({ onTranscript, disabled }: Props) {
   async function endRecording() {
     if (state.kind !== "recording") return;
     const held = Date.now() - state.started;
-    // Below the click threshold — probably an accidental tap. Cancel.
-    if (held < MIN_HOLD_MS) {
+    // v0.27.4 — in tap-to-toggle mode, an accidentally fast second tap
+    // shouldn't drop the whole capture. Only bail if the recording was
+    // truly instantaneous (< 300ms) and had zero samples buffered.
+    const hasSamples = samplesRef.current.some((c) => c.length > 0);
+    if (held < 300 && !hasSamples) {
       cleanup();
       setState({ kind: "idle" });
       return;
@@ -165,32 +178,36 @@ export function VoiceInputButton({ onTranscript, disabled }: Props) {
       case "requesting":
         return "getting ready…";
       case "recording":
-        return "listening";
+        return "listening — tap to stop";
       case "transcribing":
         return "transcribing…";
       case "error":
         return "mic error";
       default:
-        return "hold to speak";
+        return "tap to speak";
     }
   })();
 
   const isActive = state.kind === "recording";
   const isBusy = state.kind === "requesting" || state.kind === "transcribing";
 
+  // v0.27.4 — tap-to-toggle (was press-and-hold). Press-and-hold made
+  // the mic feel broken on desktop: users tapped once, released, and
+  // got "silence" because getUserMedia took longer to init than their
+  // click lasted. Now click = start, click again = stop.
+  function onClick(e: React.MouseEvent<HTMLButtonElement>) {
+    e.preventDefault();
+    if (state.kind === "idle" || state.kind === "error") {
+      void beginRecording();
+    } else if (state.kind === "recording") {
+      void endRecording();
+    }
+    // requesting / transcribing are transient — ignore taps mid-flight.
+  }
+
   return (
     <button
-      onMouseDown={beginRecording}
-      onMouseUp={endRecording}
-      onMouseLeave={endRecording}
-      onTouchStart={(e) => {
-        e.preventDefault();
-        void beginRecording();
-      }}
-      onTouchEnd={(e) => {
-        e.preventDefault();
-        void endRecording();
-      }}
+      onClick={onClick}
       disabled={disabled}
       title={label}
       className="shrink-0 h-9 w-9 flex items-center justify-center rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
