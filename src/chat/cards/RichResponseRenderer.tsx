@@ -62,7 +62,13 @@ function PartRouter({
       return <MarkdownBody text={part.markdown} />;
 
     case "map":
-      return <MapCard route={part.route} narration={part.narration} />;
+      return (
+        <MapCard
+          route={part.route}
+          place={part.place}
+          narration={part.narration}
+        />
+      );
 
     case "doc_ref":
       return (

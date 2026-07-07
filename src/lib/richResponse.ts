@@ -44,7 +44,23 @@ export interface TextPart extends BasePart {
 
 export interface MapPart extends BasePart {
   kind: "map";
-  route: MapRoute;
+  /// v0.28.2 — route is optional. When the user asks about a PLACE
+  /// (e.g. "show me a map of Lagos") the LLM emits a map part with
+  /// just `place` populated; when they ask about a ROUTE (A to B)
+  /// the LLM emits `route`. Both are valid map surfaces.
+  route?: MapRoute;
+  place?: MapPlace;
+}
+
+export interface MapPlace {
+  label: string;
+  lat?: number;
+  lng?: number;
+  region?: string;
+  country?: string;
+  /// Short human descriptor for the place ("City in Nigeria",
+  /// "Neighborhood in Brooklyn").
+  descriptor?: string;
 }
 
 export interface DocRefPart extends BasePart {

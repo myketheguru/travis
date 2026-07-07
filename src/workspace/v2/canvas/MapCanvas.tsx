@@ -1,14 +1,18 @@
 /**
  * MapCanvas — v0.28.2.
  *
- * When the assistant returns a map part, the canvas becomes a route
- * summary. Center-stage destination + distance + duration + narration
- * over a subtle animated route sketch. Loud enough that a user in a
- * dark room can read it at a glance — the SVG art alone was invisible
- * against the black canvas in v0.28.1.
+ * When the assistant returns a map part, the canvas surfaces it as a
+ * loud center-stage card. Two shapes are supported:
  *
- * Real MapLibre tile rendering is scoped for a future release; when it
- * lands, the SVG placeholder gets replaced with the interactive map.
+ *   route  — origin/destination with distance + duration
+ *   place  — single location (city, neighborhood, landmark)
+ *
+ * Either shape renders a legible summary. When only a narration is
+ * provided (LLM returned a bare map part), we still surface the
+ * narration in the same visual frame so the user gets a coherent
+ * response instead of a "coming soon" placeholder.
+ *
+ * Real MapLibre tile rendering is scoped for a follow-up release.
  */
 import { motion } from "framer-motion";
 import { useFocalContent } from "../useFocalContent";
@@ -20,25 +24,23 @@ export function MapCanvas() {
   const { focal } = useFocalContent();
   const mapPart = extractMapPart(focal?.content);
 
-  if (
-    !mapPart ||
-    !mapPart.route ||
-    typeof mapPart.route.distance_meters !== "number"
-  ) {
+  if (!mapPart) return <ChatCanvas />;
+
+  const hasRoute =
+    !!mapPart.route && typeof mapPart.route.distance_meters === "number";
+  const hasPlace = !!mapPart.place?.label;
+  const hasNarration = !!mapPart.narration?.trim();
+
+  // If we truly have nothing to show, degrade to chat rather than
+  // rendering an empty frame.
+  if (!hasRoute && !hasPlace && !hasNarration) {
     return <ChatCanvas />;
   }
 
-  const { route } = mapPart;
-  const distanceKm = (route.distance_meters / 1000).toFixed(1);
-  const durationMin = Math.round(route.duration_seconds / 60);
-  const destination = route.destination_label ?? "your destination";
-
   return (
     <div className="absolute inset-0 overflow-hidden pointer-events-none">
-      {/* Subtle animated route sketch behind everything */}
       <RouteSketch />
 
-      {/* Foreground info card — center-stage, loud, readable */}
       <motion.div
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
@@ -61,31 +63,15 @@ export function MapCanvas() {
             className="text-[10px] uppercase tracking-[0.28em] font-mono mb-3"
             style={{ color: "rgba(110, 196, 232, 0.85)" }}
           >
-            // route
+            // {hasRoute ? "route" : "place"}
           </div>
-          <div
-            className="text-[32px] font-light leading-tight tracking-tight"
-            style={{ color: "rgb(236, 236, 241)" }}
-          >
-            {destination}
-          </div>
-          <div
-            className="flex items-baseline gap-6 mt-5 font-mono"
-            style={{ color: "rgba(236, 236, 241, 0.88)" }}
-          >
-            <Metric label="duration" value={`${durationMin} min`} />
-            <Metric label="distance" value={`${distanceKm} km`} />
-            {route.profile && (
-              <Metric
-                label="mode"
-                value={route.profile.replace("-", " ")}
-              />
-            )}
-          </div>
-          {mapPart.narration && (
+          <RenderHeadline mapPart={mapPart} />
+          {hasRoute && <RouteMetrics mapPart={mapPart} />}
+          {hasPlace && !hasRoute && <PlaceMetrics mapPart={mapPart} />}
+          {hasNarration && (
             <div
               className="text-[14px] mt-6 leading-relaxed"
-              style={{ color: "rgba(236, 236, 241, 0.72)" }}
+              style={{ color: "rgba(236, 236, 241, 0.78)" }}
             >
               {mapPart.narration}
             </div>
@@ -98,6 +84,55 @@ export function MapCanvas() {
           </div>
         </div>
       </motion.div>
+    </div>
+  );
+}
+
+function RenderHeadline({ mapPart }: { mapPart: MapPart }) {
+  const title =
+    mapPart.route?.destination_label ??
+    mapPart.place?.label ??
+    "map";
+  return (
+    <div
+      className="text-[32px] font-light leading-tight tracking-tight"
+      style={{ color: "rgb(236, 236, 241)" }}
+    >
+      {title}
+    </div>
+  );
+}
+
+function RouteMetrics({ mapPart }: { mapPart: MapPart }) {
+  const route = mapPart.route!;
+  const distanceKm = (route.distance_meters / 1000).toFixed(1);
+  const durationMin = Math.round(route.duration_seconds / 60);
+  return (
+    <div
+      className="flex items-baseline gap-6 mt-5 font-mono"
+      style={{ color: "rgba(236, 236, 241, 0.88)" }}
+    >
+      <Metric label="duration" value={`${durationMin} min`} />
+      <Metric label="distance" value={`${distanceKm} km`} />
+      {route.profile && (
+        <Metric label="mode" value={route.profile.replace("-", " ")} />
+      )}
+    </div>
+  );
+}
+
+function PlaceMetrics({ mapPart }: { mapPart: MapPart }) {
+  const place = mapPart.place!;
+  const bits = [place.descriptor, place.region, place.country]
+    .filter(Boolean)
+    .join(" · ");
+  if (!bits) return null;
+  return (
+    <div
+      className="mt-5 font-mono text-[13px]"
+      style={{ color: "rgba(236, 236, 241, 0.78)" }}
+    >
+      {bits}
     </div>
   );
 }
