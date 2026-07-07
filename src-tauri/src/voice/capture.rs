@@ -18,9 +18,14 @@ use tauri::{AppHandle, Emitter};
 
 const TARGET_HZ: u32 = 16_000;
 const AMPLITUDE_EMIT_MS: u64 = 60;
-const VAD_SPEECH_RMS: f32 = 0.018;
-const VAD_SILENCE_RMS: f32 = 0.010;
-const VAD_ONSET_MS: u64 = 120;
+// v0.28.1 — thresholds lowered after real-device testing revealed the
+// v0.28.0 values (0.018 / 0.010) never triggered on typical laptop
+// mics at desk distance. Values here calibrated to trigger reliably
+// on quiet speech ~40cm from a built-in mic while staying above
+// keyboard clatter (~0.003) and fan noise (~0.001).
+const VAD_SPEECH_RMS: f32 = 0.008;
+const VAD_SILENCE_RMS: f32 = 0.004;
+const VAD_ONSET_MS: u64 = 100;
 const VAD_HANGOVER_MS: u64 = 700;
 
 /// Control commands sent from the Tauri command layer to the worker
@@ -145,6 +150,13 @@ fn tick_loop(app: AppHandle, audio: Arc<Mutex<AudioBuf>>, rx: Receiver<Cmd>, inp
     let mut vad_state = VadState::Silent;
     let mut vad_edge_at: Option<Instant> = None;
     let mut last_amp_emit = Instant::now();
+    // v0.28.1 diagnostic — periodic RMS + state log so we can tell
+    // whether the mic is actually delivering audio and if VAD is
+    // seeing it. Log line every 500ms; look for "rms=0.000" = mic
+    // giving nothing OR "rms=0.005 silent" = mic works but too quiet
+    // for current thresholds.
+    let mut last_diag = Instant::now();
+    let mut last_rms_seen: f32 = 0.0;
 
     loop {
         // Drain any pending control commands.
@@ -173,6 +185,7 @@ fn tick_loop(app: AppHandle, audio: Arc<Mutex<AudioBuf>>, rx: Receiver<Cmd>, inp
 
         let decimated = decimate(&incoming, input_hz, TARGET_HZ);
         let rms = rms_of(&decimated);
+        last_rms_seen = rms;
         utterance.extend_from_slice(&decimated);
         step_vad(&app, &mut vad_state, &mut vad_edge_at, rms, barge_in_arm);
 
@@ -180,6 +193,21 @@ fn tick_loop(app: AppHandle, audio: Arc<Mutex<AudioBuf>>, rx: Receiver<Cmd>, inp
             let payload = (rms.min(0.5) * 2.0).min(1.0);
             let _ = app.emit("voice://amplitude", payload);
             last_amp_emit = Instant::now();
+        }
+        if last_diag.elapsed() >= Duration::from_millis(500) {
+            let state_name = match vad_state {
+                VadState::Silent => "silent",
+                VadState::ProbablySpeech => "probably-speech",
+                VadState::Speech => "speech",
+                VadState::ProbablySilence => "probably-silence",
+            };
+            tracing::info!(
+                "[voice] rms={:.4} state={} utterance_len={}",
+                last_rms_seen,
+                state_name,
+                utterance.len()
+            );
+            last_diag = Instant::now();
         }
     }
 }
@@ -215,6 +243,7 @@ fn step_vad(
                 if now.duration_since(edge) >= Duration::from_millis(VAD_ONSET_MS) {
                     *state = VadState::Speech;
                     *edge_at = None;
+                    tracing::info!("[voice] speech-start (rms {:.4})", rms);
                     let _ = app.emit("voice://speech-start", ());
                     if barge_in_arm {
                         let _ = app.emit("voice://barge-in", ());
@@ -236,6 +265,7 @@ fn step_vad(
                 if now.duration_since(edge) >= Duration::from_millis(VAD_HANGOVER_MS) {
                     *state = VadState::Silent;
                     *edge_at = None;
+                    tracing::info!("[voice] speech-end");
                     let _ = app.emit("voice://speech-end", ());
                 }
             }

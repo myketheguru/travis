@@ -11,6 +11,7 @@ import { ChatCanvas } from "./ChatCanvas";
 import { VoiceCanvas } from "./VoiceCanvas";
 import { MapCanvas } from "./MapCanvas";
 import { IdleCanvas } from "./IdleCanvas";
+import { CanvasErrorBoundary } from "./CanvasErrorBoundary";
 
 export function CanvasStage() {
   const mode = useAppStore((s) => s.canvasMode);
@@ -26,10 +27,12 @@ export function CanvasStage() {
           transition={{ duration: 0.36, ease: [0.22, 1, 0.36, 1] }}
           className="absolute inset-0"
         >
-          {mode === "chat" && <ChatCanvas />}
-          {mode === "voice" && <VoiceCanvas />}
-          {mode === "map" && <MapCanvas />}
-          {mode === "idle" && <IdleCanvas />}
+          <CanvasErrorBoundary>
+            {mode === "chat" && <ChatCanvas />}
+            {mode === "voice" && <VoiceCanvas />}
+            {mode === "map" && <MapCanvas />}
+            {mode === "idle" && <IdleCanvas />}
+          </CanvasErrorBoundary>
         </motion.div>
       </AnimatePresence>
     </div>

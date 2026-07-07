@@ -41,29 +41,40 @@ export function useNativeVoice({ enabled }: Options) {
 
     (async () => {
       try {
-        await nativeVoice.start();
+        const result = await nativeVoice.start();
+        console.log("[voice] native start ok:", result);
       } catch (err) {
-        console.warn("[voice] native start failed:", err);
+        console.error("[voice] native start FAILED:", err);
         return;
       }
       if (cancelled) return;
 
+      let ampSeen = 0;
       unlisteners.push(
         await onVoiceEvent<number>("voice://amplitude", (a) => {
           setSpeechAmplitude(a);
+          // Log first amplitude event to confirm the pipeline is
+          // actually delivering. Subsequent events would spam.
+          if (ampSeen === 0) {
+            console.log("[voice] first amplitude event, value =", a);
+          }
+          ampSeen++;
         }),
       );
       unlisteners.push(
         await onVoiceEvent<null>("voice://speech-start", () => {
+          console.log("[voice] speech-start");
           setActivity("listening");
         }),
       );
       unlisteners.push(
         await onVoiceEvent<null>("voice://speech-end", async () => {
+          console.log("[voice] speech-end -> finalize");
           if (finalizingRef.current) return;
           finalizingRef.current = true;
           try {
             const text = await nativeVoice.finalizeTranscript();
+            console.log("[voice] transcript:", JSON.stringify(text));
             const trimmed = text.trim();
             if (trimmed.length > 0) {
               setPendingComposerSubmit(trimmed);
