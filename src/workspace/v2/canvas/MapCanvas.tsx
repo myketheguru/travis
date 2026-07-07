@@ -72,8 +72,17 @@ function InteractiveMap({
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    console.log(
+      "[map] init — container size:",
+      el.clientWidth,
+      "x",
+      el.clientHeight,
+      "coords:",
+      coords,
+    );
+    let map: MapLibreMap | null = null;
     try {
-      const map = new maplibregl.Map({
+      map = new maplibregl.Map({
         container: el,
         style: OSM_STYLE,
         center: [coords.lng, coords.lat],
@@ -81,6 +90,18 @@ function InteractiveMap({
         attributionControl: { compact: true },
       });
       mapRef.current = map;
+      map.on("load", () => {
+        console.log("[map] load event fired");
+        map?.resize();
+      });
+      map.on("error", (e) => {
+        console.warn("[map] error event:", e);
+      });
+      // Force a resize on the next tick — WebGL sometimes measures
+      // 0x0 during initial mount inside stacked absolute containers.
+      requestAnimationFrame(() => {
+        map?.resize();
+      });
       const marker = new maplibregl.Marker({
         color: "rgb(189, 158, 255)",
       })
@@ -124,7 +145,11 @@ function InteractiveMap({
       <div
         ref={containerRef}
         className="absolute inset-0"
-        style={{ background: "rgb(6, 6, 10)" }}
+        style={{
+          background: "rgb(6, 6, 10)",
+          minWidth: "100%",
+          minHeight: "100%",
+        }}
       />
 
       <motion.div
