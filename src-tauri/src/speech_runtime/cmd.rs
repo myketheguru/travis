@@ -109,15 +109,16 @@ pub async fn speech_transcribe(
             .full(params, &samples)
             .map_err(|e| format!("whisper full: {e}"))?;
 
-        let n = state
-            .full_n_segments()
-            .map_err(|e| format!("whisper n_segments: {e}"))?;
+        // whisper-rs 0.16 — full_n_segments returns c_int (raw count),
+        // segments accessed via get_segment(i).to_str().
+        let n = state.full_n_segments();
         let mut out = String::new();
         for i in 0..n {
-            let seg = state
-                .full_get_segment_text(i)
-                .map_err(|e| format!("whisper segment {i}: {e}"))?;
-            out.push_str(&seg);
+            if let Some(seg) = state.get_segment(i) {
+                if let Ok(text) = seg.to_str() {
+                    out.push_str(text);
+                }
+            }
         }
         Ok(out.trim().to_string())
     })

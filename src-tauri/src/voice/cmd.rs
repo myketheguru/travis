@@ -111,15 +111,15 @@ pub async fn voice_finalize_transcript(
         state
             .full(params, &samples)
             .map_err(|e| format!("whisper full: {e}"))?;
-        let n = state
-            .full_n_segments()
-            .map_err(|e| format!("whisper n_segments: {e}"))?;
+        // whisper-rs 0.16 API — n is c_int, segments via get_segment.
+        let n = state.full_n_segments();
         let mut out = String::new();
         for i in 0..n {
-            let seg = state
-                .full_get_segment_text(i)
-                .map_err(|e| format!("whisper seg {i}: {e}"))?;
-            out.push_str(&seg);
+            if let Some(seg) = state.get_segment(i) {
+                if let Ok(text) = seg.to_str() {
+                    out.push_str(text);
+                }
+            }
         }
         Ok(out.trim().to_string())
     })

@@ -83,7 +83,7 @@ urlencoding = "2"
 # cargo build; incremental is cached). Runs entirely local, offline,
 # no API cost. Models download lazily via the same bootstrap pattern
 # as the Python runtime — user sees the sleek loader.
-whisper-rs = { version = "0.13", default-features = false }
+whisper-rs = { version = "0.16", default-features = false }
 # v0.28 — native mic capture (kills the WebView AudioContext dance).
 # cpal talks directly to WASAPI on Windows, CoreAudio on macOS, ALSA
 # on Linux. Lower latency, no permission prompts per WebView, no
