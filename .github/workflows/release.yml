@@ -55,19 +55,28 @@ env:
 
 jobs:
   build:
+    # v0.28.2 — macOS whisper.cpp build broke on macos-latest's newer
+    # Xcode libc++ (LIBCPP_EXPORTED_FROM_ABI conflicts). Windows + Linux
+    # ship regardless; macOS is opportunistic until we pin a working
+    # combination of whisper-rs + macos runner. This keeps releases
+    # flowing for the platforms our users are actually on.
+    continue-on-error: ${{ matrix.optional == true }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: macos-latest
+            optional: true
             args: --target universal-apple-darwin
             artifact: macos
             bundle_path: src-tauri/target/universal-apple-darwin/release/bundle
           - platform: ubuntu-22.04
+            optional: false
             args: ''
             artifact: linux
             bundle_path: src-tauri/target/release/bundle
           - platform: windows-latest
+            optional: false
             args: ''
             artifact: windows
             bundle_path: src-tauri/target/release/bundle
