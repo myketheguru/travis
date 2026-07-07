@@ -82,9 +82,22 @@ export function VoiceInputButton({ onTranscript, disabled }: Props) {
         void beginRecording();
       }
     }
+    // v0.27.6 — spacebar longpress release ends the recording so the
+    // user can push-to-talk without a second click.
+    function onWakeEnd() {
+      if (state.kind === "recording") {
+        void endRecording();
+      }
+    }
     window.addEventListener("travis:wake", onWake as EventListener);
-    return () =>
+    window.addEventListener("travis:wake-end", onWakeEnd as EventListener);
+    return () => {
       window.removeEventListener("travis:wake", onWake as EventListener);
+      window.removeEventListener(
+        "travis:wake-end",
+        onWakeEnd as EventListener,
+      );
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.kind]);
 
@@ -110,6 +123,18 @@ export function VoiceInputButton({ onTranscript, disabled }: Props) {
       streamRef.current = stream;
       const ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
       audioContextRef.current = ctx;
+      // v0.27.6 — WebView2 / modern Chromium starts AudioContext in
+      // 'suspended' state until an explicit user gesture unlocks it.
+      // Even though the mic click IS a gesture, the context still
+      // needs resume() before samples flow. Without this the meter
+      // stays flat and every capture returned Silence.
+      if (ctx.state !== "running") {
+        try {
+          await ctx.resume();
+        } catch (err) {
+          console.warn("[voice] AudioContext.resume() failed", err);
+        }
+      }
       const source = ctx.createMediaStreamSource(stream);
       sourceRef.current = source;
       // ScriptProcessorNode is deprecated but the AudioWorklet path

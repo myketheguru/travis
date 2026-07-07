@@ -63,10 +63,13 @@ export function useCanvasMode() {
       }
     }
 
-    // Idle — no messages yet, or user has been away for a while.
-    const noMessages = focal === null;
+    // Idle — cold boot with no history OR user has been inactive
+    // for IDLE_MS regardless of whether there is a prior conversation.
+    // The old gate (`noMessages && ...`) never let idle kick in when
+    // any focal message existed — that was the v0.27.5 bug.
     const idleForAWhile = Date.now() - lastActiveRef.current > IDLE_MS;
-    if (noMessages && (isFirstMoment || idleForAWhile)) {
+    const noMessages = focal === null;
+    if (idleForAWhile || (noMessages && isFirstMoment)) {
       if (canvasMode !== "idle") setCanvasMode("idle");
       return;
     }
@@ -76,14 +79,16 @@ export function useCanvasMode() {
   }, [activity, focal, isFirstMoment, canvasMode, setCanvasMode]);
 
   // Keep an interval to re-check idle status when nothing else changes.
+  // v0.27.6 — Poll every 15s so 5min idle threshold triggers within
+  // 15s of crossing, not up to 30s later.
   useEffect(() => {
     idleTickRef.current = window.setInterval(() => {
       const idleForAWhile = Date.now() - lastActiveRef.current > IDLE_MS;
       const currentMode = useAppStore.getState().canvasMode;
-      if (idleForAWhile && currentMode === "chat") {
+      if (idleForAWhile && currentMode !== "idle" && currentMode !== "voice") {
         useAppStore.getState().setCanvasMode("idle");
       }
-    }, 30_000);
+    }, 15_000);
     return () => {
       if (idleTickRef.current != null) window.clearInterval(idleTickRef.current);
     };

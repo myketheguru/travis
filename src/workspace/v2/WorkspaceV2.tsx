@@ -80,6 +80,54 @@ export function WorkspaceV2() {
     noteUserActivity,
   ]);
 
+  // v0.27.6 — Spacebar longpress (1.5s) push-to-talk. Only fires when
+  // focus is NOT inside an input/textarea so it never eats a real
+  // spacebar keystroke. Dispatches `travis:wake` which VoiceInputButton
+  // picks up to arm the mic. Release stops the recording.
+  useEffect(() => {
+    let holdTimer: number | null = null;
+    let waking = false;
+
+    const isTypingTarget = (t: EventTarget | null) => {
+      const el = t as HTMLElement | null;
+      if (!el) return false;
+      const tag = el.tagName;
+      return (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        el.isContentEditable === true
+      );
+    };
+
+    function onDown(e: KeyboardEvent) {
+      if (e.code !== "Space" || e.repeat) return;
+      if (isTypingTarget(e.target)) return;
+      if (holdTimer != null) return;
+      holdTimer = window.setTimeout(() => {
+        waking = true;
+        window.dispatchEvent(new CustomEvent("travis:wake"));
+      }, 1500);
+    }
+    function onUp(e: KeyboardEvent) {
+      if (e.code !== "Space") return;
+      if (holdTimer != null) {
+        window.clearTimeout(holdTimer);
+        holdTimer = null;
+      }
+      if (waking) {
+        window.dispatchEvent(new CustomEvent("travis:wake-end"));
+        waking = false;
+      }
+    }
+    window.addEventListener("keydown", onDown);
+    window.addEventListener("keyup", onUp);
+    return () => {
+      window.removeEventListener("keydown", onDown);
+      window.removeEventListener("keyup", onUp);
+      if (holdTimer != null) window.clearTimeout(holdTimer);
+    };
+  }, []);
+
   // In map / voice modes, softly dim the rails so the canvas can shine.
   const railOpacity = canvasMode === "map" || canvasMode === "voice" ? 0.35 : 1;
 
