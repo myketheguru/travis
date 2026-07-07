@@ -5,16 +5,21 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
-use super::capture::{start_capture, VoiceSession};
+use super::capture::{spawn_capture, VoiceHandle};
 use crate::speech_runtime::{self, bootstrap};
 
-/// State container the plugin manages. Holds the single active
-/// VoiceSession (or None when the mic isn't running).
-pub struct VoiceState(pub Mutex<Option<VoiceSession>>);
+/// Managed state. Send-safe because VoiceHandle only holds a
+/// mpsc::Sender + no !Send data (the cpal Stream lives on its own
+/// dedicated thread).
+pub struct VoiceState {
+    inner: Mutex<Option<VoiceHandle>>,
+}
 
 impl VoiceState {
     pub fn new() -> Self {
-        Self(Mutex::new(None))
+        Self {
+            inner: Mutex::new(None),
+        }
     }
 }
 
@@ -24,64 +29,56 @@ pub struct VoiceStartResult {
     pub started: bool,
 }
 
-/// Start native mic capture. If already running, this is a no-op that
-/// still returns started: true so the frontend can idempotently ensure
-/// the mic is armed.
 #[tauri::command]
 pub async fn voice_start(
     app: AppHandle,
     state: State<'_, VoiceState>,
 ) -> Result<VoiceStartResult, String> {
     {
-        let guard = state.0.lock().unwrap();
+        let guard = state.inner.lock().unwrap();
         if guard.is_some() {
             return Ok(VoiceStartResult { started: true });
         }
     }
-    let session = start_capture(app.clone())?;
-    *state.0.lock().unwrap() = Some(session);
+    let handle = spawn_capture(app)?;
+    *state.inner.lock().unwrap() = Some(handle);
     Ok(VoiceStartResult { started: true })
 }
 
-/// Stop native mic capture. Drops the cpal stream + tick loop.
 #[tauri::command]
 pub async fn voice_stop(state: State<'_, VoiceState>) -> Result<(), String> {
-    let mut guard = state.0.lock().unwrap();
+    let mut guard = state.inner.lock().unwrap();
+    if let Some(h) = guard.as_ref() {
+        h.stop();
+    }
     guard.take();
     Ok(())
 }
 
-/// Toggle barge-in arm. When true, speech-start events also emit
-/// voice://barge-in so the frontend can stop Piper mid-playback.
 #[tauri::command]
 pub async fn voice_set_barge_in(
     on: bool,
     state: State<'_, VoiceState>,
 ) -> Result<(), String> {
-    if let Some(session) = state.0.lock().unwrap().as_ref() {
-        session.set_barge_in(on);
+    if let Some(handle) = state.inner.lock().unwrap().as_ref() {
+        handle.set_barge_in(on);
     }
     Ok(())
 }
 
-/// Consume the currently-buffered utterance samples and run whisper
-/// on them synchronously (blocking task). Returns the transcript.
-/// Called by the frontend after voice://speech-end fires.
 #[tauri::command]
 pub async fn voice_finalize_transcript(
     app: AppHandle,
     state: State<'_, VoiceState>,
 ) -> Result<String, String> {
     let samples = {
-        let guard = state.0.lock().unwrap();
+        let guard = state.inner.lock().unwrap();
         match guard.as_ref() {
-            Some(session) => session.take_utterance(),
+            Some(handle) => handle.take_utterance(),
             None => return Ok(String::new()),
         }
     };
     if samples.len() < 4000 {
-        // < 250ms of audio at 16kHz. Almost certainly noise or a
-        // spurious VAD trip — skip the whisper round-trip.
         return Ok(String::new());
     }
 
@@ -129,7 +126,6 @@ pub async fn voice_finalize_transcript(
     .await
     .map_err(|e| format!("join: {e}"))??;
 
-    // Emit the transcript as an event too so any listener can react.
     let _ = app.emit("voice://transcript-final", transcript.clone());
     Ok(transcript)
 }

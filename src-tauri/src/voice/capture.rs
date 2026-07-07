@@ -1,18 +1,16 @@
 //! Native mic capture + VAD.
 //!
-//! A single global capture session owned by a Mutex. Only one mic
-//! stream may be running at a time; start_capture kills any existing
-//! stream first.
-//!
-//! Threading:
-//! - cpal's build_input_stream runs the audio callback on a private
-//!   thread it owns. We push samples into a shared Mutex-guarded
-//!   VecDeque and let the tick loop (spawned as tokio task) drain +
-//!   compute RMS + run VAD + emit events.
-//! - We don't do heavy work inside the audio callback (allocations,
-//!   IO). Just append to the buffer and update peak RMS.
+//! Threading: `cpal::Stream` is `!Send` (audio drivers assume single-
+//! thread ownership). Tauri command state requires `Send + Sync`, so
+//! we can't stash the Stream in state directly. Instead we spawn a
+//! dedicated worker thread that owns the Stream for its whole
+//! lifetime and expose only a mpsc control channel to the rest of the
+//! app. The channel Sender is Send + Sync.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    mpsc::{channel, Receiver, Sender},
+    Arc, Mutex,
+};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -20,81 +18,85 @@ use tauri::{AppHandle, Emitter};
 
 const TARGET_HZ: u32 = 16_000;
 const AMPLITUDE_EMIT_MS: u64 = 60;
-/// RMS threshold above which we consider a frame to contain speech.
-/// Empirical — quiet room mic RMS is ~0.001–0.005, speech is > 0.015.
 const VAD_SPEECH_RMS: f32 = 0.018;
 const VAD_SILENCE_RMS: f32 = 0.010;
-/// How long we need continuous "above speech" energy before we call
-/// it a real speech-start (vs a cough / door slam).
 const VAD_ONSET_MS: u64 = 120;
-/// How long we need continuous "below silence" energy after speech
-/// before we call it end-of-utterance. Longer = more forgiving of
-/// mid-thought pauses; shorter = snappier.
 const VAD_HANGOVER_MS: u64 = 700;
 
-/// Handle keeping the cpal stream alive. Dropping this kills the mic.
-struct StreamHandle {
-    _stream: cpal::Stream,
+/// Control commands sent from the Tauri command layer to the worker
+/// thread that owns the cpal Stream. Each variant that needs a reply
+/// carries a reply channel.
+enum Cmd {
+    Stop,
+    SetBargeIn(bool),
+    TakeUtterance(Sender<Vec<f32>>),
 }
 
-/// Shared state the audio callback + tick loop both touch.
-struct SharedState {
-    /// Samples at input_hz (whatever cpal gave us), waiting to be
-    /// decimated + fed to VAD + accumulated for whisper.
-    incoming: Vec<f32>,
-    /// Decimated samples at 16 kHz, since the last VAD reset.
-    /// Cleared on end-of-utterance after whisper consumes them.
-    utterance: Vec<f32>,
-    /// Peak RMS of the last window we emitted.
-    last_rms: f32,
-    /// Is the app currently in barge-in-listening mode (i.e. Piper is
-    /// playing and we want to detect user interruption). Set by the
-    /// frontend via a command.
-    barge_in_arm: bool,
-    /// Current VAD phase.
-    vad_state: VadState,
-    /// When we crossed above/below thresholds — for hysteresis timing.
-    vad_edge_at: Option<Instant>,
-    /// True while speech is being accumulated. Emits speech-start on
-    /// transition to true, speech-end on transition to false.
-    in_speech: bool,
-    /// Set true when the tick loop should exit. Signalled by stop.
-    shutdown: bool,
+/// Send-safe handle stashed in Tauri state. Only holds a Sender + a
+/// join guard for the worker thread.
+pub struct VoiceHandle {
+    tx: Sender<Cmd>,
+    // JoinHandle isn't strictly needed but keeping it lets us know the
+    // worker is still alive. Dropping VoiceHandle sends Stop; the
+    // thread returns; nothing to join on the drop path though.
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum VadState {
-    Silent,
-    /// Above threshold — checking if it holds for VAD_ONSET_MS.
-    ProbablySpeech,
-    Speech,
-    /// Below threshold — checking if silence holds VAD_HANGOVER_MS.
-    ProbablySilence,
-}
-
-pub struct VoiceSession {
-    _stream: StreamHandle,
-    shared: Arc<Mutex<SharedState>>,
-}
-
-impl VoiceSession {
+impl VoiceHandle {
     pub fn take_utterance(&self) -> Vec<f32> {
-        let mut s = self.shared.lock().unwrap();
-        std::mem::take(&mut s.utterance)
+        let (tx, rx) = channel::<Vec<f32>>();
+        if self.tx.send(Cmd::TakeUtterance(tx)).is_err() {
+            return Vec::new();
+        }
+        rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default()
     }
     pub fn set_barge_in(&self, on: bool) {
-        let mut s = self.shared.lock().unwrap();
-        s.barge_in_arm = on;
+        let _ = self.tx.send(Cmd::SetBargeIn(on));
+    }
+    pub fn stop(&self) {
+        let _ = self.tx.send(Cmd::Stop);
     }
 }
 
-impl Drop for VoiceSession {
+impl Drop for VoiceHandle {
     fn drop(&mut self) {
-        self.shared.lock().unwrap().shutdown = true;
+        let _ = self.tx.send(Cmd::Stop);
     }
 }
 
-pub fn start_capture(app: AppHandle) -> Result<VoiceSession, String> {
+/// Shared audio buffer state — used only inside the worker thread and
+/// the cpal callback. Not exposed outside this file.
+struct AudioBuf {
+    incoming: Vec<f32>,
+}
+
+/// Spawn the worker thread that owns the cpal Stream + runs the tick
+/// loop. Returns a Send handle for the Tauri command layer.
+pub fn spawn_capture(app: AppHandle) -> Result<VoiceHandle, String> {
+    let (tx, rx) = channel::<Cmd>();
+    let (started_tx, started_rx) = channel::<Result<(), String>>();
+
+    std::thread::spawn(move || {
+        match capture_thread_main(app, rx) {
+            Ok(_) => {
+                let _ = started_tx.send(Ok(()));
+            }
+            Err(e) => {
+                let _ = started_tx.send(Err(e));
+            }
+        }
+    });
+
+    // Wait briefly for the thread to signal 'stream up' or an error.
+    // A hung thread here would be a serious platform issue; 3s is
+    // more than enough for cpal + default input device.
+    match started_rx.recv_timeout(Duration::from_secs(3)) {
+        Ok(Ok(())) => Ok(VoiceHandle { tx }),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err("cpal init timed out".to_string()),
+    }
+}
+
+fn capture_thread_main(app: AppHandle, rx: Receiver<Cmd>) -> Result<(), String> {
     let host = cpal::default_host();
     let device = host
         .default_input_device()
@@ -114,51 +116,143 @@ pub fn start_capture(app: AppHandle) -> Result<VoiceSession, String> {
         sample_format
     );
 
-    let shared = Arc::new(Mutex::new(SharedState {
+    let audio = Arc::new(Mutex::new(AudioBuf {
         incoming: Vec::with_capacity(input_hz as usize),
-        utterance: Vec::with_capacity(TARGET_HZ as usize * 10),
-        last_rms: 0.0,
-        barge_in_arm: false,
-        vad_state: VadState::Silent,
-        vad_edge_at: None,
-        in_speech: false,
-        shutdown: false,
     }));
 
-    let shared_cb = Arc::clone(&shared);
+    let audio_cb = Arc::clone(&audio);
     let stream = match sample_format {
-        cpal::SampleFormat::F32 => build_stream_f32(&device, &config.into(), shared_cb, channels)?,
-        cpal::SampleFormat::I16 => build_stream_i16(&device, &config.into(), shared_cb, channels)?,
-        cpal::SampleFormat::U16 => build_stream_u16(&device, &config.into(), shared_cb, channels)?,
+        cpal::SampleFormat::F32 => build_stream_f32(&device, &config.into(), audio_cb, channels)?,
+        cpal::SampleFormat::I16 => build_stream_i16(&device, &config.into(), audio_cb, channels)?,
+        cpal::SampleFormat::U16 => build_stream_u16(&device, &config.into(), audio_cb, channels)?,
         other => return Err(format!("unsupported sample format {other:?}")),
     };
     stream
         .play()
         .map_err(|e| format!("start cpal stream: {e}"))?;
 
-    // Tick loop — pulls incoming, decimates, runs VAD, emits events.
-    let shared_tick = Arc::clone(&shared);
-    let app_tick = app.clone();
-    std::thread::spawn(move || {
-        run_tick_loop(app_tick, shared_tick, input_hz);
-    });
+    // From this point the Stream MUST stay pinned to this thread —
+    // it's !Send. The Stream is dropped at the end of this fn scope,
+    // which is when we receive Cmd::Stop.
+    tick_loop(app, audio, rx, input_hz);
+    drop(stream);
+    Ok(())
+}
 
-    Ok(VoiceSession {
-        _stream: StreamHandle { _stream: stream },
-        shared,
-    })
+fn tick_loop(app: AppHandle, audio: Arc<Mutex<AudioBuf>>, rx: Receiver<Cmd>, input_hz: u32) {
+    let mut utterance: Vec<f32> = Vec::with_capacity(TARGET_HZ as usize * 10);
+    let mut barge_in_arm = false;
+    let mut vad_state = VadState::Silent;
+    let mut vad_edge_at: Option<Instant> = None;
+    let mut last_amp_emit = Instant::now();
+
+    loop {
+        // Drain any pending control commands.
+        while let Ok(cmd) = rx.try_recv() {
+            match cmd {
+                Cmd::Stop => return,
+                Cmd::SetBargeIn(on) => barge_in_arm = on,
+                Cmd::TakeUtterance(reply) => {
+                    let taken = std::mem::take(&mut utterance);
+                    let _ = reply.send(taken);
+                }
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(30));
+        let incoming = {
+            let mut a = audio.lock().unwrap();
+            std::mem::take(&mut a.incoming)
+        };
+
+        if incoming.is_empty() {
+            // Feed near-zero into VAD so hangover timers still fire.
+            step_vad(&app, &mut vad_state, &mut vad_edge_at, 0.0, barge_in_arm);
+            continue;
+        }
+
+        let decimated = decimate(&incoming, input_hz, TARGET_HZ);
+        let rms = rms_of(&decimated);
+        utterance.extend_from_slice(&decimated);
+        step_vad(&app, &mut vad_state, &mut vad_edge_at, rms, barge_in_arm);
+
+        if last_amp_emit.elapsed() >= Duration::from_millis(AMPLITUDE_EMIT_MS) {
+            let payload = (rms.min(0.5) * 2.0).min(1.0);
+            let _ = app.emit("voice://amplitude", payload);
+            last_amp_emit = Instant::now();
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum VadState {
+    Silent,
+    ProbablySpeech,
+    Speech,
+    ProbablySilence,
+}
+
+fn step_vad(
+    app: &AppHandle,
+    state: &mut VadState,
+    edge_at: &mut Option<Instant>,
+    rms: f32,
+    barge_in_arm: bool,
+) {
+    let now = Instant::now();
+    match *state {
+        VadState::Silent => {
+            if rms >= VAD_SPEECH_RMS {
+                *state = VadState::ProbablySpeech;
+                *edge_at = Some(now);
+            }
+        }
+        VadState::ProbablySpeech => {
+            if rms < VAD_SILENCE_RMS {
+                *state = VadState::Silent;
+                *edge_at = None;
+            } else if let Some(edge) = *edge_at {
+                if now.duration_since(edge) >= Duration::from_millis(VAD_ONSET_MS) {
+                    *state = VadState::Speech;
+                    *edge_at = None;
+                    let _ = app.emit("voice://speech-start", ());
+                    if barge_in_arm {
+                        let _ = app.emit("voice://barge-in", ());
+                    }
+                }
+            }
+        }
+        VadState::Speech => {
+            if rms < VAD_SILENCE_RMS {
+                *state = VadState::ProbablySilence;
+                *edge_at = Some(now);
+            }
+        }
+        VadState::ProbablySilence => {
+            if rms >= VAD_SPEECH_RMS {
+                *state = VadState::Speech;
+                *edge_at = None;
+            } else if let Some(edge) = *edge_at {
+                if now.duration_since(edge) >= Duration::from_millis(VAD_HANGOVER_MS) {
+                    *state = VadState::Silent;
+                    *edge_at = None;
+                    let _ = app.emit("voice://speech-end", ());
+                }
+            }
+        }
+    }
 }
 
 fn build_stream_f32(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    shared: Arc<Mutex<SharedState>>,
+    audio: Arc<Mutex<AudioBuf>>,
     channels: usize,
 ) -> Result<cpal::Stream, String> {
     device
         .build_input_stream(
             config,
-            move |data: &[f32], _| push_mono_f32(data, channels, &shared),
+            move |data: &[f32], _| push_mono_f32(data, channels, &audio),
             move |err| tracing::warn!("[voice] cpal stream err: {err}"),
             None,
         )
@@ -168,7 +262,7 @@ fn build_stream_f32(
 fn build_stream_i16(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    shared: Arc<Mutex<SharedState>>,
+    audio: Arc<Mutex<AudioBuf>>,
     channels: usize,
 ) -> Result<cpal::Stream, String> {
     device
@@ -176,7 +270,7 @@ fn build_stream_i16(
             config,
             move |data: &[i16], _| {
                 let f: Vec<f32> = data.iter().map(|s| *s as f32 / 32768.0).collect();
-                push_mono_f32(&f, channels, &shared);
+                push_mono_f32(&f, channels, &audio);
             },
             move |err| tracing::warn!("[voice] cpal stream err: {err}"),
             None,
@@ -187,7 +281,7 @@ fn build_stream_i16(
 fn build_stream_u16(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    shared: Arc<Mutex<SharedState>>,
+    audio: Arc<Mutex<AudioBuf>>,
     channels: usize,
 ) -> Result<cpal::Stream, String> {
     device
@@ -198,7 +292,7 @@ fn build_stream_u16(
                     .iter()
                     .map(|s| (*s as f32 - 32768.0) / 32768.0)
                     .collect();
-                push_mono_f32(&f, channels, &shared);
+                push_mono_f32(&f, channels, &audio);
             },
             move |err| tracing::warn!("[voice] cpal stream err: {err}"),
             None,
@@ -206,8 +300,7 @@ fn build_stream_u16(
         .map_err(|e| format!("build cpal stream: {e}"))
 }
 
-/// Downmix to mono (average across channels) + append to `incoming`.
-fn push_mono_f32(data: &[f32], channels: usize, shared: &Arc<Mutex<SharedState>>) {
+fn push_mono_f32(data: &[f32], channels: usize, audio: &Arc<Mutex<AudioBuf>>) {
     if channels == 0 {
         return;
     }
@@ -216,105 +309,8 @@ fn push_mono_f32(data: &[f32], channels: usize, shared: &Arc<Mutex<SharedState>>
         let sum: f32 = frame.iter().sum();
         mono.push(sum / channels as f32);
     }
-    let mut s = shared.lock().unwrap();
-    s.incoming.extend_from_slice(&mono);
-}
-
-fn run_tick_loop(app: AppHandle, shared: Arc<Mutex<SharedState>>, input_hz: u32) {
-    let mut last_amp_emit = Instant::now();
-    loop {
-        // Sleep short enough for VAD hangover to trigger promptly.
-        std::thread::sleep(Duration::from_millis(30));
-        let (incoming, barge_arm, shutdown) = {
-            let mut s = shared.lock().unwrap();
-            if s.shutdown {
-                return;
-            }
-            let inc = std::mem::take(&mut s.incoming);
-            (inc, s.barge_in_arm, s.shutdown)
-        };
-        if shutdown {
-            return;
-        }
-        if incoming.is_empty() {
-            // Even with no new samples, we should still check VAD
-            // hangover timing (silence timer might have crossed).
-            check_vad_edge(&app, &shared, barge_arm);
-            continue;
-        }
-
-        // Decimate to TARGET_HZ.
-        let decimated = decimate(&incoming, input_hz, TARGET_HZ);
-        let rms = rms_of(&decimated);
-
-        {
-            let mut s = shared.lock().unwrap();
-            s.utterance.extend_from_slice(&decimated);
-            s.last_rms = rms;
-            step_vad(&app, &mut s, rms, barge_arm);
-        }
-
-        if last_amp_emit.elapsed() >= Duration::from_millis(AMPLITUDE_EMIT_MS) {
-            let payload = (rms.min(0.5) * 2.0).min(1.0);
-            let _ = app.emit("voice://amplitude", payload);
-            last_amp_emit = Instant::now();
-        }
-    }
-}
-
-/// Called on ticks with no new samples so hangover timing still
-/// resolves promptly.
-fn check_vad_edge(app: &AppHandle, shared: &Arc<Mutex<SharedState>>, barge_arm: bool) {
-    let mut s = shared.lock().unwrap();
-    // Feed near-zero RMS so the state machine can progress silence.
-    step_vad(app, &mut s, 0.0, barge_arm);
-}
-
-fn step_vad(app: &AppHandle, s: &mut SharedState, rms: f32, barge_arm: bool) {
-    let now = Instant::now();
-    match s.vad_state {
-        VadState::Silent => {
-            if rms >= VAD_SPEECH_RMS {
-                s.vad_state = VadState::ProbablySpeech;
-                s.vad_edge_at = Some(now);
-            }
-        }
-        VadState::ProbablySpeech => {
-            if rms < VAD_SILENCE_RMS {
-                s.vad_state = VadState::Silent;
-                s.vad_edge_at = None;
-            } else if let Some(edge) = s.vad_edge_at {
-                if now.duration_since(edge) >= Duration::from_millis(VAD_ONSET_MS) {
-                    s.vad_state = VadState::Speech;
-                    s.in_speech = true;
-                    s.vad_edge_at = None;
-                    let _ = app.emit("voice://speech-start", ());
-                    if barge_arm {
-                        let _ = app.emit("voice://barge-in", ());
-                    }
-                }
-            }
-        }
-        VadState::Speech => {
-            if rms < VAD_SILENCE_RMS {
-                s.vad_state = VadState::ProbablySilence;
-                s.vad_edge_at = Some(now);
-            }
-        }
-        VadState::ProbablySilence => {
-            if rms >= VAD_SPEECH_RMS {
-                s.vad_state = VadState::Speech;
-                s.vad_edge_at = None;
-            } else if let Some(edge) = s.vad_edge_at {
-                if now.duration_since(edge) >= Duration::from_millis(VAD_HANGOVER_MS) {
-                    s.vad_state = VadState::Silent;
-                    s.in_speech = false;
-                    s.vad_edge_at = None;
-                    let _ = app.emit("voice://speech-end", ());
-                }
-            }
-        }
-    }
+    let mut a = audio.lock().unwrap();
+    a.incoming.extend_from_slice(&mono);
 }
 
 fn rms_of(samples: &[f32]) -> f32 {
@@ -325,9 +321,6 @@ fn rms_of(samples: &[f32]) -> f32 {
     (sum_sq / samples.len() as f32).sqrt()
 }
 
-/// Naive nearest-sample decimator. Fine for whisper — the model
-/// already handles a lot of variance. Proper polyphase resampling
-/// is a v0.28.1 upgrade.
 fn decimate(samples: &[f32], in_hz: u32, out_hz: u32) -> Vec<f32> {
     if in_hz == out_hz {
         return samples.to_vec();
