@@ -47,6 +47,7 @@ mod memory_cmd;
 mod discovery;
 mod mcp;
 mod python_runtime;
+mod ambient;
 mod rich_response;
 mod sentry;
 mod speech_runtime;
@@ -971,6 +972,8 @@ pub fn run() {
             voice::cmd::voice_set_barge_in,
             voice::cmd::voice_set_armed,
             voice::cmd::voice_finalize_transcript,
+            ambient::cmd::ambient_transcript_save,
+            ambient::cmd::ambient_transcript_recent,
             steps::cmd::list_steps,
             workflows::cmd::get_active_workflow,
             identity_cmd::list_entities,

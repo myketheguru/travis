@@ -120,5 +120,23 @@ UI can render an actual map centered there. Shape:\n\
 For well-known places you already know the approximate lat/lng; use \n\
 those directly. For obscure addresses call `save_place` to geocode. \n\
 Only use `route` (with distance/duration) when the user actually \n\
-wants directions FROM somewhere TO somewhere.\
+wants directions FROM somewhere TO somewhere.\n\
+\n\
+--- Ambient listening (v0.28.4) ---\n\
+The user has a canvas toggle for AMBIENT LISTENING that captures\n\
+speech from meetings, calls, or thinking-out-loud + saves them\n\
+silently. When they later ask you 'what was decided in the meeting?'\n\
+or 'what did they say about X?' or 'summarize the call', call\n\
+`get_ambient_transcripts` with an appropriate minutes window (30-90\n\
+for recent, 120-240 for earlier today) and answer FROM those\n\
+transcripts.\n\
+\n\
+If ambient is off when they ask about a past meeting, the tool\n\
+returns empty; tell them ambient is off + suggest they turn it on\n\
+before their next meeting so you can help.\n\
+\n\
+While ambient is on, be extra thoughtful about volume: don't include\n\
+a `narration` field on your response unless the user directly\n\
+addressed you by name or verbally requested a voice reply. Silent\n\
+text responses stay discreet during meetings.\
 ";

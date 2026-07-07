@@ -87,8 +87,16 @@ export function useNativeVoice({ enabled }: Options) {
               } else if (ambientRef.current) {
                 // Ambient capture — save transcript for later review,
                 // do NOT submit to LLM. User can browse ambient
-                // transcripts from the canvas.
+                // transcripts from the canvas. Also persist to SQLite
+                // via ambient_transcript_save so the
+                // get_ambient_transcripts tool can query them.
                 appendAmbientTranscript(trimmed);
+                try {
+                  const { invoke } = await import("@tauri-apps/api/core");
+                  await invoke("ambient_transcript_save", { text: trimmed });
+                } catch (err) {
+                  console.warn("[voice] ambient_transcript_save failed:", err);
+                }
               }
             }
           } catch (err) {

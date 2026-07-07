@@ -16,6 +16,7 @@ pub mod verify_replication_match;
 pub mod cases;
 pub mod clipboard;
 pub mod find_documents;
+pub mod get_ambient_transcripts;
 pub mod graph_neighbors;
 pub mod list_open_tasks;
 pub mod open_url;
@@ -248,6 +249,7 @@ pub fn read_only_registry(packs: &[&dyn crate::packs::PackHandle]) -> ToolRegist
     reg.register(Box::new(graph_neighbors::GraphNeighborsTool));
     reg.register(Box::new(read_document::ReadDocumentTool));
     reg.register(Box::new(find_documents::FindDocumentsTool));
+    reg.register(Box::new(get_ambient_transcripts::GetAmbientTranscriptsTool));
     reg.register(Box::new(reconcile_documents::ReconcileDocumentsTool));
     reg.register(Box::new(update_document::UpdateDocumentFieldTool));
     reg.register(Box::new(preview_document::PreviewDocumentTool));
