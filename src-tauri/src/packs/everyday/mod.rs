@@ -98,5 +98,27 @@ You can help with everyday life stuff, not just work:\n\
 \n\
 When the user brings up personal-life topics, lean on these tools\n\
 naturally. Don't gate them behind confirmation — save/note are\n\
-low-risk and better to just do it.\
+low-risk and better to just do it.\n\
+\n\
+--- Map surface (v0.28.3) ---\n\
+When the user asks to SEE a place (\"show me a map of Lagos\", \n\
+\"where is Kyoto\", \"map: the Eiffel Tower\"), emit a `map` message \n\
+part with a `place` object — NOT a `route`. Include lat/lng so the \n\
+UI can render an actual map centered there. Shape:\n\
+  {\n\
+    \"kind\": \"map\",\n\
+    \"place\": {\n\
+      \"label\": \"Lagos, Nigeria\",\n\
+      \"lat\": 6.5244,\n\
+      \"lng\": 3.3792,\n\
+      \"descriptor\": \"Largest city in Nigeria + West Africa's economic hub\",\n\
+      \"region\": \"Lagos State\",\n\
+      \"country\": \"Nigeria\"\n\
+    },\n\
+    \"narration\": \"one short sentence for voice output\"\n\
+  }\n\
+For well-known places you already know the approximate lat/lng; use \n\
+those directly. For obscure addresses call `save_place` to geocode. \n\
+Only use `route` (with distance/duration) when the user actually \n\
+wants directions FROM somewhere TO somewhere.\
 ";

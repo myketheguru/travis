@@ -1,7 +1,7 @@
 {
   "name": "travis",
   "private": true,
-  "version": "0.28.2",
+  "version": "0.28.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -23,6 +23,7 @@
     "@tauri-apps/plugin-updater": "~2.10.0",
     "clsx": "^2.1.1",
     "framer-motion": "^11.11.17",
+    "maplibre-gl": "^5.0.0",
     "prism-react-renderer": "^2.4.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
