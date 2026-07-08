@@ -102,8 +102,11 @@ function InteractiveMap({
       console.warn("[map] MapLibre init failed:", err);
     }
     return () => {
-      markerRef.current?.remove();
-      mapRef.current?.remove();
+      // v0.28.11 — wrap each cleanup so a marker-remove throw can't
+      // block map.remove() (which was causing the "blank on rapid
+      // switch" bug: half-cleaned MapLibre instance blocked next init).
+      try { markerRef.current?.remove(); } catch { /* ignore */ }
+      try { mapRef.current?.remove(); } catch { /* ignore */ }
       markerRef.current = null;
       mapRef.current = null;
     };
