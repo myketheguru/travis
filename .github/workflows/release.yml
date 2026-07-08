@@ -52,11 +52,14 @@ on:
 
 env:
   PUBLIC_REPO: myketheguru/travis-releases
-  # v0.28.8 — set at workflow level so every step + subprocess on
-  # macOS inherits. cc-rs, cmake, and clang all read this and generate
-  # -mmacosx-version-min accordingly. Fixes whisper.cpp's
-  # std::filesystem::path use failing to compile.
+  # v0.28.10 — needed BOTH env vars. cc-rs uses
+  # MACOSX_DEPLOYMENT_TARGET, but cmake independently reads
+  # CMAKE_OSX_DEPLOYMENT_TARGET and appends its own
+  # -mmacosx-version-min at the END of the compile command. Clang
+  # takes the LAST occurrence of the flag, so whichever cmake
+  # appended won every time.
   MACOSX_DEPLOYMENT_TARGET: "10.15"
+  CMAKE_OSX_DEPLOYMENT_TARGET: "10.15"
 
 jobs:
   build:
@@ -124,15 +127,11 @@ jobs:
       - name: Build & sign (no release upload from this repo)
         uses: tauri-apps/tauri-action@v0
         env:
-          # v0.28.8 — belt+braces. Workflow env sets
-          # MACOSX_DEPLOYMENT_TARGET globally; these override for the
-          # tauri-action step in case the wrapping tool clobbers the
-          # inherited value. CFLAGS/CXXFLAGS force -mmacosx-version-min
-          # directly onto every clang invocation whisper.cpp's cmake
-          # spawns, which is where the previous fix wasn't landing.
+          # v0.28.10 — CMAKE_OSX_DEPLOYMENT_TARGET is the one that
+          # actually lands. Workflow-level env covers most steps but
+          # some tools rebuild env; step-level env is authoritative.
           MACOSX_DEPLOYMENT_TARGET: "10.15"
-          CFLAGS: "-mmacosx-version-min=10.15"
-          CXXFLAGS: "-mmacosx-version-min=10.15"
+          CMAKE_OSX_DEPLOYMENT_TARGET: "10.15"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TRAVIS_GOOGLE_CLIENT_ID: ${{ secrets.TRAVIS_GOOGLE_CLIENT_ID }}
