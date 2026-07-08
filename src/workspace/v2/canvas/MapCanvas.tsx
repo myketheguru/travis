@@ -1,13 +1,15 @@
 /**
- * MapCanvas — v0.28.5.
+ * MapCanvas — v0.28.6.
  *
  * Fullscreen interactive map. MapLibre GL renders CartoDB Dark Matter
- * tiles so the map matches Travis's dark aesthetic. Info card overlay
- * top-left with label + descriptor + narration, and a collapse button
- * that returns the user to chat mode (the map focal renders as an
- * inline MapCard the user can click to re-expand).
+ * tiles + a subtle purple brand overlay so the map feels distinctly
+ * Travis-branded rather than a stock OSM viewer. Info card overlay is
+ * lighter now (was making the already-dark map appear even darker)
+ * with a translucent purple accent. Custom marker uses the brand
+ * violet with a soft glow + pulse.
  *
- * Falls back to a text-only card when the LLM didn't include coords.
+ * NOTE: when light-mode lands, swap the CartoDB style for Voyager
+ * (dark) or Positron (light) and lighten the brand overlay.
  */
 import { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
@@ -19,8 +21,6 @@ import { parseRichResponse, type MapPart } from "../../../lib/richResponse";
 import { useAppStore } from "../../../stores/app";
 import { ChatCanvas } from "./ChatCanvas";
 
-// CartoDB Dark Matter — free-tier friendly, matches Travis's dark canvas.
-// Attribution required (rendered by MapLibre automatically).
 const DARK_STYLE = {
   version: 8,
   sources: {
@@ -33,8 +33,7 @@ const DARK_STYLE = {
         "https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
       ],
       tileSize: 256,
-      attribution:
-        "© OpenStreetMap contributors © CARTO",
+      attribution: "© OpenStreetMap contributors © CARTO",
     },
   },
   layers: [
@@ -52,13 +51,10 @@ const DARK_STYLE = {
 export function MapCanvas() {
   const { focal } = useFocalContent();
   const mapPart = extractMapPart(focal?.content);
-
   if (!mapPart) return <ChatCanvas />;
 
   const coords = coordsFromMapPart(mapPart);
-  if (!coords) {
-    return <TextOnlyMap mapPart={mapPart} />;
-  }
+  if (!coords) return <TextOnlyMap mapPart={mapPart} />;
 
   return <InteractiveMap mapPart={mapPart} coords={coords} />;
 }
@@ -90,9 +86,15 @@ function InteractiveMap({
       mapRef.current = map;
       map.on("load", () => map?.resize());
       requestAnimationFrame(() => map?.resize());
-      const marker = new maplibregl.Marker({
-        color: "rgb(189, 158, 255)",
-      })
+
+      // Custom branded marker — violet with pulse.
+      const markerEl = document.createElement("div");
+      markerEl.className = "travis-map-marker";
+      markerEl.innerHTML = `
+        <div class="travis-marker-pulse"></div>
+        <div class="travis-marker-dot"></div>
+      `;
+      const marker = new maplibregl.Marker({ element: markerEl })
         .setLngLat([coords.lng, coords.lat])
         .addTo(map);
       markerRef.current = marker;
@@ -129,6 +131,8 @@ function InteractiveMap({
 
   return (
     <div className="absolute inset-0 overflow-hidden">
+      <BrandMarkerStyles />
+
       <div
         ref={containerRef}
         className="absolute inset-0"
@@ -139,36 +143,52 @@ function InteractiveMap({
         }}
       />
 
+      {/* v0.28.6 brand tint — subtle violet gradient at top + bottom */}
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          background:
+            "radial-gradient(ellipse at 50% -20%, rgba(189, 158, 255, 0.14), transparent 55%), radial-gradient(ellipse at 50% 120%, rgba(124, 92, 255, 0.10), transparent 55%)",
+          mixBlendMode: "screen",
+        }}
+      />
+
       <motion.div
         initial={{ opacity: 0, y: -8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.36, ease: [0.22, 1, 0.36, 1] }}
         className="absolute top-16 left-4 max-w-md rounded-2xl px-4 py-3 pointer-events-auto"
         style={{
-          background: "rgba(0, 0, 0, 0.72)",
-          border: "1px solid rgba(189, 158, 255, 0.40)",
-          backdropFilter: "blur(14px)",
-          boxShadow: "0 12px 40px -12px rgba(0,0,0,0.6)",
+          // v0.28.6 — lighter card. Was rgba(0,0,0,0.72) which
+          // stacked with the already-dark map and read as opaque
+          // black. Now a translucent slate-violet that lets tile
+          // detail show through.
+          background:
+            "linear-gradient(180deg, rgba(28, 24, 40, 0.62), rgba(20, 18, 30, 0.58))",
+          border: "1px solid rgba(189, 158, 255, 0.32)",
+          backdropFilter: "blur(18px) saturate(1.2)",
+          boxShadow:
+            "0 12px 40px -14px rgba(0, 0, 0, 0.6), 0 0 30px -8px rgba(189, 158, 255, 0.20)",
         }}
       >
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
             <div
               className="text-[10px] uppercase tracking-[0.22em] font-mono mb-1"
-              style={{ color: "rgba(189, 158, 255, 0.85)" }}
+              style={{ color: "rgba(189, 158, 255, 0.90)" }}
             >
               // {mapPart.route ? "route" : "place"}
             </div>
             <div
               className="text-[17px] font-medium leading-tight truncate"
-              style={{ color: "rgb(236, 236, 241)" }}
+              style={{ color: "rgb(240, 240, 246)" }}
             >
               {label}
             </div>
             {bits && (
               <div
                 className="text-[12px] font-mono mt-1"
-                style={{ color: "rgba(236, 236, 241, 0.72)" }}
+                style={{ color: "rgba(236, 236, 241, 0.78)" }}
               >
                 {bits}
               </div>
@@ -176,7 +196,7 @@ function InteractiveMap({
             {mapPart.narration && (
               <div
                 className="text-[12.5px] mt-2 leading-relaxed"
-                style={{ color: "rgba(236, 236, 241, 0.82)" }}
+                style={{ color: "rgba(236, 236, 241, 0.88)" }}
               >
                 {mapPart.narration}
               </div>
@@ -186,9 +206,9 @@ function InteractiveMap({
             onClick={() => setMapExpanded(false)}
             className="shrink-0 h-7 w-7 rounded-full flex items-center justify-center transition-colors"
             style={{
-              background: "rgba(255, 255, 255, 0.08)",
-              border: "1px solid rgba(255, 255, 255, 0.14)",
-              color: "rgba(236, 236, 241, 0.85)",
+              background: "rgba(255, 255, 255, 0.10)",
+              border: "1px solid rgba(255, 255, 255, 0.18)",
+              color: "rgba(236, 236, 241, 0.90)",
             }}
             title="Collapse map · return to chat"
             aria-label="Collapse map"
@@ -213,6 +233,51 @@ function InteractiveMap({
   );
 }
 
+function BrandMarkerStyles() {
+  return (
+    <style>
+      {`
+        .travis-map-marker {
+          position: relative;
+          width: 26px;
+          height: 26px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .travis-marker-dot {
+          width: 14px;
+          height: 14px;
+          border-radius: 50%;
+          background: radial-gradient(circle at 30% 30%, rgb(220, 200, 255), rgb(160, 120, 240));
+          border: 2px solid rgba(255, 255, 255, 0.85);
+          box-shadow:
+            0 0 0 1px rgba(189, 158, 255, 0.35),
+            0 0 20px 4px rgba(189, 158, 255, 0.55);
+          position: relative;
+          z-index: 2;
+        }
+        .travis-marker-pulse {
+          position: absolute;
+          inset: 0;
+          border-radius: 50%;
+          background: rgba(189, 158, 255, 0.32);
+          animation: travis-marker-pulse 2.2s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+          z-index: 1;
+        }
+        @keyframes travis-marker-pulse {
+          0%   { transform: scale(0.6); opacity: 0.65; }
+          70%  { transform: scale(2.2); opacity: 0;    }
+          100% { transform: scale(2.2); opacity: 0;    }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .travis-marker-pulse { animation: none; opacity: 0; }
+        }
+      `}
+    </style>
+  );
+}
+
 function TextOnlyMap({ mapPart }: { mapPart: MapPart }) {
   const label =
     mapPart.route?.destination_label ?? mapPart.place?.label ?? "map";
@@ -225,27 +290,27 @@ function TextOnlyMap({ mapPart }: { mapPart: MapPart }) {
         className="max-w-2xl w-full rounded-3xl px-8 py-8 pointer-events-auto"
         style={{
           background:
-            "linear-gradient(180deg, rgba(20, 20, 26, 0.85), rgba(12, 12, 16, 0.92))",
+            "linear-gradient(180deg, rgba(28, 24, 40, 0.62), rgba(20, 18, 30, 0.58))",
           border: "1px solid rgba(189, 158, 255, 0.32)",
           backdropFilter: "blur(20px)",
         }}
       >
         <div
           className="text-[10px] uppercase tracking-[0.28em] font-mono mb-3"
-          style={{ color: "rgba(189, 158, 255, 0.85)" }}
+          style={{ color: "rgba(189, 158, 255, 0.90)" }}
         >
           // {mapPart.route ? "route" : "place"}
         </div>
         <div
           className="text-[32px] font-light leading-tight tracking-tight"
-          style={{ color: "rgb(236, 236, 241)" }}
+          style={{ color: "rgb(240, 240, 246)" }}
         >
           {label}
         </div>
         {mapPart.narration && (
           <div
             className="text-[14px] mt-5 leading-relaxed"
-            style={{ color: "rgba(236, 236, 241, 0.78)" }}
+            style={{ color: "rgba(236, 236, 241, 0.88)" }}
           >
             {mapPart.narration}
           </div>
@@ -266,11 +331,7 @@ function coordsFromMapPart(
     return { lat: mapPart.place.lat, lng: mapPart.place.lng, zoom: 11 };
   }
   if (mapPart.route?.to?.lat != null && mapPart.route?.to?.lng != null) {
-    return {
-      lat: mapPart.route.to.lat,
-      lng: mapPart.route.to.lng,
-      zoom: 12,
-    };
+    return { lat: mapPart.route.to.lat, lng: mapPart.route.to.lng, zoom: 12 };
   }
   return null;
 }

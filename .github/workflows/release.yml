@@ -119,6 +119,12 @@ jobs:
       - name: Build & sign (no release upload from this repo)
         uses: tauri-apps/tauri-action@v0
         env:
+          # v0.28.6 — whisper.cpp uses std::filesystem::path (macOS
+          # 10.15+). cc-rs defaults to targeting 10.13, producing
+          # "'path' is unavailable" errors during the whisper-rs-sys
+          # build. Force the deployment target on all cc-rs / cmake
+          # invocations. Harmless on Linux/Windows steps (ignored).
+          MACOSX_DEPLOYMENT_TARGET: "10.15"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TRAVIS_GOOGLE_CLIENT_ID: ${{ secrets.TRAVIS_GOOGLE_CLIENT_ID }}
