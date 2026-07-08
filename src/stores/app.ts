@@ -94,6 +94,15 @@ type AppState = {
     text: string;
     occurredAt: string;
   }[];
+  /// v0.28.5 — whether the map is currently expanded to fullscreen
+  /// canvas. Auto-set true whenever a new map focal arrives, false
+  /// when the user hits the collapse button on the map info card.
+  /// When false, map parts render as inline MapCards in ChatCanvas
+  /// which the user can click to re-expand.
+  mapExpanded: boolean;
+  /// The focal message id whose map is currently expanded. Prevents
+  /// re-auto-expanding when the user has explicitly collapsed.
+  mapExpandedFor: string | null;
   setActivity: (a: Activity) => void;
   setStatus: (s: AppStatus) => void;
   setProfile: (p: UserProfile | null) => void;
@@ -114,6 +123,7 @@ type AppState = {
   setAmbientListening: (on: boolean) => void;
   appendAmbientTranscript: (text: string) => void;
   clearAmbientTranscripts: () => void;
+  setMapExpanded: (expanded: boolean, forMessageId?: string) => void;
   /// Called on any real user activity — first keystroke, pill click,
   /// mic press, etc. Fades the opening greeting AND writes now to
   /// localStorage as lastActivityAt so the 24h idle rule can re-arm.
@@ -342,6 +352,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
   clearAmbientTranscripts: () => set({ ambientTranscripts: [] }),
+  mapExpanded: true,
+  mapExpandedFor: null,
+  setMapExpanded: (expanded, forMessageId) =>
+    set({
+      mapExpanded: expanded,
+      mapExpandedFor: expanded ? forMessageId ?? null : null,
+    }),
   isFirstMoment: computeInitialFirstMoment(),
   noteUserActivity: () => {
     stampActivityNow();

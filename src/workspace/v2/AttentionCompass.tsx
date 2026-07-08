@@ -26,8 +26,12 @@ export function AttentionCompass() {
         onClick={() => setOpen((o) => !o)}
         className="flex items-center gap-2 px-3 py-1.5 rounded-full backdrop-blur-md"
         style={{
-          background: "rgba(0, 0, 0, 0.35)",
-          border: "1px solid rgba(255, 255, 255, 0.10)",
+          // v0.28.5 — denser background so the chip reads on light
+          // canvas backgrounds (e.g., the map). Same behavior on
+          // dark canvas — still low-contrast enough not to grab focus.
+          background: "rgba(0, 0, 0, 0.68)",
+          border: "1px solid rgba(255, 255, 255, 0.18)",
+          boxShadow: "0 4px 16px -8px rgba(0, 0, 0, 0.6)",
         }}
         aria-label={`Attention · ${label}`}
         title="Attention"

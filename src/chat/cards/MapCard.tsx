@@ -1,30 +1,30 @@
 /**
- * Inline map card — the first real "God's-Eye" surface (INTERFACE.md).
+ * Inline map card — v0.28.5.
  *
- * Renders a MapLibre map with the route drawn + origin/destination
- * markers. When the user is on a slow device or offline, degrades
- * gracefully to a mini info card with distance + ETA + destination
- * label — the narration string is the ultimate fallback for
- * screen-reader / voice-only mode.
+ * Renders in the conversation feed as a small clickable preview. Click
+ * the card and Travis re-expands the map to full canvas. Works for
+ * both route-based (A -> B) and place-based (single location) map parts.
  *
- * MapLibre GL is not bundled yet — this card scaffolds the render
- * with a static info panel + a "map coming online" placeholder for
- * the tile canvas. When we add MapLibre GL to the desktop bundle,
- * the placeholder gets replaced with the real interactive map.
+ * When there's no structured data at all (just narration), degrades
+ * to a text-only card.
  */
 
+import { useAppStore } from "../../stores/app";
 import type { MapPlace, MapRoute } from "../../lib/richResponse";
 
 interface Props {
   route?: MapRoute;
   place?: MapPlace;
   narration?: string;
+  /// v0.28.5 — the assistant message id this map belongs to. Passed to
+  /// setMapExpanded so useCanvasMode's auto-expand memoization stays
+  /// per-focal.
+  messageId?: string;
 }
 
 function fmtDistance(meters: number): string {
   if (meters < 1000) return `${Math.round(meters)} m`;
   const km = meters / 1000;
-  // Rough imperial preference — swap to a locale check when we care.
   const miles = km * 0.621371;
   return miles < 10 ? `${miles.toFixed(1)} mi` : `${Math.round(miles)} mi`;
 }
@@ -37,28 +37,33 @@ function fmtDuration(seconds: number): string {
   return rem === 0 ? `${h} h` : `${h} h ${rem} min`;
 }
 
-export function MapCard({ route, place, narration }: Props) {
+export function MapCard({ route, place, narration, messageId }: Props) {
+  const setMapExpanded = useAppStore((s) => s.setMapExpanded);
   const hasRoute = !!route && typeof route.distance_meters === "number";
   const hasPlace = !!place?.label;
 
-  // v0.28.2 — if there's no route and no place, degrade gracefully to
-  // a text-only card that surfaces just the narration (LLM said
-  // something about the location but didn't fill in structured
-  // fields). No amber "map data missing" scare messaging.
+  const canExpand = hasRoute || hasPlace;
+
+  const handleExpand = () => {
+    if (!canExpand) return;
+    setMapExpanded(true, messageId);
+  };
+
+  // No structured data — degrade to a text-only card (no expand).
   if (!hasRoute && !hasPlace) {
     if (!narration) return null;
     return (
       <div
         className="rounded-2xl px-4 py-3 text-[13.5px] leading-relaxed"
         style={{
-          border: "1px solid rgba(110, 196, 232, 0.25)",
-          background: "rgba(110, 196, 232, 0.05)",
+          border: "1px solid rgba(189, 158, 255, 0.25)",
+          background: "rgba(189, 158, 255, 0.05)",
           color: "rgba(236, 236, 241, 0.9)",
         }}
       >
         <div
           className="text-[10px] uppercase tracking-[0.22em] font-mono mb-1.5"
-          style={{ color: "rgba(110, 196, 232, 0.8)" }}
+          style={{ color: "rgba(189, 158, 255, 0.8)" }}
         >
           // location
         </div>
@@ -67,176 +72,109 @@ export function MapCard({ route, place, narration }: Props) {
     );
   }
 
-  // Place-only card (no route data).
-  if (!hasRoute && hasPlace) {
-    const p = place!;
-    const bits = [p.descriptor, p.region, p.country].filter(Boolean).join(" · ");
-    return (
-      <div
-        className="rounded-2xl overflow-hidden"
-        style={{
-          border: "1px solid rgba(110, 196, 232, 0.30)",
-          background:
-            "linear-gradient(180deg, rgba(110, 196, 232, 0.06), rgba(110, 196, 232, 0.02))",
-          boxShadow: "0 4px 24px -12px rgba(0, 0, 0, 0.5)",
-        }}
-      >
-        <div className="px-4 py-3">
+  const label =
+    route?.destination_label ?? place?.label ?? "map";
+  const bits =
+    !hasRoute && hasPlace
+      ? [place!.descriptor, place!.region, place!.country]
+          .filter(Boolean)
+          .join(" · ")
+      : hasRoute
+        ? [
+            fmtDuration(route!.duration_seconds),
+            fmtDistance(route!.distance_meters),
+            route!.profile?.replace("-", " "),
+          ]
+            .filter(Boolean)
+            .join(" · ")
+        : "";
+
+  return (
+    <button
+      onClick={handleExpand}
+      disabled={!canExpand}
+      className="w-full text-left rounded-2xl transition-transform disabled:cursor-not-allowed"
+      style={{
+        border: "1px solid rgba(189, 158, 255, 0.32)",
+        background:
+          "linear-gradient(180deg, rgba(189, 158, 255, 0.06), rgba(124, 92, 255, 0.02))",
+        boxShadow: "0 4px 24px -12px rgba(0, 0, 0, 0.5)",
+      }}
+      onMouseEnter={(e) => {
+        if (canExpand) e.currentTarget.style.transform = "translateY(-1px)";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.transform = "translateY(0)";
+      }}
+    >
+      <div className="px-4 py-3.5 flex items-center gap-4">
+        <MapGlyph />
+        <div className="min-w-0 flex-1">
           <div
-            className="text-[10px] uppercase tracking-[0.22em] font-mono mb-1"
-            style={{ color: "rgba(110, 196, 232, 0.85)" }}
+            className="text-[10px] uppercase tracking-[0.22em] font-mono mb-0.5"
+            style={{ color: "rgba(189, 158, 255, 0.85)" }}
           >
-            // location
+            // {hasRoute ? "route" : "place"}
           </div>
           <div
-            className="text-[16px] font-medium"
+            className="text-[15.5px] font-medium truncate"
             style={{ color: "rgb(236, 236, 241)" }}
           >
-            {p.label}
+            {label}
           </div>
           {bits && (
             <div
-              className="text-[12px] font-mono mt-1"
-              style={{ color: "rgba(236, 236, 241, 0.65)" }}
+              className="text-[12px] font-mono mt-0.5"
+              style={{ color: "rgba(236, 236, 241, 0.7)" }}
             >
               {bits}
             </div>
           )}
           {narration && (
             <div
-              className="text-[12.5px] mt-2 leading-relaxed"
-              style={{ color: "rgba(236, 236, 241, 0.7)" }}
+              className="text-[12.5px] mt-1.5 leading-relaxed"
+              style={{ color: "rgba(236, 236, 241, 0.72)" }}
             >
               {narration}
             </div>
           )}
         </div>
+        {canExpand && (
+          <div
+            className="shrink-0 text-[10px] uppercase tracking-[0.22em] font-mono"
+            style={{ color: "rgba(189, 158, 255, 0.75)" }}
+          >
+            expand ↗
+          </div>
+        )}
       </div>
-    );
-  }
+    </button>
+  );
+}
 
-  const routeSafe = route!;
+function MapGlyph() {
   return (
     <div
-      className="rounded-2xl overflow-hidden"
+      className="shrink-0 h-12 w-12 rounded-xl flex items-center justify-center"
       style={{
-        border: "1px solid rgba(124, 92, 255, 0.35)",
-        background:
-          "linear-gradient(180deg, rgba(124, 92, 255, 0.06), rgba(110, 196, 232, 0.04))",
-        boxShadow: "0 4px 24px -12px rgba(0, 0, 0, 0.5)",
+        background: "rgba(189, 158, 255, 0.12)",
+        border: "1px solid rgba(189, 158, 255, 0.30)",
       }}
     >
-      {/* Map canvas placeholder. MapLibre GL wires in when we add the
-          dep; the map + route + markers replace this. */}
-      <div
-        className="relative w-full aspect-[16/9]"
-        style={{
-          background:
-            "radial-gradient(circle at 30% 40%, rgba(124, 92, 255, 0.15), transparent 60%), radial-gradient(circle at 70% 60%, rgba(110, 196, 232, 0.15), transparent 60%), rgba(7, 8, 11, 0.4)",
-        }}
+      <svg
+        width="20"
+        height="20"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="rgb(189, 158, 255)"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
       >
-        {/* Static SVG glyph representing a route */}
-        <svg
-          viewBox="0 0 400 225"
-          preserveAspectRatio="none"
-          className="absolute inset-0 w-full h-full"
-          aria-hidden
-        >
-          <path
-            d="M 40 180 Q 120 100, 200 130 T 360 45"
-            stroke="rgba(124, 92, 255, 0.8)"
-            strokeWidth="3"
-            strokeLinecap="round"
-            fill="none"
-            strokeDasharray="6 6"
-          >
-            <animate
-              attributeName="stroke-dashoffset"
-              from="0"
-              to="-12"
-              dur="1s"
-              repeatCount="indefinite"
-            />
-          </path>
-          {/* origin */}
-          <circle cx="40" cy="180" r="6" fill="rgba(236, 236, 241, 0.95)" />
-          <circle
-            cx="40"
-            cy="180"
-            r="12"
-            fill="none"
-            stroke="rgba(236, 236, 241, 0.5)"
-            strokeWidth="1.5"
-          />
-          {/* destination */}
-          <circle cx="360" cy="45" r="8" fill="rgb(124, 92, 255)" />
-          <circle
-            cx="360"
-            cy="45"
-            r="16"
-            fill="none"
-            stroke="rgba(124, 92, 255, 0.5)"
-            strokeWidth="1.5"
-          >
-            <animate
-              attributeName="r"
-              values="14; 20; 14"
-              dur="2s"
-              repeatCount="indefinite"
-            />
-            <animate
-              attributeName="opacity"
-              values="0.5; 0; 0.5"
-              dur="2s"
-              repeatCount="indefinite"
-            />
-          </circle>
-        </svg>
-
-        <div
-          className="absolute top-3 left-3 text-[10px] tracking-[0.16em] uppercase font-mono"
-          style={{ color: "rgba(236, 236, 241, 0.55)" }}
-        >
-          // route
-        </div>
-      </div>
-
-      {/* Info panel */}
-      <div className="px-4 py-3 flex items-center justify-between gap-4">
-        <div className="min-w-0">
-          <div
-            className="text-[14.5px] font-medium truncate"
-            style={{ color: "rgb(236, 236, 241)" }}
-          >
-            {routeSafe.destination_label ?? "Destination"}
-          </div>
-          <div
-            className="text-[12px] mt-0.5 font-mono"
-            style={{ color: "rgba(236, 236, 241, 0.6)" }}
-          >
-            {fmtDuration(routeSafe.duration_seconds)} · {fmtDistance(routeSafe.distance_meters)}
-            {routeSafe.profile && ` · ${routeSafe.profile.replace("-", " ")}`}
-          </div>
-          {narration && (
-            <div
-              className="text-[11px] mt-1 leading-relaxed"
-              style={{ color: "rgba(236, 236, 241, 0.5)" }}
-            >
-              {narration}
-            </div>
-          )}
-        </div>
-        <button
-          className="shrink-0 px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors"
-          style={{
-            background: "rgba(124, 92, 255, 0.25)",
-            border: "1px solid rgba(124, 92, 255, 0.5)",
-            color: "rgb(236, 236, 241)",
-          }}
-        >
-          Leave now
-        </button>
-      </div>
+        <path d="M12 21s-7-6.5-7-12a7 7 0 0 1 14 0c0 5.5-7 12-7 12z" />
+        <circle cx="12" cy="9" r="2.5" />
+      </svg>
     </div>
   );
 }

@@ -1,13 +1,13 @@
 /**
- * MapCanvas — v0.28.3.
+ * MapCanvas — v0.28.5.
  *
- * Real interactive map. MapLibre GL renders OpenStreetMap raster tiles
- * (no API key, no rate limit for reasonable use). Center + zoom come
- * from the LLM's `place` or `route` payload. Overlay pill on top with
- * the place name + descriptor.
+ * Fullscreen interactive map. MapLibre GL renders CartoDB Dark Matter
+ * tiles so the map matches Travis's dark aesthetic. Info card overlay
+ * top-left with label + descriptor + narration, and a collapse button
+ * that returns the user to chat mode (the map focal renders as an
+ * inline MapCard the user can click to re-expand).
  *
- * Falls back to a text-only card when the LLM didn't include coords
- * yet — that shape still works until v0.28.3's prompt update lands.
+ * Falls back to a text-only card when the LLM didn't include coords.
  */
 import { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
@@ -16,29 +16,34 @@ import "maplibre-gl/dist/maplibre-gl.css";
 
 import { useFocalContent } from "../useFocalContent";
 import { parseRichResponse, type MapPart } from "../../../lib/richResponse";
+import { useAppStore } from "../../../stores/app";
 import { ChatCanvas } from "./ChatCanvas";
 
-const OSM_STYLE = {
+// CartoDB Dark Matter — free-tier friendly, matches Travis's dark canvas.
+// Attribution required (rendered by MapLibre automatically).
+const DARK_STYLE = {
   version: 8,
   sources: {
-    osm: {
+    carto: {
       type: "raster",
       tiles: [
-        "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
-        "https://b.tile.openstreetmap.org/{z}/{x}/{y}.png",
-        "https://c.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
+        "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
+        "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
+        "https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
       ],
       tileSize: 256,
-      attribution: "© OpenStreetMap contributors",
+      attribution:
+        "© OpenStreetMap contributors © CARTO",
     },
   },
   layers: [
     {
-      id: "osm",
+      id: "carto",
       type: "raster",
-      source: "osm",
+      source: "carto",
       minzoom: 0,
-      maxzoom: 19,
+      maxzoom: 20,
     },
   ],
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -68,40 +73,23 @@ function InteractiveMap({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markerRef = useRef<maplibregl.Marker | null>(null);
+  const setMapExpanded = useAppStore((s) => s.setMapExpanded);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    console.log(
-      "[map] init — container size:",
-      el.clientWidth,
-      "x",
-      el.clientHeight,
-      "coords:",
-      coords,
-    );
     let map: MapLibreMap | null = null;
     try {
       map = new maplibregl.Map({
         container: el,
-        style: OSM_STYLE,
+        style: DARK_STYLE,
         center: [coords.lng, coords.lat],
         zoom: coords.zoom,
         attributionControl: { compact: true },
       });
       mapRef.current = map;
-      map.on("load", () => {
-        console.log("[map] load event fired");
-        map?.resize();
-      });
-      map.on("error", (e) => {
-        console.warn("[map] error event:", e);
-      });
-      // Force a resize on the next tick — WebGL sometimes measures
-      // 0x0 during initial mount inside stacked absolute containers.
-      requestAnimationFrame(() => {
-        map?.resize();
-      });
+      map.on("load", () => map?.resize());
+      requestAnimationFrame(() => map?.resize());
       const marker = new maplibregl.Marker({
         color: "rgb(189, 158, 255)",
       })
@@ -109,7 +97,6 @@ function InteractiveMap({
         .addTo(map);
       markerRef.current = marker;
     } catch (err) {
-      // Silent failure — degrades to the text card below on next render.
       console.warn("[map] MapLibre init failed:", err);
     }
     return () => {
@@ -158,48 +145,74 @@ function InteractiveMap({
         transition={{ duration: 0.36, ease: [0.22, 1, 0.36, 1] }}
         className="absolute top-16 left-4 max-w-md rounded-2xl px-4 py-3 pointer-events-auto"
         style={{
-          background: "rgba(0, 0, 0, 0.60)",
-          border: "1px solid rgba(110, 196, 232, 0.35)",
+          background: "rgba(0, 0, 0, 0.72)",
+          border: "1px solid rgba(189, 158, 255, 0.40)",
           backdropFilter: "blur(14px)",
+          boxShadow: "0 12px 40px -12px rgba(0,0,0,0.6)",
         }}
       >
-        <div
-          className="text-[10px] uppercase tracking-[0.22em] font-mono mb-1"
-          style={{ color: "rgba(110, 196, 232, 0.85)" }}
-        >
-          // {mapPart.route ? "route" : "place"}
-        </div>
-        <div
-          className="text-[17px] font-medium leading-tight"
-          style={{ color: "rgb(236, 236, 241)" }}
-        >
-          {label}
-        </div>
-        {bits && (
-          <div
-            className="text-[12px] font-mono mt-1"
-            style={{ color: "rgba(236, 236, 241, 0.7)" }}
-          >
-            {bits}
+        <div className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <div
+              className="text-[10px] uppercase tracking-[0.22em] font-mono mb-1"
+              style={{ color: "rgba(189, 158, 255, 0.85)" }}
+            >
+              // {mapPart.route ? "route" : "place"}
+            </div>
+            <div
+              className="text-[17px] font-medium leading-tight truncate"
+              style={{ color: "rgb(236, 236, 241)" }}
+            >
+              {label}
+            </div>
+            {bits && (
+              <div
+                className="text-[12px] font-mono mt-1"
+                style={{ color: "rgba(236, 236, 241, 0.72)" }}
+              >
+                {bits}
+              </div>
+            )}
+            {mapPart.narration && (
+              <div
+                className="text-[12.5px] mt-2 leading-relaxed"
+                style={{ color: "rgba(236, 236, 241, 0.82)" }}
+              >
+                {mapPart.narration}
+              </div>
+            )}
           </div>
-        )}
-        {mapPart.narration && (
-          <div
-            className="text-[12.5px] mt-2 leading-relaxed"
-            style={{ color: "rgba(236, 236, 241, 0.78)" }}
+          <button
+            onClick={() => setMapExpanded(false)}
+            className="shrink-0 h-7 w-7 rounded-full flex items-center justify-center transition-colors"
+            style={{
+              background: "rgba(255, 255, 255, 0.08)",
+              border: "1px solid rgba(255, 255, 255, 0.14)",
+              color: "rgba(236, 236, 241, 0.85)",
+            }}
+            title="Collapse map · return to chat"
+            aria-label="Collapse map"
           >
-            {mapPart.narration}
-          </div>
-        )}
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+        </div>
       </motion.div>
     </div>
   );
 }
 
-/**
- * Text-only rendering when the LLM gave us a map part with narration
- * but no coordinates. Used while the prompt-update side lands.
- */
 function TextOnlyMap({ mapPart }: { mapPart: MapPart }) {
   const label =
     mapPart.route?.destination_label ?? mapPart.place?.label ?? "map";
@@ -213,15 +226,13 @@ function TextOnlyMap({ mapPart }: { mapPart: MapPart }) {
         style={{
           background:
             "linear-gradient(180deg, rgba(20, 20, 26, 0.85), rgba(12, 12, 16, 0.92))",
-          border: "1px solid rgba(110, 196, 232, 0.32)",
+          border: "1px solid rgba(189, 158, 255, 0.32)",
           backdropFilter: "blur(20px)",
-          boxShadow:
-            "0 24px 80px -20px rgba(0, 0, 0, 0.7), 0 0 60px -12px rgba(110, 196, 232, 0.20)",
         }}
       >
         <div
           className="text-[10px] uppercase tracking-[0.28em] font-mono mb-3"
-          style={{ color: "rgba(110, 196, 232, 0.85)" }}
+          style={{ color: "rgba(189, 158, 255, 0.85)" }}
         >
           // {mapPart.route ? "route" : "place"}
         </div>
@@ -239,12 +250,6 @@ function TextOnlyMap({ mapPart }: { mapPart: MapPart }) {
             {mapPart.narration}
           </div>
         )}
-        <div
-          className="text-[10px] mt-5 font-mono tracking-wide"
-          style={{ color: "rgba(236, 236, 241, 0.32)" }}
-        >
-          Interactive map appears when Travis includes coordinates.
-        </div>
       </motion.div>
     </div>
   );

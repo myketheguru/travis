@@ -76,9 +76,11 @@ function DockRow({
         onClick={onClick}
         className="w-9 h-9 rounded-full flex items-center justify-center transition-colors backdrop-blur"
         style={{
-          color: "rgba(236, 236, 241, 0.75)",
-          background: "rgba(0, 0, 0, 0.35)",
-          border: "1px solid rgba(255, 255, 255, 0.08)",
+          // v0.28.5 — denser bg so dock reads on light canvases (map).
+          color: "rgba(236, 236, 241, 0.85)",
+          background: "rgba(0, 0, 0, 0.68)",
+          border: "1px solid rgba(255, 255, 255, 0.18)",
+          boxShadow: "0 4px 16px -8px rgba(0, 0, 0, 0.6)",
         }}
         title={shortcut ? `${label} (${shortcut})` : label}
         aria-label={label}

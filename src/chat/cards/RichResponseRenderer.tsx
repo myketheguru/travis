@@ -23,9 +23,11 @@ import { useCardLifecycle } from "../../stores/cardLifecycle";
 export function RichResponseRenderer({
   response,
   documentIds,
+  messageId,
 }: {
   response: RichResponse;
   documentIds?: number[];
+  messageId?: string;
 }) {
   const resurrectMany = useCardLifecycle((s) => s.resurrectMany);
 
@@ -42,7 +44,12 @@ export function RichResponseRenderer({
   return (
     <div className="flex flex-col gap-3">
       {response.parts.map((part, i) => (
-        <PartRouter key={i} part={part} documentIds={documentIds} />
+        <PartRouter
+          key={i}
+          part={part}
+          documentIds={documentIds}
+          messageId={messageId}
+        />
       ))}
     </div>
   );
@@ -50,12 +57,11 @@ export function RichResponseRenderer({
 
 function PartRouter({
   part,
+  messageId,
 }: {
   part: MessagePart;
-  /** Reserved: kept in the prop wiring so `doc_ref` parts can later
-   *  reconcile against generated document IDs surfaced by the turn.
-   *  Currently unused by any part kind. */
   documentIds?: number[];
+  messageId?: string;
 }) {
   switch (part.kind) {
     case "text":
@@ -67,6 +73,7 @@ function PartRouter({
           route={part.route}
           place={part.place}
           narration={part.narration}
+          messageId={messageId}
         />
       );
 

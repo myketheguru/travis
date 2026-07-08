@@ -207,7 +207,7 @@ function MessageBlock({
               }}
             >
               {rich ? (
-                <RichResponseRenderer response={rich} />
+                <RichResponseRenderer response={rich} messageId={message.id} />
               ) : (
                 <MarkdownBody text={message.content} />
               )}

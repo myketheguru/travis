@@ -24,7 +24,28 @@ export function useCanvasMode() {
   const isFirstMoment = useAppStore((s) => s.isFirstMoment);
   const setCanvasMode = useAppStore((s) => s.setCanvasMode);
   const canvasMode = useAppStore((s) => s.canvasMode);
+  const mapExpanded = useAppStore((s) => s.mapExpanded);
+  const mapExpandedFor = useAppStore((s) => s.mapExpandedFor);
+  const setMapExpanded = useAppStore((s) => s.setMapExpanded);
   const { focal } = useFocalContent();
+
+  // v0.28.5 — when a NEW map focal arrives, auto-expand. But don't
+  // re-expand if the user already collapsed this specific focal.
+  useEffect(() => {
+    if (!focal) return;
+    try {
+      const rich = parseRichResponse(focal.content);
+      const hasMap = rich?.parts.some((p) => p.kind === "map") ?? false;
+      const focalId = String(focal.id);
+      if (hasMap && mapExpandedFor !== focalId) {
+        // Fresh map focal — expand.
+        setMapExpanded(true, focalId);
+      }
+    } catch {
+      /* ignore */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focal?.id]);
 
   // Track "last active" locally. Note: this is separate from the store's
   // isFirstMoment (which is at-mount snapshot) so we can flip mid-session.
@@ -59,10 +80,11 @@ export function useCanvasMode() {
       return;
     }
 
-    //  2. Map — latest assistant response contains a map part
-    //     anywhere in its rich payload. Wrapped in try so a malformed
-    //     rich response can never propagate + crash the mode logic.
-    if (focal) {
+    //  2. Map — latest assistant response contains a map part AND
+    //     the user has the map expanded. Collapsed maps still exist
+    //     as inline MapCards in ChatCanvas which the user can click
+    //     to re-expand.
+    if (focal && mapExpanded) {
       let hasMap = false;
       try {
         const rich = parseRichResponse(focal.content);
@@ -89,7 +111,7 @@ export function useCanvasMode() {
 
     //  4. Chat — default.
     if (canvasMode !== "chat") setCanvasMode("chat");
-  }, [activity, focal, isFirstMoment, canvasMode, setCanvasMode]);
+  }, [activity, focal, isFirstMoment, canvasMode, setCanvasMode, mapExpanded]);
 
   // Keep an interval to re-check idle status when nothing else changes.
   // v0.27.6 — Poll every 15s so 5min idle threshold triggers within
