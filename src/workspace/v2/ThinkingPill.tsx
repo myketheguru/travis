@@ -14,13 +14,15 @@
  */
 import { motion, AnimatePresence } from "framer-motion";
 import { useAppStore } from "../../stores/app";
-import { useCanvasMode } from "./canvas/useCanvasMode";
 
 export function ThinkingPill() {
   const activity = useAppStore((s) => s.activity);
-  const canvasMode = useCanvasMode();
 
-  const visible = activity === "thinking" && canvasMode !== "voice";
+  // v0.28.12 — also show during voice mode. Previously hidden because
+  // the spheroid was the visual, but the spheroid doesn't say WHAT
+  // Travis is doing. Now the pill overlays the top even in voice mode
+  // so the user knows Travis heard them + is working on it.
+  const visible = activity === "thinking";
 
   return (
     <AnimatePresence>

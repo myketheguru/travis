@@ -77,7 +77,14 @@ export function useNativeVoice({ enabled }: Options) {
           if (finalizingRef.current) return;
           finalizingRef.current = true;
           const wasIntent = useAppStore.getState().activity === "listening";
-          if (wasIntent) playCue("heard");
+          if (wasIntent) {
+            playCue("heard");
+            // v0.28.12 — show 'thinking' immediately so the user gets
+            // feedback that we heard them + we're working. AskTab will
+            // set thinking again when it starts the LLM turn; that's
+            // a no-op state change.
+            setActivity("thinking");
+          }
           try {
             const text = await nativeVoice.finalizeTranscript();
             const trimmed = text.trim();
@@ -101,8 +108,12 @@ export function useNativeVoice({ enabled }: Options) {
             }
           } catch (err) {
             console.warn("[voice] finalizeTranscript failed:", err);
-          } finally {
             if (wasIntent) setActivity("idle");
+          } finally {
+            // Note: don't force activity to idle here on the success
+            // path — AskTab will drive thinking -> idle as the LLM
+            // turn completes. Forcing idle here caused the voice
+            // spheroid to disappear before the response arrived.
             finalizingRef.current = false;
             if (wasIntent) {
               // Only auto-disarm when this was an intent capture.
@@ -131,9 +142,42 @@ export function useNativeVoice({ enabled }: Options) {
       setActivity("listening");
       void nativeVoice.setArmed(true).catch(() => {});
     };
-    const onDisarm = () => {
-      void nativeVoice.setArmed(false).catch(() => {});
-      setActivity("idle");
+    // v0.28.12 — tapping mic while armed used to just call setArmed(false)
+    // which DISCARDED the accumulated utterance buffer. Now: if we were
+    // listening, finalize + submit whatever was said (like a manual
+    // end-of-speech), then disarm. Prevents the "spoke, tapped stop,
+    // nothing happened, response appeared later in history" bug.
+    const onDisarm = async () => {
+      const wasListening =
+        useAppStore.getState().activity === "listening";
+      if (wasListening && !finalizingRef.current) {
+        finalizingRef.current = true;
+        playCue("heard");
+        setActivity("thinking");
+        try {
+          const text = await nativeVoice.finalizeTranscript();
+          const trimmed = text.trim();
+          if (trimmed.length > 0) {
+            setPendingComposerSubmit(trimmed);
+          } else {
+            // Nothing captured — just go back to idle.
+            setActivity("idle");
+          }
+        } catch (err) {
+          console.warn("[voice] manual finalize failed:", err);
+          setActivity("idle");
+        } finally {
+          finalizingRef.current = false;
+          try {
+            await nativeVoice.setArmed(false);
+          } catch {
+            /* best effort */
+          }
+        }
+      } else {
+        void nativeVoice.setArmed(false).catch(() => {});
+        setActivity("idle");
+      }
     };
     window.addEventListener("travis:arm-voice", onArm);
     window.addEventListener("travis:disarm-voice", onDisarm);
