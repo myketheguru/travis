@@ -287,7 +287,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setActiveConversationId: (id) => {
     writeActiveConv(id);
-    set({ activeConversationId: id });
+    // v0.28.7 — reset canvas/map state on conversation switch so we
+    // don't inherit a stuck map or thread focus from the previous
+    // conversation. Fresh map focals inside the new conversation
+    // will still auto-expand via useCanvasMode's freshness check.
+    set({
+      activeConversationId: id,
+      mapExpanded: false,
+      mapExpandedFor: null,
+      canvasMode: "chat",
+      focusedThread: null,
+    });
   },
   setViewerDocumentId: (id) => set({ viewerDocumentId: id }),
   setChatPaneFraction: (f) => {
@@ -354,11 +364,23 @@ export const useAppStore = create<AppState>((set, get) => ({
   clearAmbientTranscripts: () => set({ ambientTranscripts: [] }),
   mapExpanded: true,
   mapExpandedFor: null,
-  setMapExpanded: (expanded, forMessageId) =>
-    set({
+  setMapExpanded: (expanded, forMessageId) => {
+    // v0.28.7 — when collapsing, also flip canvasMode back to chat
+    // so the composer placeholder + canvas layout return to normal
+    // instead of leaving the user on a stuck map surface.
+    const prev = get();
+    const next: Partial<AppState> = {
       mapExpanded: expanded,
-      mapExpandedFor: expanded ? forMessageId ?? null : null,
-    }),
+      // Track the focal we most recently handled — either expanded
+      // or explicitly collapsed. Prevents useCanvasMode's auto-expand
+      // effect from re-triggering on the same focal.
+      mapExpandedFor: forMessageId ?? prev.mapExpandedFor,
+    };
+    if (!expanded && prev.canvasMode === "map") {
+      next.canvasMode = "chat";
+    }
+    set(next);
+  },
   isFirstMoment: computeInitialFirstMoment(),
   noteUserActivity: () => {
     stampActivityNow();

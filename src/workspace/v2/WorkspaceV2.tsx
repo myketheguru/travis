@@ -26,6 +26,7 @@ import { motion } from "framer-motion";
 import { useAppStore } from "../../stores/app";
 import { AttentionCompass } from "./AttentionCompass";
 import { AmbientToggle } from "./AmbientToggle";
+import { ThinkingPill } from "./ThinkingPill";
 import { CanvasBackdrop } from "./CanvasBackdrop";
 import { ThreadRail } from "./ThreadRail";
 import { SettingsOverlay } from "./SettingsOverlay";
@@ -163,6 +164,9 @@ export function WorkspaceV2() {
         <AmbientToggle />
         <AttentionCompass />
       </motion.div>
+
+      {/* Thinking indicator — floats top-center on any non-voice canvas */}
+      <ThinkingPill />
 
       {/* HUD: thread rail L */}
       <motion.div

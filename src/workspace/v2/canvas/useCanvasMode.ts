@@ -29,17 +29,27 @@ export function useCanvasMode() {
   const setMapExpanded = useAppStore((s) => s.setMapExpanded);
   const { focal } = useFocalContent();
 
-  // v0.28.5 — when a NEW map focal arrives, auto-expand. But don't
-  // re-expand if the user already collapsed this specific focal.
+  // v0.28.7 — auto-expand ONLY for freshly-received map focals, not
+  // for maps loaded from history. Signal: focal.createdAt is within
+  // the last 30 seconds AND we haven't already expanded/collapsed
+  // this focal. History-loaded maps render as inline MapCards in
+  // ChatCanvas; user clicks to expand.
   useEffect(() => {
     if (!focal) return;
     try {
       const rich = parseRichResponse(focal.content);
       const hasMap = rich?.parts.some((p) => p.kind === "map") ?? false;
+      if (!hasMap) return;
       const focalId = String(focal.id);
-      if (hasMap && mapExpandedFor !== focalId) {
-        // Fresh map focal — expand.
+      if (mapExpandedFor === focalId) return; // already handled
+      const created = focal.createdAt ? Date.parse(focal.createdAt) : NaN;
+      const ageMs = Number.isFinite(created) ? Date.now() - created : Infinity;
+      const isFresh = ageMs < 30_000;
+      if (isFresh) {
         setMapExpanded(true, focalId);
+      } else {
+        // Mark as handled without expanding so we don't reconsider.
+        setMapExpanded(false, focalId);
       }
     } catch {
       /* ignore */
