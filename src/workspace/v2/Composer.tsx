@@ -10,13 +10,14 @@ import { motion } from "framer-motion";
 import { useAppStore } from "../../stores/app";
 import { VoiceArmButton } from "./VoiceArmButton";
 import { MicMeter } from "./MicMeter";
+import { useCanvasMode } from "./canvas/useCanvasMode";
 
 export function Composer() {
   const [text, setText] = useState("");
   const [isFocused, setIsFocused] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const canvasMode = useAppStore((s) => s.canvasMode);
+  const canvasMode = useCanvasMode();
   const focusedThread = useAppStore((s) => s.focusedThread);
   const activity = useAppStore((s) => s.activity);
   const setPendingComposerSubmit = useAppStore(

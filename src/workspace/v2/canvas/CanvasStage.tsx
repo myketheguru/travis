@@ -6,15 +6,15 @@
  * when Travis's activity or intent flips the canvas to a new surface.
  */
 import { AnimatePresence, motion } from "framer-motion";
-import { useAppStore } from "../../../stores/app";
 import { ChatCanvas } from "./ChatCanvas";
 import { VoiceCanvas } from "./VoiceCanvas";
 import { MapCanvas } from "./MapCanvas";
 import { IdleCanvas } from "./IdleCanvas";
 import { CanvasErrorBoundary } from "./CanvasErrorBoundary";
+import { useCanvasMode } from "./useCanvasMode";
 
 export function CanvasStage() {
-  const mode = useAppStore((s) => s.canvasMode);
+  const mode = useCanvasMode();
 
   return (
     <div className="absolute inset-0">

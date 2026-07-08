@@ -14,10 +14,11 @@
  */
 import { motion, AnimatePresence } from "framer-motion";
 import { useAppStore } from "../../stores/app";
+import { useCanvasMode } from "./canvas/useCanvasMode";
 
 export function ThinkingPill() {
   const activity = useAppStore((s) => s.activity);
-  const canvasMode = useAppStore((s) => s.canvasMode);
+  const canvasMode = useCanvasMode();
 
   const visible = activity === "thinking" && canvasMode !== "voice";
 

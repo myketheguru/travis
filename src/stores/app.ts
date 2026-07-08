@@ -72,9 +72,9 @@ type AppState = {
   ///   map   — full-bleed animated map (auto when the latest response
   ///           is a map part)
   ///   idle  — splash-style greeting (cold boot / 10min inactivity)
-  /// The value is derived reactively in useCanvasMode(); this store
-  /// field is the last computed result so components can subscribe.
-  canvasMode: "idle" | "chat" | "voice" | "map";
+  /// v0.28.8 — REMOVED. canvasMode is now purely derived by the
+  /// useCanvasMode() hook from (activity, focal, mapExpanded,
+  /// isFirstMoment, inactivity). No longer stored.
   /// v0.27 (v2 Shell 14) — composer submit bridge. When set, the
   /// hidden AskTab picks it up, drops the text into its textarea, and
   /// fires submit(). Difference vs pendingComposerText: that just fills
@@ -118,7 +118,6 @@ type AppState = {
   setHistoryOverlayOpen: (open: boolean) => void;
   setDocumentsOverlayOpen: (open: boolean) => void;
   setSpeechAmplitude: (a: number) => void;
-  setCanvasMode: (m: "idle" | "chat" | "voice" | "map") => void;
   setPendingComposerSubmit: (t: string | null) => void;
   setAmbientListening: (on: boolean) => void;
   appendAmbientTranscript: (text: string) => void;
@@ -287,15 +286,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setActiveConversationId: (id) => {
     writeActiveConv(id);
-    // v0.28.7 — reset canvas/map state on conversation switch so we
-    // don't inherit a stuck map or thread focus from the previous
-    // conversation. Fresh map focals inside the new conversation
-    // will still auto-expand via useCanvasMode's freshness check.
+    // v0.28.8 — reset user-intent flags that shouldn't survive a
+    // conversation switch. canvasMode is derived (not stored), so
+    // it takes care of itself.
     set({
       activeConversationId: id,
       mapExpanded: false,
       mapExpandedFor: null,
-      canvasMode: "chat",
       focusedThread: null,
     });
   },
@@ -326,8 +323,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   setDocumentsOverlayOpen: (open) => set({ documentsOverlayOpen: open }),
   speechAmplitude: 0,
   setSpeechAmplitude: (a) => set({ speechAmplitude: Math.max(0, Math.min(1, a)) }),
-  canvasMode: "idle",
-  setCanvasMode: (m) => set({ canvasMode: m }),
   pendingComposerSubmit: null,
   setPendingComposerSubmit: (t) => set({ pendingComposerSubmit: t }),
   ambientListening: (() => {
@@ -365,21 +360,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   mapExpanded: true,
   mapExpandedFor: null,
   setMapExpanded: (expanded, forMessageId) => {
-    // v0.28.7 — when collapsing, also flip canvasMode back to chat
-    // so the composer placeholder + canvas layout return to normal
-    // instead of leaving the user on a stuck map surface.
-    const prev = get();
-    const next: Partial<AppState> = {
+    // v0.28.8 — clean setter, no cascade. canvasMode is derived by
+    // useCanvasMode from (activity, focal, mapExpanded). Consumers
+    // re-derive on the next render — no store meddling required.
+    set((prev) => ({
       mapExpanded: expanded,
-      // Track the focal we most recently handled — either expanded
-      // or explicitly collapsed. Prevents useCanvasMode's auto-expand
-      // effect from re-triggering on the same focal.
       mapExpandedFor: forMessageId ?? prev.mapExpandedFor,
-    };
-    if (!expanded && prev.canvasMode === "map") {
-      next.canvasMode = "chat";
-    }
-    set(next);
+    }));
   },
   isFirstMoment: computeInitialFirstMoment(),
   noteUserActivity: () => {

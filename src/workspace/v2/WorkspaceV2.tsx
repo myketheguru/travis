@@ -35,7 +35,7 @@ import { ResumeChip } from "./ResumeChip";
 import { QuickAccessDock } from "./QuickAccessDock";
 import { DocumentsOverlay } from "./DocumentsOverlay";
 import { CanvasStage } from "./canvas/CanvasStage";
-import { useCanvasMode } from "./canvas/useCanvasMode";
+import { useCanvasMode, useMapAutoExpand } from "./canvas/useCanvasMode";
 import { useNativeVoice } from "../../voice/useNativeVoice";
 import { Composer } from "./Composer";
 import { useFocalContent } from "./useFocalContent";
@@ -46,11 +46,12 @@ export function WorkspaceV2() {
   const setHistoryOverlayOpen = useAppStore((s) => s.setHistoryOverlayOpen);
   const setDocumentsOverlayOpen = useAppStore((s) => s.setDocumentsOverlayOpen);
   const setSettingsOverlayOpen = useAppStore((s) => s.setSettingsOverlayOpen);
-  const canvasMode = useAppStore((s) => s.canvasMode);
+  const canvasMode = useCanvasMode();
   useFocalContent();
 
-  // Derive canvasMode from activity + focal + inactivity.
-  useCanvasMode();
+  // v0.28.8 — auto-expand fresh assistant map focals. Kept in its own
+  // hook so useCanvasMode remains pure derivation.
+  useMapAutoExpand();
 
   // v0.28 — native mic pipeline: cpal capture, VAD, auto-transcribe
   // on end-of-utterance, barge-in during Piper playback. Enabled by
