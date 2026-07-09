@@ -75,56 +75,40 @@ export function useNativeVoice({ enabled }: Options) {
       unlisteners.push(
         await onVoiceEvent<null>("voice://speech-end", async () => {
           if (finalizingRef.current) return;
-          finalizingRef.current = true;
           const wasIntent = useAppStore.getState().activity === "listening";
-          if (wasIntent) {
-            playCue("heard");
-            // v0.28.12 — show 'thinking' immediately so the user gets
-            // feedback that we heard them + we're working. AskTab will
-            // set thinking again when it starts the LLM turn; that's
-            // a no-op state change.
-            setActivity("thinking");
-          }
+          // v0.28.13 — for INTENT captures (user tapped the mic), do
+          // NOT auto-finalize on VAD speech-end. VAD triggers at 700ms
+          // of silence, which is faster than natural mid-sentence
+          // pauses ('Hey Travis, can you... ...create an invoice?').
+          // The user was getting cut off mid-thought + submitting
+          // partial requests. Intent captures now finalize ONLY when
+          // the user taps the mic again (or hits Esc / spacebar-up).
+          // VAD auto-end still runs for AMBIENT mode where continuous
+          // segmentation is the whole point.
+          if (wasIntent) return;
+          if (!ambientRef.current) return;
+          finalizingRef.current = true;
           try {
             const text = await nativeVoice.finalizeTranscript();
             const trimmed = text.trim();
             if (trimmed.length > 0) {
-              if (wasIntent) {
-                setPendingComposerSubmit(trimmed);
-              } else if (ambientRef.current) {
-                // Ambient capture — save transcript for later review,
-                // do NOT submit to LLM. User can browse ambient
-                // transcripts from the canvas. Also persist to SQLite
-                // via ambient_transcript_save so the
-                // get_ambient_transcripts tool can query them.
-                appendAmbientTranscript(trimmed);
-                try {
-                  const { invoke } = await import("@tauri-apps/api/core");
-                  await invoke("ambient_transcript_save", { text: trimmed });
-                } catch (err) {
-                  console.warn("[voice] ambient_transcript_save failed:", err);
-                }
+              // Ambient capture — save transcript for later review,
+              // do NOT submit to LLM. User can browse ambient
+              // transcripts from the canvas. Also persist to SQLite
+              // via ambient_transcript_save so the
+              // get_ambient_transcripts tool can query them.
+              appendAmbientTranscript(trimmed);
+              try {
+                const { invoke } = await import("@tauri-apps/api/core");
+                await invoke("ambient_transcript_save", { text: trimmed });
+              } catch (err) {
+                console.warn("[voice] ambient_transcript_save failed:", err);
               }
             }
           } catch (err) {
             console.warn("[voice] finalizeTranscript failed:", err);
-            if (wasIntent) setActivity("idle");
           } finally {
-            // Note: don't force activity to idle here on the success
-            // path — AskTab will drive thinking -> idle as the LLM
-            // turn completes. Forcing idle here caused the voice
-            // spheroid to disappear before the response arrived.
             finalizingRef.current = false;
-            if (wasIntent) {
-              // Only auto-disarm when this was an intent capture.
-              // If ambient is on, stay armed so the next utterance
-              // still gets caught.
-              try {
-                if (!ambientRef.current) await nativeVoice.setArmed(false);
-              } catch {
-                /* best effort */
-              }
-            }
           }
         }),
       );

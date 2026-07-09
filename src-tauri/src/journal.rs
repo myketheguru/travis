@@ -1707,21 +1707,24 @@ pub async fn journal_ingest(
         return Err("empty journal entry".into());
     }
 
-    // Determine the conversation: continue an existing open one if provided, else open a new one.
+    // Determine the conversation. v0.28.13: when the user explicitly
+    // passes a conversation_id (from the active-conv state on the
+    // desktop), we ALWAYS append to it. Previously a "resolved" status
+    // (auto-set at the end of a conversational turn) caused a fork
+    // into a new conv, which broke follow-up voice turns — the user's
+    // continuation ended up in a separate history entry. If the conv
+    // was resolved, we re-open it here so it lives on for the Threads
+    // tab semantics. Only truly-null conversation_id opens a new conv.
     let conv_id: i64 = match conversation_id {
         Some(cid) => {
             let existing = conversation::fetch(&state.db.pool, cid)
                 .await
                 .map_err(|e| e.to_string())?;
             if existing.status == "resolved" {
-                let title = raw.chars().take(60).collect::<String>();
-                conversation::open(&state.db.pool, state.workspace.read().await.active_id, "journal", Some(&title))
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .id
-            } else {
-                cid
+                let _ =
+                    conversation::set_status(&state.db.pool, cid, "open").await;
             }
+            cid
         }
         None => {
             let title = raw.chars().take(60).collect::<String>();
