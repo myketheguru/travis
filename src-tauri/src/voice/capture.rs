@@ -26,7 +26,10 @@ const AMPLITUDE_EMIT_MS: u64 = 60;
 const VAD_SPEECH_RMS: f32 = 0.008;
 const VAD_SILENCE_RMS: f32 = 0.004;
 const VAD_ONSET_MS: u64 = 100;
-const VAD_HANGOVER_MS: u64 = 700;
+// v0.28.18 — bumped from 700ms to 2500ms. 700ms was tripping on
+// natural mid-sentence pauses; 2500ms lets people finish sentences
+// but still auto-ends within a few seconds of them being done.
+const VAD_HANGOVER_MS: u64 = 2500;
 
 /// Control commands sent from the Tauri command layer to the worker
 /// thread that owns the cpal Stream. Each variant that needs a reply

@@ -76,28 +76,35 @@ export function useNativeVoice({ enabled }: Options) {
         await onVoiceEvent<null>("voice://speech-end", async () => {
           if (finalizingRef.current) return;
           const wasIntent = useAppStore.getState().activity === "listening";
-          // v0.28.13 — for INTENT captures (user tapped the mic), do
-          // NOT auto-finalize on VAD speech-end. VAD triggers at 700ms
-          // of silence, which is faster than natural mid-sentence
-          // pauses ('Hey Travis, can you... ...create an invoice?').
-          // The user was getting cut off mid-thought + submitting
-          // partial requests. Intent captures now finalize ONLY when
-          // the user taps the mic again (or hits Esc / spacebar-up).
-          // VAD auto-end still runs for AMBIENT mode where continuous
-          // segmentation is the whole point.
-          if (wasIntent) return;
-          if (!ambientRef.current) return;
+          // v0.28.18 — VAD hangover is now 2500ms (up from 700ms) so
+          // mid-sentence pauses don't trigger speech-end. That means
+          // when speech-end DOES fire, the user is legitimately done —
+          // finalize + submit like the pre-v0.28.13 behavior. Manual
+          // finalize on mic-tap (v0.28.12) still works as an escape
+          // hatch if VAD ever misses.
+          const isAmbient = ambientRef.current;
+          if (!wasIntent && !isAmbient) return;
           finalizingRef.current = true;
+          if (wasIntent) {
+            playCue("heard");
+            setActivity("thinking");
+            useAppStore.getState().setVoiceTranscribing(true);
+          }
           try {
             const text = await nativeVoice.finalizeTranscript();
             const trimmed = text.trim();
-            if (trimmed.length > 0) {
-              // v0.28.14 — wake-word detection via ambient transcript
-              // scanning. If the user has ambient on and this
-              // utterance contains 'hey travis' (case-insensitive,
-              // punctuation-tolerant), fire the arm event so they
-              // can just talk. Cheap alternative to running a proper
-              // openWakeWord ONNX runtime.
+            if (trimmed.length === 0) {
+              if (wasIntent) setActivity("idle");
+            } else if (wasIntent) {
+              setPendingComposerSubmit(trimmed);
+              try {
+                await nativeVoice.setArmed(false);
+              } catch {
+                /* best effort */
+              }
+            } else if (isAmbient) {
+              // Wake-word check: 'hey travis' during ambient promotes
+              // to an armed intent capture.
               const normalized = trimmed
                 .toLowerCase()
                 .replace(/[^a-z0-9 ]/g, " ");
@@ -108,27 +115,22 @@ export function useNativeVoice({ enabled }: Options) {
                 normalized.includes("ok travis")
               ) {
                 window.dispatchEvent(new CustomEvent("travis:arm-voice"));
-                // Don't ALSO save this to ambient — the user was
-                // addressing Travis, not producing meeting content.
-                return;
-              }
-              // Ambient capture — save transcript for later review,
-              // do NOT submit to LLM. User can browse ambient
-              // transcripts from the canvas. Also persist to SQLite
-              // via ambient_transcript_save so the
-              // get_ambient_transcripts tool can query them.
-              appendAmbientTranscript(trimmed);
-              try {
-                const { invoke } = await import("@tauri-apps/api/core");
-                await invoke("ambient_transcript_save", { text: trimmed });
-              } catch (err) {
-                console.warn("[voice] ambient_transcript_save failed:", err);
+              } else {
+                appendAmbientTranscript(trimmed);
+                try {
+                  const { invoke } = await import("@tauri-apps/api/core");
+                  await invoke("ambient_transcript_save", { text: trimmed });
+                } catch (err) {
+                  console.warn("[voice] ambient_transcript_save failed:", err);
+                }
               }
             }
           } catch (err) {
             console.warn("[voice] finalizeTranscript failed:", err);
+            if (wasIntent) setActivity("idle");
           } finally {
             finalizingRef.current = false;
+            useAppStore.getState().setVoiceTranscribing(false);
           }
         }),
       );

@@ -124,6 +124,15 @@ pub async fn voice_finalize_transcript(
         params.set_print_realtime(false);
         params.set_language(Some("en"));
         params.set_translate(false);
+        // v0.28.18 — initial prompt biases whisper toward common
+        // Travis-facing phrases. Base.en was mistranscribing 'Hey
+        // Travis' as 'HRVs' when the audio buffer was silence-padded.
+        // The initial prompt is included as context before the actual
+        // audio, so wake-phrase recognition + Travis-domain words are
+        // more likely to land right.
+        params.set_initial_prompt(
+            "Hey Travis, can you help me create an invoice, contract, note, or document?",
+        );
         state
             .full(params, &samples)
             .map_err(|e| format!("whisper full: {e}"))?;
