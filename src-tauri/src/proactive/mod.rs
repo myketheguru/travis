@@ -540,7 +540,11 @@ async fn tick(
         local_now.day()
     );
     let state = build_state_summary(pool, &today).await?;
-    if state.is_quiet() {
+    // v0.28.22 — pack signals (birthdays, bills, renewals, overdue
+    // follow-ups). Scanned outside the state summary so they can
+    // pull the tick out of "quiet" mode.
+    let pack_signals = crate::packs::signals::scan(pool).await;
+    if state.is_quiet() && pack_signals.is_empty() {
         return Ok(());
     }
     let api_key = match profile.llm_provider.as_str() {
@@ -557,6 +561,15 @@ async fn tick(
 
     let tool = build_nudge_tool();
     let mut user_msg = state.render(&today);
+
+    // v0.28.22 — append pack-scheduled signals so the nudge LLM can
+    // reference specific birthdays / bills / renewals / overdue
+    // follow-ups by name. Quiet is still the default.
+    let pack_block = crate::packs::signals::format_for_prompt(&pack_signals);
+    if !pack_block.is_empty() {
+        user_msg.push_str("\n\n");
+        user_msg.push_str(&pack_block);
+    }
 
     // Append observer signals (BRAIN.md capability #5). The state
     // summary captures task / reminder counts; the observer surfaces

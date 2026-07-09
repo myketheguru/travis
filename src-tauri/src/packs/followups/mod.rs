@@ -30,6 +30,7 @@ impl PackHandle for FollowupsPack {
         registry.register(Box::new(tools::LogFollowupTool));
         registry.register(Box::new(tools::ListFollowupsTool));
         registry.register(Box::new(tools::CompleteFollowupTool));
+        registry.register(Box::new(tools::CheckFollowupSentTool));
     }
 }
 

@@ -46,6 +46,10 @@ pub mod followups;
 pub mod household;
 pub mod finance;
 
+// v0.28.22 — cross-pack time-sensitive scanner used by the proactive
+// tick to surface birthdays / bills due / renewals / overdue follow-ups.
+pub mod signals;
+
 /// A bundled pack. All methods take `&self` so [`PackHandle`] can live behind
 /// a `&'static dyn PackHandle` reference returned from [`compiled_in_packs`].
 pub trait PackHandle: Send + Sync {

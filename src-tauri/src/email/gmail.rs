@@ -251,6 +251,95 @@ fn strip_html(html: &str) -> String {
     collapsed.trim().to_string()
 }
 
+/// v0.28.22 — search the user's Sent folder for outbound messages.
+/// Used by the follow-ups pack to auto-detect when the user has
+/// already sent the promised email so an open follow-up can be
+/// closed without them saying so.
+///
+/// `q_extra` is appended to the Gmail search query verbatim; caller
+/// passes something like `to:sarah@acme.com newer_than:14d` to narrow.
+/// Returns the top N matches with just subject + received_at so the
+/// LLM can decide whether the message actually corresponds to the
+/// promised follow-up.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SentMatch {
+    pub id: String,
+    pub subject: String,
+    pub to: String,
+    pub sent_at: String,
+    pub snippet: String,
+}
+
+pub async fn search_sent(
+    pool: &SqlitePool,
+    http: &reqwest::Client,
+    q_extra: &str,
+    max: usize,
+) -> Result<Vec<SentMatch>> {
+    let token = google::access_token(pool, http)
+        .await
+        .map_err(|e| anyhow!("get google access token: {e}"))?;
+    let cleaned = q_extra.trim();
+    let q = if cleaned.is_empty() {
+        "in:sent".to_string()
+    } else {
+        format!("in:sent {cleaned}")
+    };
+    let list_resp = http
+        .get(LIST_URL)
+        .bearer_auth(&token)
+        .query(&[
+            ("q", q.as_str()),
+            ("maxResults", &max.min(20).to_string()),
+        ])
+        .send()
+        .await
+        .map_err(|e| anyhow!("gmail sent-list: {e}"))?;
+    let status = list_resp.status();
+    if !status.is_success() {
+        let body = list_resp.text().await.unwrap_or_default();
+        anyhow::bail!("gmail sent-list {status}: {body}");
+    }
+    #[derive(serde::Deserialize)]
+    struct ListRow { id: String }
+    #[derive(serde::Deserialize)]
+    struct ListResp { #[serde(default)] messages: Vec<ListRow> }
+    let listed: ListResp = list_resp.json().await.context("gmail sent-list parse")?;
+
+    let mut out = Vec::with_capacity(listed.messages.len());
+    for row in listed.messages.iter().take(max) {
+        let url = format!("{GET_BASE}/{}", row.id);
+        let get_resp = match http
+            .get(&url)
+            .bearer_auth(&token)
+            .query(&[("format", "metadata"), ("metadataHeaders", "To"), ("metadataHeaders", "Subject")])
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => { tracing::warn!("gmail sent-get: {e}"); continue; }
+        };
+        if !get_resp.status().is_success() { continue; }
+        let v: serde_json::Value = match get_resp.json().await { Ok(x) => x, Err(_) => continue };
+        let internal_ms = v["internalDate"].as_str().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+        let sent_at = chrono::DateTime::<chrono::Utc>::from_timestamp(internal_ms / 1000, 0)
+            .map(|dt| dt.to_rfc3339()).unwrap_or_default();
+        let snippet = v["snippet"].as_str().unwrap_or_default().to_string();
+        let mut subject = String::new();
+        let mut to = String::new();
+        if let Some(hs) = v["payload"]["headers"].as_array() {
+            for h in hs {
+                let name = h["name"].as_str().unwrap_or("").to_ascii_lowercase();
+                let val = h["value"].as_str().unwrap_or("");
+                if name == "subject" { subject = val.to_string(); }
+                if name == "to" { to = val.to_string(); }
+            }
+        }
+        out.push(SentMatch { id: row.id.clone(), subject, to, sent_at, snippet });
+    }
+    Ok(out)
+}
+
 /// Send a plain-text email via Gmail. The body is encoded as RFC 2822 plain
 /// text (UTF-8) and uploaded base64url-encoded under `raw`.
 pub async fn send(

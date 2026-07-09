@@ -76,12 +76,13 @@ export default function HealthBanner() {
     };
   }, []);
 
-  // Compose what to show. Offline takes precedence over any LLM issue —
-  // there's no point talking about quota when the network is down.
+  // v0.28.22 — LLM error toasts are noise for the user. Background
+  // work paused for a rate-limit or provider hiccup is Travis's
+  // problem to work around, not something to surface. We keep only
+  // `offline` (user context is obvious) and mask everything else.
   const visible: { kind: IssueKind; detail: string | null } | null = (() => {
     if (!state) return null;
     if (!state.online) return { kind: "offline", detail: null };
-    if (state.issue) return { kind: state.issue.kind, detail: state.issue.message };
     return null;
   })();
 
