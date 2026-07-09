@@ -1,9 +1,10 @@
 //! Tauri command surface for the native voice pipeline.
 
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use super::capture::{spawn_capture, VoiceHandle};
 use crate::speech_runtime::{self, bootstrap};
@@ -80,22 +81,58 @@ pub async fn voice_set_armed(
     Ok(())
 }
 
+/// v0.28.19 — voice_finalize_transcript now returns the audio path
+/// and duration alongside the transcript so the frontend can render
+/// an audio card the user can replay.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinalizeResult {
+    pub text: String,
+    /// Absolute path to the saved WAV. Empty when nothing was
+    /// captured (below the 4000-sample threshold).
+    pub audio_path: String,
+    pub duration_ms: u32,
+}
+
 #[tauri::command]
 pub async fn voice_finalize_transcript(
     app: AppHandle,
     state: State<'_, VoiceState>,
     app_state: State<'_, crate::AppState>,
-) -> Result<String, String> {
+) -> Result<FinalizeResult, String> {
     let samples = {
         let guard = state.inner.lock().unwrap();
         match guard.as_ref() {
             Some(handle) => handle.take_utterance(),
-            None => return Ok(String::new()),
+            None => {
+                return Ok(FinalizeResult {
+                    text: String::new(),
+                    audio_path: String::new(),
+                    duration_ms: 0,
+                });
+            }
         }
     };
     if samples.len() < 4000 {
-        return Ok(String::new());
+        return Ok(FinalizeResult {
+            text: String::new(),
+            audio_path: String::new(),
+            duration_ms: 0,
+        });
     }
+
+    // v0.28.19 — save the utterance to a WAV before transcribing. If
+    // whisper hiccups we still have the audio artifact linked to the
+    // message via voice_utterance_link. Writes to <app_data>/voice.
+    let audio_path = save_utterance_wav(&app, &samples)?;
+    let duration_ms = (samples.len() as u64 * 1000 / super::capture_target_hz() as u64) as u32;
+
+    // v0.28.19 — build the dynamic whisper seed prompt from recent
+    // entities + last few user messages. Best-effort; falls back to
+    // the base phrase if the DB read hiccups.
+    let seeded_prompt = build_whisper_seed(&app_state.db.pool)
+        .await
+        .unwrap_or_else(|_| BASE_WHISPER_SEED.to_string());
 
     let model_name = bootstrap::DEFAULT_MODEL;
     if !speech_runtime::model_ready(&app, model_name) {
@@ -124,15 +161,11 @@ pub async fn voice_finalize_transcript(
         params.set_print_realtime(false);
         params.set_language(Some("en"));
         params.set_translate(false);
-        // v0.28.18 — initial prompt biases whisper toward common
-        // Travis-facing phrases. Base.en was mistranscribing 'Hey
-        // Travis' as 'HRVs' when the audio buffer was silence-padded.
-        // The initial prompt is included as context before the actual
-        // audio, so wake-phrase recognition + Travis-domain words are
-        // more likely to land right.
-        params.set_initial_prompt(
-            "Hey Travis, can you help me create an invoice, contract, note, or document?",
-        );
+        // v0.28.19 — dynamic seed. Base phrase + recent entity names
+        // + last user messages so proper nouns the user actually
+        // talks about (Sarah Chen, PS 498, MTAC) transcribe cleanly
+        // instead of getting phoneticized.
+        params.set_initial_prompt(seeded_prompt.as_str());
         state
             .full(params, &samples)
             .map_err(|e| format!("whisper full: {e}"))?;
@@ -152,5 +185,149 @@ pub async fn voice_finalize_transcript(
     .map_err(|e| format!("join: {e}"))??;
 
     let _ = app.emit("voice://transcript-final", transcript.clone());
-    Ok(transcript)
+    Ok(FinalizeResult {
+        text: transcript,
+        audio_path,
+        duration_ms,
+    })
+}
+
+/// v0.28.19 — base whisper seed. Extended dynamically with entity
+/// display_names + recent user messages.
+const BASE_WHISPER_SEED: &str =
+    "Hey Travis, can you help me create an invoice, contract, note, or document?";
+
+/// Build the whisper initial_prompt from static base + top-recent
+/// entities + last few user messages. Capped at ~450 chars because
+/// whisper.cpp truncates around ~448 text tokens.
+async fn build_whisper_seed(pool: &sqlx::SqlitePool) -> Result<String, sqlx::Error> {
+    use sqlx::Row;
+    let mut buf = String::with_capacity(512);
+    buf.push_str(BASE_WHISPER_SEED);
+
+    // Top-8 recently-updated entities. Ordered by updated_at desc.
+    let entity_rows = sqlx::query(
+        "SELECT display_name FROM entity
+         WHERE display_name IS NOT NULL AND display_name != ''
+         ORDER BY updated_at DESC LIMIT 8",
+    )
+    .fetch_all(pool)
+    .await?;
+    if !entity_rows.is_empty() {
+        buf.push_str(" Names to spell right: ");
+        for (i, row) in entity_rows.iter().enumerate() {
+            if i > 0 {
+                buf.push_str(", ");
+            }
+            if let Ok(n) = row.try_get::<String, _>("display_name") {
+                buf.push_str(&n);
+            }
+        }
+        buf.push('.');
+    }
+
+    // Last 3 user messages (< 60 chars each) for topical context.
+    let msg_rows = sqlx::query(
+        "SELECT content FROM conversation_message
+         WHERE role = 'user' AND content IS NOT NULL
+         ORDER BY id DESC LIMIT 3",
+    )
+    .fetch_all(pool)
+    .await?;
+    for row in msg_rows.iter() {
+        if buf.len() > 380 {
+            break;
+        }
+        if let Ok(c) = row.try_get::<String, _>("content") {
+            let snippet: String = c.chars().take(60).collect();
+            buf.push(' ');
+            buf.push_str(snippet.trim());
+        }
+    }
+    if buf.len() > 450 {
+        buf.truncate(450);
+    }
+    Ok(buf)
+}
+
+/// Save f32 mono @ 16kHz samples to a WAV file under
+/// <app_data>/voice/<uuid>.wav.
+fn save_utterance_wav(app: &AppHandle, samples: &[f32]) -> Result<String, String> {
+    let dir: PathBuf = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("app_data_dir: {e}"))?
+        .join("voice");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir voice: {e}"))?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let path = dir.join(format!("{id}.wav"));
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: super::capture_target_hz(),
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer =
+        hound::WavWriter::create(&path, spec).map_err(|e| format!("wav create: {e}"))?;
+    for s in samples {
+        let v = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+        writer
+            .write_sample(v)
+            .map_err(|e| format!("wav write: {e}"))?;
+    }
+    writer.finalize().map_err(|e| format!("wav finalize: {e}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// v0.28.19 — link a saved WAV to a conversation_message row. Called
+/// from the frontend after journal_ingest returns the message id.
+#[tauri::command]
+pub async fn voice_utterance_link(
+    app_state: State<'_, crate::AppState>,
+    message_id: i64,
+    audio_path: String,
+    duration_ms: i64,
+    transcript: String,
+) -> Result<i64, String> {
+    use sqlx::Row;
+    let row = sqlx::query(
+        "INSERT INTO voice_utterance (message_id, audio_path, duration_ms, transcript)
+         VALUES (?1, ?2, ?3, ?4)
+         RETURNING id",
+    )
+    .bind(message_id)
+    .bind(&audio_path)
+    .bind(duration_ms)
+    .bind(&transcript)
+    .fetch_one(&app_state.db.pool)
+    .await
+    .map_err(|e| format!("voice_utterance insert: {e}"))?;
+    row.try_get(0).map_err(|e| format!("voice_utterance id: {e}"))
+}
+
+/// v0.28.19 — fetch the audio metadata for a message, if any.
+#[tauri::command]
+pub async fn voice_utterance_for_message(
+    app_state: State<'_, crate::AppState>,
+    message_id: i64,
+) -> Result<Option<serde_json::Value>, String> {
+    use sqlx::Row;
+    let row = sqlx::query(
+        "SELECT audio_path, duration_ms, transcript
+         FROM voice_utterance
+         WHERE message_id = ?1
+         ORDER BY id DESC
+         LIMIT 1",
+    )
+    .bind(message_id)
+    .fetch_optional(&app_state.db.pool)
+    .await
+    .map_err(|e| format!("voice_utterance select: {e}"))?;
+    Ok(row.map(|r| {
+        serde_json::json!({
+            "audioPath": r.try_get::<String, _>("audio_path").unwrap_or_default(),
+            "durationMs": r.try_get::<i64, _>("duration_ms").unwrap_or(0),
+            "transcript": r.try_get::<String, _>("transcript").unwrap_or_default(),
+        })
+    }))
 }

@@ -8,12 +8,32 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+export interface FinalizeResult {
+  text: string;
+  audioPath: string;
+  durationMs: number;
+}
+
+export interface VoiceUtterance {
+  audioPath: string;
+  durationMs: number;
+  transcript: string;
+}
+
 export const nativeVoice = {
   start: () => invoke<{ started: boolean }>("voice_start"),
   stop: () => invoke<void>("voice_stop"),
   setBargeIn: (on: boolean) => invoke<void>("voice_set_barge_in", { on }),
   setArmed: (on: boolean) => invoke<void>("voice_set_armed", { on }),
-  finalizeTranscript: () => invoke<string>("voice_finalize_transcript"),
+  finalizeTranscript: () => invoke<FinalizeResult>("voice_finalize_transcript"),
+  linkUtterance: (args: {
+    messageId: number;
+    audioPath: string;
+    durationMs: number;
+    transcript: string;
+  }) => invoke<number>("voice_utterance_link", args),
+  utteranceForMessage: (messageId: number) =>
+    invoke<VoiceUtterance | null>("voice_utterance_for_message", { messageId }),
 };
 
 export type VoiceEvent =

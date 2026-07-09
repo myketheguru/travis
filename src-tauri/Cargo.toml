@@ -1,6 +1,6 @@
 [package]
 name = "travis"
-version = "0.28.18"
+version = "0.28.19"
 description = "Travis — local-first AI operations assistant"
 authors = ["myketheguru"]
 edition = "2021"
@@ -100,3 +100,8 @@ mdns-sd = { version = "0.11", default-features = false, features = ["async"] }
 # throughout the day. Only runs when consent is on locally AND cloud
 # side confirms; every event is batched to /me/telemetry/ingest.
 active-win-pos-rs = "0.9"
+# v0.28.19 — WAV encoding for the voice-utterance audio artifact.
+# Every intent capture writes a small mono 16kHz WAV so the message
+# can render an audio player next to the transcript.
+hound = "3.5"
+uuid = { version = "1", features = ["v4"] }

@@ -111,6 +111,27 @@ pub async fn resolve_conversation(
         .map_err(|e| e.to_string())
 }
 
+/// v0.28.19 — delete a conversation + all its messages. Cascades via
+/// the FK on conversation_message. Called from the HistoryOverlay
+/// delete affordance.
+#[tauri::command]
+pub async fn delete_conversation(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<(), String> {
+    sqlx::query("DELETE FROM conversation_message WHERE conversation_id = ?1")
+        .bind(id)
+        .execute(&state.db.pool)
+        .await
+        .map_err(|e| format!("delete messages: {e}"))?;
+    sqlx::query("DELETE FROM conversation WHERE id = ?1")
+        .bind(id)
+        .execute(&state.db.pool)
+        .await
+        .map_err(|e| format!("delete conversation: {e}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn append_user_message(
     state: State<'_, AppState>,

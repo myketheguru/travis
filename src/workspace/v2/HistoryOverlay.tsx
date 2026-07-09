@@ -12,6 +12,7 @@ import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAppStore } from "../../stores/app";
 import {
+  deleteConversation,
   listConversationsForSwitcher,
   type ConversationListItem,
 } from "../../lib/conversation";
@@ -151,7 +152,7 @@ export function HistoryOverlay() {
                 </div>
               )}
               {items.map((item, i) => (
-                <motion.button
+                <motion.div
                   key={item.id}
                   initial={{ opacity: 0, y: 4 }}
                   animate={{ opacity: 1, y: 0 }}
@@ -160,12 +161,13 @@ export function HistoryOverlay() {
                     ease: [0.22, 1, 0.36, 1],
                     delay: Math.min(i * 0.015, 0.12),
                   }}
-                  whileHover={{ backgroundColor: "rgba(255,255,255,0.03)" }}
-                  onClick={() => handleSelect(item)}
-                  className="w-full text-left px-4 py-2.5 border-b flex items-center justify-between gap-3"
+                  className="w-full text-left px-4 py-2.5 border-b flex items-center gap-2 group"
                   style={{ borderColor: "rgba(255,255,255,0.04)" }}
                 >
-                  <div className="min-w-0 flex-1">
+                  <button
+                    onClick={() => handleSelect(item)}
+                    className="min-w-0 flex-1 text-left"
+                  >
                     <div
                       className="text-[13px] truncate"
                       style={{ color: "rgba(236, 236, 241, 0.92)" }}
@@ -180,14 +182,39 @@ export function HistoryOverlay() {
                         {item.preview}
                       </div>
                     )}
-                  </div>
+                  </button>
                   <div
                     className="shrink-0 text-[10px] font-mono opacity-50"
                     style={{ color: "rgba(236, 236, 241, 0.55)" }}
                   >
                     {relativeAge(item.updatedAt)}
                   </div>
-                </motion.button>
+                  <button
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      if (!confirm("Delete this conversation? This can't be undone.")) return;
+                      try {
+                        await deleteConversation(item.id);
+                        setItems((prev) => prev.filter((c) => c.id !== item.id));
+                      } catch (err) {
+                        setError(err instanceof Error ? err.message : String(err));
+                      }
+                    }}
+                    className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity h-7 w-7 rounded-md flex items-center justify-center"
+                    style={{
+                      background: "rgba(239, 68, 68, 0.10)",
+                      border: "1px solid rgba(239, 68, 68, 0.30)",
+                      color: "rgb(239, 68, 68)",
+                    }}
+                    title="Delete conversation"
+                    aria-label="Delete conversation"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                      <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                      <path d="M10 11v6M14 11v6" />
+                    </svg>
+                  </button>
+                </motion.div>
               ))}
             </div>
           </motion.div>

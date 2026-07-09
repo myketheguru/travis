@@ -78,6 +78,9 @@ export const listConversationsForSwitcher = (query?: string, limit?: number) =>
 export const resolveConversation = (id: number) =>
   invoke<void>("resolve_conversation", { id });
 
+export const deleteConversation = (id: number) =>
+  invoke<void>("delete_conversation", { id });
+
 export const appendUserMessage = (conversationId: number, content: string) =>
   invoke<ConversationMessage>("append_user_message", { conversationId, content });
 

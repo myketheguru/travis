@@ -43,6 +43,12 @@ export function useNativeVoice({ enabled }: Options) {
   const finalizingRef = useRef(false);
   const ambientRef = useRef(ambientListening);
   ambientRef.current = ambientListening;
+  // v0.28.19 — track whether the current arm state is user-initiated
+  // (intent) vs ambient-driven. Fixes the 'spheroid appears when
+  // music/loud voice plays in the background': previously any VAD
+  // speech-start emit would flip activity=listening, even if the
+  // Rust side was armed for ambient capture.
+  const intentArmedRef = useRef(false);
 
   useEffect(() => {
     if (!enabled) return;
@@ -67,9 +73,12 @@ export function useNativeVoice({ enabled }: Options) {
       );
       unlisteners.push(
         await onVoiceEvent<null>("voice://speech-start", () => {
-          // Only fires when armed (Rust-side gate). Set listening
-          // activity so the canvas flips to voice + spheroid appears.
-          setActivity("listening");
+          // v0.28.19 — only surface the spheroid for INTENT captures.
+          // Ambient captures also arm the Rust side (for buffered
+          // transcription) but shouldn't flip the UI to voice mode.
+          if (intentArmedRef.current) {
+            setActivity("listening");
+          }
         }),
       );
       unlisteners.push(
@@ -91,12 +100,22 @@ export function useNativeVoice({ enabled }: Options) {
             useAppStore.getState().setVoiceTranscribing(true);
           }
           try {
-            const text = await nativeVoice.finalizeTranscript();
-            const trimmed = text.trim();
+            const result = await nativeVoice.finalizeTranscript();
+            const trimmed = result.text.trim();
             if (trimmed.length === 0) {
               if (wasIntent) setActivity("idle");
             } else if (wasIntent) {
+              // Stash audio metadata so AskTab can link it to the
+              // message after journal_ingest returns the row id.
+              if (result.audioPath) {
+                useAppStore.getState().setPendingVoiceAudio({
+                  audioPath: result.audioPath,
+                  durationMs: result.durationMs,
+                  transcript: trimmed,
+                });
+              }
               setPendingComposerSubmit(trimmed);
+              intentArmedRef.current = false;
               try {
                 await nativeVoice.setArmed(false);
               } catch {
@@ -145,6 +164,7 @@ export function useNativeVoice({ enabled }: Options) {
     // don't need direct access to nativeVoice.
     const onArm = () => {
       playCue("wake");
+      intentArmedRef.current = true;
       setActivity("listening");
       void nativeVoice.setArmed(true).catch(() => {});
     };
@@ -156,6 +176,7 @@ export function useNativeVoice({ enabled }: Options) {
     const onDisarm = async () => {
       const wasListening =
         useAppStore.getState().activity === "listening";
+      intentArmedRef.current = false;
       if (wasListening && !finalizingRef.current) {
         finalizingRef.current = true;
         playCue("heard");
@@ -164,9 +185,16 @@ export function useNativeVoice({ enabled }: Options) {
         // the user sees an acknowledgement while whisper is chewing.
         useAppStore.getState().setVoiceTranscribing(true);
         try {
-          const text = await nativeVoice.finalizeTranscript();
-          const trimmed = text.trim();
+          const result = await nativeVoice.finalizeTranscript();
+          const trimmed = result.text.trim();
           if (trimmed.length > 0) {
+            if (result.audioPath) {
+              useAppStore.getState().setPendingVoiceAudio({
+                audioPath: result.audioPath,
+                durationMs: result.durationMs,
+                transcript: trimmed,
+              });
+            }
             setPendingComposerSubmit(trimmed);
           } else {
             setActivity("idle");

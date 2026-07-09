@@ -26,3 +26,9 @@
 pub mod capture;
 pub mod cmd;
 pub mod whisper_cache;
+
+/// Target sample rate for whisper (16kHz). Exposed so the WAV writer
+/// in cmd.rs uses the same value the capture pipeline decimates to.
+pub fn capture_target_hz() -> u32 {
+    16_000
+}

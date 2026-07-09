@@ -109,6 +109,14 @@ type AppState = {
   /// heard even before the transcript resolves.
   voiceTranscribing: boolean;
   setVoiceTranscribing: (v: boolean) => void;
+  /// v0.28.19 — pending voice audio metadata attached to the last
+  /// finalize. Consumed by AskTab immediately after journalIngest
+  /// so the audio_path can be linked to the newly-inserted user
+  /// message via voice_utterance_link.
+  pendingVoiceAudio: { audioPath: string; durationMs: number; transcript: string } | null;
+  setPendingVoiceAudio: (
+    v: { audioPath: string; durationMs: number; transcript: string } | null,
+  ) => void;
   setActivity: (a: Activity) => void;
   setStatus: (s: AppStatus) => void;
   setProfile: (p: UserProfile | null) => void;
@@ -278,6 +286,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   activity: "idle",
   voiceTranscribing: false,
   setVoiceTranscribing: (v) => set({ voiceTranscribing: v }),
+  pendingVoiceAudio: null,
+  setPendingVoiceAudio: (v) => set({ pendingVoiceAudio: v }),
   status: null,
   profile: null,
   showDiagnostics: readDiag(),

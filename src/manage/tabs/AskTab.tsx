@@ -500,6 +500,29 @@ export default function AskTab() {
       // Merge: replace the optimistic row by content match, keep
       // every earlier row intact, append anything new from the server.
       setMessages((prev) => mergeServerThread(prev, optimisticId, r.thread.messages));
+      // v0.28.19 — if this submit came from voice, link the saved WAV
+      // to the newly-inserted user message so it renders as a
+      // playable audio card. Best-effort; ignore failures.
+      const voiceAudio = useAppStore.getState().pendingVoiceAudio;
+      if (voiceAudio) {
+        useAppStore.getState().setPendingVoiceAudio(null);
+        const userMsg = r.thread.messages
+          .filter((m) => m.role === "user")
+          .slice(-1)[0];
+        if (userMsg) {
+          try {
+            const { nativeVoice } = await import("../../lib/nativeVoice");
+            await nativeVoice.linkUtterance({
+              messageId: userMsg.id,
+              audioPath: voiceAudio.audioPath,
+              durationMs: voiceAudio.durationMs,
+              transcript: voiceAudio.transcript,
+            });
+          } catch (err) {
+            console.warn("[voice] link utterance failed:", err);
+          }
+        }
+      }
     } catch (e) {
       setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
       setError(e instanceof Error ? e.message : String(e));

@@ -17,6 +17,7 @@ import { useFocalContent } from "../useFocalContent";
 import { parseRichResponse } from "../../../lib/richResponse";
 import { RichResponseRenderer } from "../../../chat/cards/RichResponseRenderer";
 import { MarkdownBody } from "../../../chat/MarkdownBody";
+import { VoiceMessageCard } from "./VoiceMessageCard";
 import type { ConversationMessage } from "../../../lib/conversation";
 
 interface RenderMessage {
@@ -179,7 +180,14 @@ function MessageBlock({
               lineHeight: 1.5,
             }}
           >
-            {message.content}
+            {/^-?\d+$/.test(message.id) && !message.optimistic ? (
+              <VoiceMessageCard
+                messageId={Number(message.id)}
+                transcriptFallback={message.content}
+              />
+            ) : (
+              message.content
+            )}
           </div>
         </div>
       ) : (
