@@ -192,58 +192,55 @@ pub async fn voice_finalize_transcript(
     })
 }
 
-/// v0.28.19 — base whisper seed. Extended dynamically with entity
-/// display_names + recent user messages.
-const BASE_WHISPER_SEED: &str =
-    "Hey Travis, can you help me create an invoice, contract, note, or document?";
+/// v0.28.20 — base whisper seed. Rich, densely-worded so whisper's
+/// language model sees the target vocabulary (work docs, calendar,
+/// email, tasks, places, everyday errands) before transcribing the
+/// user's actual audio. Extended dynamically with entity display
+/// names in build_whisper_seed().
+///
+/// Written as natural prose because whisper's LM was trained on
+/// prose; comma-separated word lists rank lower than sentences.
+const BASE_WHISPER_SEED: &str = "Hey Travis. Please create an invoice, \
+contract, quote, purchase order, sign-in sheet, timesheet, calendar event, \
+note, reminder, memo, proposal, or report. Draft an email to my client. \
+Schedule a meeting for Monday morning. What's on my calendar this week? \
+Route from my office to the client's address. Add milk, eggs, and coffee \
+to the grocery list. Remind me to call the dentist on Tuesday. Log this in \
+my journal. Show me a map of the neighborhood.";
 
 /// Build the whisper initial_prompt from static base + top-recent
-/// entities + last few user messages. Capped at ~450 chars because
-/// whisper.cpp truncates around ~448 text tokens.
+/// entities. Capped at ~450 chars because whisper.cpp truncates
+/// around ~448 text tokens.
 async fn build_whisper_seed(pool: &sqlx::SqlitePool) -> Result<String, sqlx::Error> {
     use sqlx::Row;
     let mut buf = String::with_capacity(512);
     buf.push_str(BASE_WHISPER_SEED);
 
-    // Top-8 recently-updated entities. Ordered by updated_at desc.
+    // Top-6 recently-updated entities. These are the user-specific
+    // proper nouns whisper doesn't know from its training set — coach
+    // names, school numbers, product SKUs. Kept short to leave room
+    // for the base seed which already covers everyday vocabulary.
     let entity_rows = sqlx::query(
         "SELECT display_name FROM entity
          WHERE display_name IS NOT NULL AND display_name != ''
-         ORDER BY updated_at DESC LIMIT 8",
+         ORDER BY updated_at DESC LIMIT 6",
     )
     .fetch_all(pool)
     .await?;
     if !entity_rows.is_empty() {
-        buf.push_str(" Names to spell right: ");
-        for (i, row) in entity_rows.iter().enumerate() {
-            if i > 0 {
-                buf.push_str(", ");
-            }
+        let mut names: Vec<String> = Vec::new();
+        for row in entity_rows.iter() {
             if let Ok(n) = row.try_get::<String, _>("display_name") {
-                buf.push_str(&n);
+                names.push(n);
             }
         }
-        buf.push('.');
+        if !names.is_empty() {
+            buf.push_str(" Proper nouns to spell right: ");
+            buf.push_str(&names.join(", "));
+            buf.push('.');
+        }
     }
 
-    // Last 3 user messages (< 60 chars each) for topical context.
-    let msg_rows = sqlx::query(
-        "SELECT content FROM conversation_message
-         WHERE role = 'user' AND content IS NOT NULL
-         ORDER BY id DESC LIMIT 3",
-    )
-    .fetch_all(pool)
-    .await?;
-    for row in msg_rows.iter() {
-        if buf.len() > 380 {
-            break;
-        }
-        if let Ok(c) = row.try_get::<String, _>("content") {
-            let snippet: String = c.chars().take(60).collect();
-            buf.push(' ');
-            buf.push_str(snippet.trim());
-        }
-    }
     if buf.len() > 450 {
         buf.truncate(450);
     }
