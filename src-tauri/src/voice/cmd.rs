@@ -84,6 +84,7 @@ pub async fn voice_set_armed(
 pub async fn voice_finalize_transcript(
     app: AppHandle,
     state: State<'_, VoiceState>,
+    app_state: State<'_, crate::AppState>,
 ) -> Result<String, String> {
     let samples = {
         let guard = state.inner.lock().unwrap();
@@ -109,10 +110,7 @@ pub async fn voice_finalize_transcript(
     // v0.28.14 — use the cached WhisperContext instead of loading from
     // disk every call. First call still pays the load cost; every
     // subsequent call is warm.
-    let whisper = {
-        let app_state = app.state::<crate::AppState>();
-        app_state.whisper.clone()
-    };
+    let whisper = app_state.whisper.clone();
 
     let transcript = tokio::task::spawn_blocking(move || -> Result<String, String> {
         use whisper_rs::{FullParams, SamplingStrategy};
