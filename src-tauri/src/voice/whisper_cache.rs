@@ -31,7 +31,10 @@ impl WhisperCache {
             .map_err(|e| format!("load whisper: {e}"))?;
         let arc = Arc::new(ctx);
         *guard = Some(arc.clone());
-        tracing::info!("[whisper] context cached — subsequent transcribes are warm");
+        tracing::info!(
+            "[whisper] context loaded + cached from {} — subsequent transcribes are warm",
+            model_path
+        );
         Ok(arc)
     }
 

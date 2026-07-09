@@ -158,13 +158,15 @@ export function useNativeVoice({ enabled }: Options) {
         finalizingRef.current = true;
         playCue("heard");
         setActivity("thinking");
+        // v0.28.17 — surface optimistic user bubble immediately so
+        // the user sees an acknowledgement while whisper is chewing.
+        useAppStore.getState().setVoiceTranscribing(true);
         try {
           const text = await nativeVoice.finalizeTranscript();
           const trimmed = text.trim();
           if (trimmed.length > 0) {
             setPendingComposerSubmit(trimmed);
           } else {
-            // Nothing captured — just go back to idle.
             setActivity("idle");
           }
         } catch (err) {
@@ -172,6 +174,7 @@ export function useNativeVoice({ enabled }: Options) {
           setActivity("idle");
         } finally {
           finalizingRef.current = false;
+          useAppStore.getState().setVoiceTranscribing(false);
           try {
             await nativeVoice.setArmed(false);
           } catch {

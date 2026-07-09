@@ -394,16 +394,22 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     let model_name = speech_runtime::bootstrap::DEFAULT_MODEL;
                     if !speech_runtime::model_ready(&handle_bg, model_name) {
+                        tracing::info!(
+                            "[whisper] warm-up skipped — model {} not yet downloaded",
+                            model_name
+                        );
                         return;
                     }
                     if let Ok(model_path) =
                         speech_runtime::cache_model_path(&handle_bg, model_name)
                     {
                         let path_str = model_path.to_string_lossy().to_string();
-                        // spawn_blocking is safe because tauri::async_runtime
-                        // is a Tokio runtime.
+                        tracing::info!("[whisper] warm-up starting for {}", path_str);
                         tauri::async_runtime::spawn_blocking(move || {
-                            let _ = whisper_bg.get_or_load(&path_str);
+                            match whisper_bg.get_or_load(&path_str) {
+                                Ok(_) => tracing::info!("[whisper] warm-up complete"),
+                                Err(e) => tracing::warn!("[whisper] warm-up failed: {e}"),
+                            }
                         });
                     }
                 });

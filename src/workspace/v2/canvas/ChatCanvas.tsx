@@ -29,6 +29,7 @@ interface RenderMessage {
 
 export function ChatCanvas() {
   const activity = useAppStore((s) => s.activity);
+  const voiceTranscribing = useAppStore((s) => s.voiceTranscribing);
   const pendingComposerSubmit = useAppStore((s) => s.pendingComposerSubmit);
   const { allMessages } = useFocalContent();
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -49,6 +50,17 @@ export function ChatCanvas() {
         content: m.content,
       }));
     if (optimistic) base.push(optimistic);
+    // v0.28.17 — voice-transcribing user bubble. Fires between the
+    // user tapping the mic to end and whisper returning the transcript.
+    // Skip if the optimistic composer submit already replaced it.
+    if (voiceTranscribing && !optimistic) {
+      base.push({
+        id: "__voice_transcribing__",
+        role: "user",
+        content: "…",
+        optimistic: true,
+      });
+    }
     if (activity === "thinking") {
       base.push({
         id: "__pending_assistant__",
@@ -58,7 +70,7 @@ export function ChatCanvas() {
       });
     }
     return base;
-  }, [allMessages, optimistic, activity]);
+  }, [allMessages, optimistic, activity, voiceTranscribing]);
 
   useEffect(() => {
     const el = scrollRef.current;

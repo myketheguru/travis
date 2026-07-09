@@ -103,6 +103,12 @@ type AppState = {
   /// The focal message id whose map is currently expanded. Prevents
   /// re-auto-expanding when the user has explicitly collapsed.
   mapExpandedFor: string | null;
+  /// v0.28.17 — set true when a voice utterance is being finalized
+  /// (whisper transcribing). ChatCanvas renders an optimistic
+  /// user bubble while this is true so the user knows they were
+  /// heard even before the transcript resolves.
+  voiceTranscribing: boolean;
+  setVoiceTranscribing: (v: boolean) => void;
   setActivity: (a: Activity) => void;
   setStatus: (s: AppStatus) => void;
   setProfile: (p: UserProfile | null) => void;
@@ -270,6 +276,8 @@ try {
 
 export const useAppStore = create<AppState>((set, get) => ({
   activity: "idle",
+  voiceTranscribing: false,
+  setVoiceTranscribing: (v) => set({ voiceTranscribing: v }),
   status: null,
   profile: null,
   showDiagnostics: readDiag(),
