@@ -9,31 +9,35 @@ import {
   type IssueKind,
 } from "../lib/health";
 
+// v0.28.22 — user-facing copy. Never mentions LLMs, providers, rate
+// limits, quotas, or any internal machinery. The user learns that
+// Travis is taking a moment; the fix (if any) is framed as their next
+// action, not our error.
 const headlines: Record<IssueKind, string> = {
   offline: "You're offline",
-  quotaExhausted: "LLM credits look exhausted",
-  rateLimited: "LLM is rate limiting us",
-  unauthorized: "LLM rejected the API key",
-  serverError: "LLM service is having trouble",
-  networkError: "Couldn't reach the LLM",
-  provider: "LLM error",
+  quotaExhausted: "Travis is out of runway for now",
+  rateLimited: "Travis needs a beat",
+  unauthorized: "Travis lost access",
+  serverError: "Travis is catching its breath",
+  networkError: "Travis can't get through",
+  provider: "Travis hit a snag",
 };
 
 const subtexts: Record<IssueKind, string> = {
   offline:
-    "Travis paused background work. It'll pick back up when you're online.",
+    "Background work is paused. It'll pick back up when you're online.",
   quotaExhausted:
-    "Travis paused background work. Top up your provider credits or switch model in Settings, then dismiss this banner to retry.",
+    "Background work is paused. Check your plan in Settings when you get a moment.",
   rateLimited:
-    "Travis paused background work for now. Will retry next time you write or ask something.",
+    "Just a short pause on background work — it'll resume next time you ask something.",
   unauthorized:
-    "Open Settings → Model and re-enter your API key, then dismiss this banner.",
+    "Open Settings → Account to reconnect, then dismiss this banner.",
   serverError:
-    "Travis paused background work. Will retry next time you write or ask something.",
+    "Background work is paused for a moment. It'll pick back up next time you ask something.",
   networkError:
-    "Travis paused background work. Will retry next time you write or ask something.",
+    "Background work is paused for a moment. It'll pick back up next time you ask something.",
   provider:
-    "Travis paused background work. Will retry next time you write or ask something.",
+    "Background work is paused for a moment. It'll pick back up next time you ask something.",
 };
 
 export default function HealthBanner() {
@@ -76,13 +80,13 @@ export default function HealthBanner() {
     };
   }, []);
 
-  // v0.28.22 — LLM error toasts are noise for the user. Background
-  // work paused for a rate-limit or provider hiccup is Travis's
-  // problem to work around, not something to surface. We keep only
-  // `offline` (user context is obvious) and mask everything else.
+  // v0.28.22 — restore the banner for all kinds. The user needs to
+  // know Travis is having a moment; they just don't need to see how
+  // or why. Technical `state.issue.message` never renders.
   const visible: { kind: IssueKind; detail: string | null } | null = (() => {
     if (!state) return null;
     if (!state.online) return { kind: "offline", detail: null };
+    if (state.issue) return { kind: state.issue.kind, detail: null };
     return null;
   })();
 
@@ -131,11 +135,7 @@ export default function HealthBanner() {
               <div className="text-bone-2 text-[11px] leading-relaxed mt-0.5">
                 {subtexts[visible.kind]}
               </div>
-              {visible.detail && (
-                <div className="text-bone-3 text-[10px] mt-1 font-mono break-words">
-                  {visible.detail}
-                </div>
-              )}
+              {/* v0.28.22 — technical detail intentionally not rendered. */}
             </div>
             {visible.kind !== "offline" && (
               <button
