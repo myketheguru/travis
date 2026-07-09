@@ -106,13 +106,17 @@ pub async fn voice_finalize_transcript(
     let model_path = speech_runtime::cache_model_path(&app, model_name)?;
     let model_path_str = model_path.to_string_lossy().to_string();
 
+    // v0.28.14 — use the cached WhisperContext instead of loading from
+    // disk every call. First call still pays the load cost; every
+    // subsequent call is warm.
+    let whisper = {
+        let app_state = app.state::<crate::AppState>();
+        app_state.whisper.clone()
+    };
+
     let transcript = tokio::task::spawn_blocking(move || -> Result<String, String> {
-        use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
-        let ctx = WhisperContext::new_with_params(
-            &model_path_str,
-            WhisperContextParameters::default(),
-        )
-        .map_err(|e| format!("load whisper: {e}"))?;
+        use whisper_rs::{FullParams, SamplingStrategy};
+        let ctx = whisper.get_or_load(&model_path_str)?;
         let mut state = ctx
             .create_state()
             .map_err(|e| format!("create whisper state: {e}"))?;

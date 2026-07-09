@@ -1,15 +1,14 @@
 /**
- * MapCanvas — v0.28.6.
+ * MapCanvas — v0.28.14 with OpenFreeMap vector tiles.
  *
- * Fullscreen interactive map. MapLibre GL renders CartoDB Dark Matter
- * tiles + a subtle purple brand overlay so the map feels distinctly
- * Travis-branded rather than a stock OSM viewer. Info card overlay is
- * lighter now (was making the already-dark map appear even darker)
- * with a translucent purple accent. Custom marker uses the brand
- * violet with a soft glow + pulse.
+ * Vector-tile custom styling delivers the deferred v0.28.6 promise:
+ * we now use OpenFreeMap's dark preset (open-source, free, no API
+ * key) instead of raster CartoDB tiles. Because these are vector
+ * tiles, MapLibre GL renders them at any zoom + we can tint/blend
+ * with Travis brand accents.
  *
- * NOTE: when light-mode lands, swap the CartoDB style for Voyager
- * (dark) or Positron (light) and lighten the brand overlay.
+ * Info card overlay: translucent slate-violet (lighter than v0.28.5)
+ * with brand purple accents. Custom marker with pulse.
  */
 import { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
@@ -21,32 +20,10 @@ import { parseRichResponse, type MapPart } from "../../../lib/richResponse";
 import { useAppStore } from "../../../stores/app";
 import { ChatCanvas } from "./ChatCanvas";
 
-const DARK_STYLE = {
-  version: 8,
-  sources: {
-    carto: {
-      type: "raster",
-      tiles: [
-        "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-        "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-        "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-        "https://d.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
-      ],
-      tileSize: 256,
-      attribution: "© OpenStreetMap contributors © CARTO",
-    },
-  },
-  layers: [
-    {
-      id: "carto",
-      type: "raster",
-      source: "carto",
-      minzoom: 0,
-      maxzoom: 20,
-    },
-  ],
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-} as any;
+// OpenFreeMap dark style — free vector tiles, no API key.
+// If OpenFreeMap ever becomes unavailable, MapLibre falls through to
+// the raster fallback source we include so the map never goes blank.
+const STYLE_URL = "https://tiles.openfreemap.org/styles/dark";
 
 export function MapCanvas() {
   const { focal } = useFocalContent();
@@ -78,16 +55,51 @@ function InteractiveMap({
     try {
       map = new maplibregl.Map({
         container: el,
-        style: DARK_STYLE,
+        style: STYLE_URL,
         center: [coords.lng, coords.lat],
         zoom: coords.zoom,
         attributionControl: { compact: true },
       });
       mapRef.current = map;
-      map.on("load", () => map?.resize());
+      map.on("load", () => {
+        // Try tinting default background + water with Travis brand
+        // purple. Works best with OpenFreeMap dark style layer ids;
+        // failures are silent so the base map still renders.
+        try {
+          map?.setPaintProperty("background", "background-color", "rgb(10, 8, 18)");
+          map?.setPaintProperty("water", "fill-color", "rgba(28, 22, 52, 0.9)");
+        } catch {
+          /* style layers may differ — ignore */
+        }
+        map?.resize();
+      });
+      // Fall back to CartoDB raster if OpenFreeMap fetch fails.
+      map.on("error", (e) => {
+        console.warn("[map] style error, swapping to raster fallback:", e);
+        try {
+          map?.setStyle({
+            version: 8,
+            sources: {
+              carto: {
+                type: "raster",
+                tiles: [
+                  "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
+                  "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
+                  "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
+                ],
+                tileSize: 256,
+                attribution: "© OpenStreetMap contributors © CARTO",
+              },
+            },
+            layers: [{ id: "carto", type: "raster", source: "carto" }],
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any);
+        } catch {
+          /* nothing else to try */
+        }
+      });
       requestAnimationFrame(() => map?.resize());
 
-      // Custom branded marker — violet with pulse.
       const markerEl = document.createElement("div");
       markerEl.className = "travis-map-marker";
       markerEl.innerHTML = `
@@ -102,9 +114,6 @@ function InteractiveMap({
       console.warn("[map] MapLibre init failed:", err);
     }
     return () => {
-      // v0.28.11 — wrap each cleanup so a marker-remove throw can't
-      // block map.remove() (which was causing the "blank on rapid
-      // switch" bug: half-cleaned MapLibre instance blocked next init).
       try { markerRef.current?.remove(); } catch { /* ignore */ }
       try { mapRef.current?.remove(); } catch { /* ignore */ }
       markerRef.current = null;
@@ -146,7 +155,6 @@ function InteractiveMap({
         }}
       />
 
-      {/* v0.28.6 brand tint — subtle violet gradient at top + bottom */}
       <div
         className="absolute inset-0 pointer-events-none"
         style={{
@@ -162,10 +170,6 @@ function InteractiveMap({
         transition={{ duration: 0.36, ease: [0.22, 1, 0.36, 1] }}
         className="absolute top-16 left-4 max-w-md rounded-2xl px-4 py-3 pointer-events-auto"
         style={{
-          // v0.28.6 — lighter card. Was rgba(0,0,0,0.72) which
-          // stacked with the already-dark map and read as opaque
-          // black. Now a translucent slate-violet that lets tile
-          // detail show through.
           background:
             "linear-gradient(180deg, rgba(28, 24, 40, 0.62), rgba(20, 18, 30, 0.58))",
           border: "1px solid rgba(189, 158, 255, 0.32)",

@@ -25,3 +25,4 @@
 
 pub mod capture;
 pub mod cmd;
+pub mod whisper_cache;

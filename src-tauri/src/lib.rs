@@ -110,6 +110,10 @@ pub struct AppState {
     /// channel registry for in-flight `run_python` calls and tracks
     /// whether the hidden interpreter window is ready.
     pub interpreter: interpreter::InterpreterState,
+    /// v0.28.14 — cached WhisperContext. Loaded once (lazily or on
+    /// warm-up) and reused for every transcription so we don't pay
+    /// the 1-3s model-load cost per call.
+    pub whisper: voice::whisper_cache::WhisperCache,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -363,6 +367,7 @@ pub fn run() {
             let workspace_arc = Arc::new(tokio::sync::RwLock::new(workspace_state));
 
             let interpreter_state = interpreter::InterpreterState::new();
+            let whisper_cache = voice::whisper_cache::WhisperCache::new();
             handle.manage(AppState {
                 db: db_arc.clone(),
                 http: http.clone(),
@@ -372,7 +377,30 @@ pub fn run() {
                 workspace: workspace_arc,
                 working_memory: memory::working::WorkingMemory::new(),
                 interpreter: interpreter_state.clone(),
+                whisper: whisper_cache.clone(),
             });
+
+            // v0.28.14 — warm up whisper on boot in the background so the
+            // first voice utterance doesn't pay the 1-3s model-load
+            // cost. If the model isn't yet downloaded, this is a no-op.
+            {
+                let handle_bg = handle.clone();
+                let whisper_bg = whisper_cache.clone();
+                tokio::spawn(async move {
+                    let model_name = speech_runtime::bootstrap::DEFAULT_MODEL;
+                    if !speech_runtime::model_ready(&handle_bg, model_name) {
+                        return;
+                    }
+                    if let Ok(model_path) =
+                        speech_runtime::cache_model_path(&handle_bg, model_name)
+                    {
+                        let path_str = model_path.to_string_lossy().to_string();
+                        tokio::task::spawn_blocking(move || {
+                            let _ = whisper_bg.get_or_load(&path_str);
+                        });
+                    }
+                });
+            }
             // v0.22.10 — Python bootstrap state. Held outside AppState
             // because the bootstrap can spawn while the user is browsing
             // other surfaces, and we want a separate lock.

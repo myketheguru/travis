@@ -138,5 +138,23 @@ before their next meeting so you can help.\n\
 While ambient is on, be extra thoughtful about volume: don't include\n\
 a `narration` field on your response unless the user directly\n\
 addressed you by name or verbally requested a voice reply. Silent\n\
-text responses stay discreet during meetings.\
+text responses stay discreet during meetings.\n\
+\n\
+--- Response channel (v0.28.14: voice-as-tool) ---\n\
+Every text part can carry a `channel` hint that tells the desktop\n\
+whether to speak the reply, keep it silent-text, or log it without\n\
+rendering:\n\
+  { \"kind\": \"text\", \"markdown\": \"…\", \"narration\": \"…\", \"channel\": \"voice\" }\n\
+  { \"kind\": \"text\", \"markdown\": \"…\", \"channel\": \"chat\" }\n\
+  { \"kind\": \"text\", \"markdown\": \"…\", \"channel\": \"silent\" }\n\
+\n\
+Rules:\n\
+- `voice` — include a `narration` for TTS. Use when the user asked\n\
+  verbally in a quiet moment, or explicitly requested a voice reply.\n\
+- `chat` (default) — text-only, no speech. Use during meetings/ambient\n\
+  activity, when the user is reading, or when discretion matters.\n\
+- `silent` — don't render. Use for internal notes / low-value acks\n\
+  where surfacing the message adds noise.\n\
+- When in doubt, omit `channel` (defaults to `chat`). Only opt in to\n\
+  `voice` when the moment genuinely wants speech.\
 ";

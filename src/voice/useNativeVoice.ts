@@ -92,6 +92,26 @@ export function useNativeVoice({ enabled }: Options) {
             const text = await nativeVoice.finalizeTranscript();
             const trimmed = text.trim();
             if (trimmed.length > 0) {
+              // v0.28.14 — wake-word detection via ambient transcript
+              // scanning. If the user has ambient on and this
+              // utterance contains 'hey travis' (case-insensitive,
+              // punctuation-tolerant), fire the arm event so they
+              // can just talk. Cheap alternative to running a proper
+              // openWakeWord ONNX runtime.
+              const normalized = trimmed
+                .toLowerCase()
+                .replace(/[^a-z0-9 ]/g, " ");
+              if (
+                normalized.includes("hey travis") ||
+                normalized.includes("hi travis") ||
+                normalized.includes("okay travis") ||
+                normalized.includes("ok travis")
+              ) {
+                window.dispatchEvent(new CustomEvent("travis:arm-voice"));
+                // Don't ALSO save this to ambient — the user was
+                // addressing Travis, not producing meeting content.
+                return;
+              }
               // Ambient capture — save transcript for later review,
               // do NOT submit to LLM. User can browse ambient
               // transcripts from the canvas. Also persist to SQLite

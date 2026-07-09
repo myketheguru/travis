@@ -63,6 +63,9 @@ function PartRouter({
   documentIds?: number[];
   messageId?: string;
 }) {
+  // v0.28.14 — voice-as-tool: 'silent' channel skips rendering.
+  if (part.channel === "silent") return null;
+
   switch (part.kind) {
     case "text":
       return <MarkdownBody text={part.markdown} />;

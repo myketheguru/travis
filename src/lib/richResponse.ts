@@ -35,6 +35,11 @@ export type MessagePart =
 export interface BasePart {
   kind: MessagePart["kind"];
   narration?: string;
+  /// v0.28.14 — response channel. When "voice", the frontend speaks
+  /// `narration` via Piper. When "chat" (default), text renders only.
+  /// When "silent", the part is not rendered — useful for internal
+  /// acks. The LLM decides based on ambient/meeting context.
+  channel?: "voice" | "chat" | "silent";
 }
 
 export interface TextPart extends BasePart {
