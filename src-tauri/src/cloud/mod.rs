@@ -426,6 +426,22 @@ impl CloudClient {
         Ok(())
     }
 
+    /// v0.28.24 — POST a sanitized desktop health incident so orbit's
+    /// /admin/incidents page reflects real client-side state. Payload
+    /// is what the caller built ({kind, message, lane, ...}); server
+    /// prefixes the kind with `desktop_` and writes to cloud_incident.
+    pub async fn post_client_incident(&self, payload: serde_json::Value) -> anyhow::Result<()> {
+        let resp = self
+            .http
+            .post(format!("{CLOUD_BASE}/me/incidents/client"))
+            .header("authorization", self.auth())
+            .json(&payload)
+            .send()
+            .await?;
+        resp.error_for_status()?;
+        Ok(())
+    }
+
     /// `POST /auth/refresh` — get a fresh JWT before the current one
     /// expires. We refresh proactively when < 1h remaining.
     pub async fn refresh(&self) -> anyhow::Result<RefreshResponse> {

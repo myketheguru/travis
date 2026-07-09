@@ -44,6 +44,21 @@ impl IssueKind {
             IssueKind::Provider => "LLM error",
         }
     }
+
+    /// v0.28.24 — machine slug for the orbit `cloud_incident.kind` field.
+    /// Prefixed with `desktop_` server-side so it can be sliced apart
+    /// from cloud-originated incidents.
+    pub fn slug(self) -> &'static str {
+        match self {
+            IssueKind::Offline => "offline",
+            IssueKind::QuotaExhausted => "quota_exhausted",
+            IssueKind::RateLimited => "rate_limited",
+            IssueKind::Unauthorized => "unauthorized",
+            IssueKind::ServerError => "server_error",
+            IssueKind::NetworkError => "network_error",
+            IssueKind::Provider => "provider",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -103,26 +118,38 @@ impl Health {
 
     pub fn report(&self, app: &AppHandle, kind: IssueKind, message: impl Into<String>) {
         let now = chrono::Utc::now().to_rfc3339();
+        let msg_str = message.into();
         let new_issue = Issue {
             kind,
-            message: message.into(),
+            message: msg_str.clone(),
             since: now,
         };
-        let snapshot = {
+        let (snapshot, is_new_kind) = {
             let mut s = self.state.write().unwrap();
+            let prev_kind = s.issue.as_ref().map(|i| i.kind);
             let changed = match &s.issue {
                 Some(prev) => prev.kind != new_issue.kind || prev.message != new_issue.message,
                 None => true,
             };
             s.issue = Some(new_issue);
-            if changed {
-                Some(s.clone())
-            } else {
-                None
-            }
+            let is_new_kind = prev_kind != Some(kind);
+            (if changed { Some(s.clone()) } else { None }, is_new_kind)
         };
         if let Some(snap) = snapshot {
             let _ = app.emit("health-changed", snap);
+        }
+
+        // v0.28.24 — orbit visibility. Only fire when the kind actually
+        // changed (so a repeating same-kind failure doesn't spam the
+        // incidents table). Fire-and-forget: an incident-report failure
+        // must never surface to the user.
+        if is_new_kind {
+            let app = app.clone();
+            let slug = kind.slug();
+            let message = msg_str;
+            tauri::async_runtime::spawn(async move {
+                report_to_orbit(app, slug, message).await;
+            });
         }
     }
 
@@ -154,6 +181,31 @@ impl Health {
         if let Some(snap) = snapshot {
             let _ = app.emit("health-changed", snap);
         }
+    }
+}
+
+/// v0.28.24 — POST the sanitized incident to the cloud so orbit's
+/// /admin/incidents page sees every operational hiccup, even the
+/// ones we quietly hide from the user. Fire-and-forget: any error
+/// here is silently swallowed; a failed incident report must not
+/// create a new user-visible issue.
+async fn report_to_orbit(app: AppHandle, kind_slug: &'static str, message: String) {
+    let http = {
+        use tauri::Manager;
+        let state = app.state::<crate::AppState>();
+        state.http.clone()
+    };
+    let Some(client) = crate::cloud::CloudClient::current(http) else {
+        return;
+    };
+    let short_msg: String = message.chars().take(400).collect();
+    let payload = serde_json::json!({
+        "kind": kind_slug,
+        "message": short_msg,
+        "lane": "desktop",
+    });
+    if let Err(e) = client.post_client_incident(payload).await {
+        tracing::debug!("orbit incident report failed silently: {e}");
     }
 }
 

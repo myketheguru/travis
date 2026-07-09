@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   healthDismiss,
   healthSetOnline,
@@ -8,6 +9,11 @@ import {
   type HealthState,
   type IssueKind,
 } from "../lib/health";
+
+// v0.28.24 — kinds where the resolution is 'upgrade your plan'. The
+// banner shows an Upgrade CTA that opens Settings on usetravis.com.
+const UPGRADE_KINDS = new Set<IssueKind>(["quotaExhausted"]);
+const PLAN_URL = "https://usetravis.com/app/settings";
 
 // v0.28.22 — user-facing copy. Never mentions LLMs, providers, rate
 // limits, quotas, or any internal machinery. The user learns that
@@ -27,7 +33,7 @@ const subtexts: Record<IssueKind, string> = {
   offline:
     "Background work is paused. It'll pick back up when you're online.",
   quotaExhausted:
-    "Background work is paused. Check your plan in Settings when you get a moment.",
+    "You've hit your monthly usage. Upgrade to keep Travis working through the month.",
   rateLimited:
     "Just a short pause on background work — it'll resume next time you ask something.",
   unauthorized:
@@ -137,16 +143,28 @@ export default function HealthBanner() {
               </div>
               {/* v0.28.22 — technical detail intentionally not rendered. */}
             </div>
-            {visible.kind !== "offline" && (
-              <button
-                onClick={() => {
-                  healthDismiss().catch(() => {});
-                }}
-                className="text-bone-3 hover:text-bone-2 text-[10px] tracking-wider self-start"
-              >
-                dismiss
-              </button>
-            )}
+            <div className="flex flex-col items-end gap-1.5 self-start">
+              {UPGRADE_KINDS.has(visible.kind) && (
+                <button
+                  onClick={() => {
+                    void openUrl(PLAN_URL).catch(() => {});
+                  }}
+                  className="rounded-md bg-warn/25 hover:bg-warn/35 text-warn text-[10px] tracking-wider font-medium px-2.5 py-1 transition-colors"
+                >
+                  Upgrade
+                </button>
+              )}
+              {visible.kind !== "offline" && (
+                <button
+                  onClick={() => {
+                    healthDismiss().catch(() => {});
+                  }}
+                  className="text-bone-3 hover:text-bone-2 text-[10px] tracking-wider"
+                >
+                  dismiss
+                </button>
+              )}
+            </div>
           </div>
         </motion.div>
       )}
