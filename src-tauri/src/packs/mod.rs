@@ -39,6 +39,13 @@ pub mod tutoring;
 #[cfg(feature = "pack-everyday")]
 pub mod everyday;
 
+// v0.28.21 — universal default-on packs. No Cargo feature gate;
+// they ship with every Travis install.
+pub mod people;
+pub mod followups;
+pub mod household;
+pub mod finance;
+
 /// A bundled pack. All methods take `&self` so [`PackHandle`] can live behind
 /// a `&'static dyn PackHandle` reference returned from [`compiled_in_packs`].
 pub trait PackHandle: Send + Sync {
@@ -495,6 +502,11 @@ pub fn compiled_in_packs() -> &'static [&'static dyn PackHandle] {
         &tutoring::TutoringPack,
         #[cfg(feature = "pack-everyday")]
         &everyday::EverydayPack,
+        // v0.28.21 — default-on universal packs
+        &people::PeoplePack,
+        &followups::FollowupsPack,
+        &household::HouseholdPack,
+        &finance::FinancePack,
     ]
 }
 
