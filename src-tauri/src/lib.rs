@@ -383,10 +383,15 @@ pub fn run() {
             // v0.28.14 — warm up whisper on boot in the background so the
             // first voice utterance doesn't pay the 1-3s model-load
             // cost. If the model isn't yet downloaded, this is a no-op.
+            //
+            // v0.28.16 — use tauri::async_runtime::spawn instead of
+            // tokio::spawn. Tauri's setup closure doesn't guarantee a
+            // Tokio reactor is entered on the calling thread; the
+            // bare tokio::spawn panicked with 'no reactor running'.
             {
                 let handle_bg = handle.clone();
                 let whisper_bg = whisper_cache.clone();
-                tokio::spawn(async move {
+                tauri::async_runtime::spawn(async move {
                     let model_name = speech_runtime::bootstrap::DEFAULT_MODEL;
                     if !speech_runtime::model_ready(&handle_bg, model_name) {
                         return;
@@ -395,7 +400,9 @@ pub fn run() {
                         speech_runtime::cache_model_path(&handle_bg, model_name)
                     {
                         let path_str = model_path.to_string_lossy().to_string();
-                        tokio::task::spawn_blocking(move || {
+                        // spawn_blocking is safe because tauri::async_runtime
+                        // is a Tokio runtime.
+                        tauri::async_runtime::spawn_blocking(move || {
                             let _ = whisper_bg.get_or_load(&path_str);
                         });
                     }
