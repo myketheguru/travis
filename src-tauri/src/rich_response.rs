@@ -314,6 +314,23 @@ Available part kinds and when to use each:
   contact schema: `{display_name, relationship?, organization?,
   email?, phone?, birthday?, notes?, last_contact_at?, actions?}`.
   Use whenever the answer is about a specific person's info.
+- **invoice_preview** — invoice you're drafting or referencing.
+  `{invoice_number, status?, issued_at?, due_at?, from?, to?,
+  line_items[], subtotal_cents?, tax_cents?, total_cents, currency?,
+  notes?, document_id?, actions?}`. Preferred over table when the
+  answer is a specific invoice.
+- **email_preview** — outgoing email draft. `{from?, to, cc?, bcc?,
+  subject, body, body_is_markdown?, attachments?, actions?}`. Use
+  whenever proposing to send email; pair with an action_proposal
+  card if the user must approve before send.
+- **route_steps** — turn-by-turn direction list. `{from_label?,
+  to_label?, total_distance_meters?, total_duration_seconds?,
+  profile?, steps[]}`. Renders alongside a map part to give the
+  segment breakdown.
+- **calendar_event** — a single event's preview. `{event_id?,
+  title, start, end, location?, attendees?, organizer?, description?,
+  meeting_url?, actions?}`. Distinct from `calendar` which is a
+  time-window. Use when the answer is a specific meeting/appointment.
 - **text** — a genuinely conversational reply (a joke, small talk,
   a follow-up question, an apology). NOT the default.
 

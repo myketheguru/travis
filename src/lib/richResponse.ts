@@ -38,7 +38,12 @@ export type MessagePart =
   | QuickReplyPart
   | StepperPart
   | CodeSnippetPart
-  | ContactCardPart;
+  | ContactCardPart
+  // v0.28.29 — Phase B domain cards
+  | InvoicePreviewPart
+  | EmailPreviewPart
+  | RouteStepsPart
+  | CalendarEventPart;
 
 export interface BasePart {
   kind: MessagePart["kind"];
@@ -235,6 +240,83 @@ export interface ContactCardPart extends BasePart {
   notes?: string;
   last_contact_at?: string;
   /** Quick actions the card exposes ("Email", "Log a call"). */
+  actions?: RowAction[];
+}
+
+// ─── Phase B (v0.28.29) domain cards ────────────────────────────
+
+/** Renderable invoice preview — matches the LTE invoicing shape but
+ *  works for any org's invoices. */
+export interface InvoicePreviewPart extends BasePart {
+  kind: "invoice_preview";
+  invoice_number: string;
+  status?: "draft" | "sent" | "paid" | "overdue" | "void";
+  issued_at?: string;
+  due_at?: string;
+  from?: { name: string; address?: string; email?: string };
+  to?: { name: string; address?: string; email?: string };
+  line_items: {
+    description: string;
+    quantity?: number;
+    unit?: string;
+    unit_price_cents?: number;
+    total_cents: number;
+  }[];
+  subtotal_cents?: number;
+  tax_cents?: number;
+  total_cents: number;
+  currency?: string;
+  notes?: string;
+  document_id?: number;
+  actions?: RowAction[];
+}
+
+/** Compose or replay email — from/to/subject/body/attachments with
+ *  quick action pills for send/edit/discard. */
+export interface EmailPreviewPart extends BasePart {
+  kind: "email_preview";
+  from?: string;
+  to: string;
+  cc?: string;
+  bcc?: string;
+  subject: string;
+  body: string;
+  body_is_markdown?: boolean;
+  attachments?: { name: string; size_bytes?: number; document_id?: number }[];
+  actions?: RowAction[];
+}
+
+/** Turn-by-turn direction steps. Used alongside a MapPart to give
+ *  the user the segment breakdown for a route. */
+export interface RouteStepsPart extends BasePart {
+  kind: "route_steps";
+  from_label?: string;
+  to_label?: string;
+  total_distance_meters?: number;
+  total_duration_seconds?: number;
+  profile?: "driving-car" | "cycling-regular" | "foot-walking";
+  steps: {
+    instruction: string;
+    distance_meters?: number;
+    duration_seconds?: number;
+    street?: string;
+  }[];
+}
+
+/** A single calendar event — distinct from `calendar` which is a
+ *  window of events. Use for a specific meeting/appointment with
+ *  RSVP + reschedule actions. */
+export interface CalendarEventPart extends BasePart {
+  kind: "calendar_event";
+  event_id?: string;
+  title: string;
+  start: string;
+  end: string;
+  location?: string;
+  attendees?: string[];
+  organizer?: string;
+  description?: string;
+  meeting_url?: string;
   actions?: RowAction[];
 }
 

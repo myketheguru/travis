@@ -25,6 +25,11 @@ import { QuickReplyCard } from "./QuickReplyCard";
 import { StepperCard } from "./StepperCard";
 import { CodeSnippetCard } from "./CodeSnippetCard";
 import { ContactCard } from "./ContactCard";
+// v0.28.29 Phase B domain cards
+import { InvoicePreviewCard } from "./InvoicePreviewCard";
+import { EmailPreviewCard } from "./EmailPreviewCard";
+import { RouteStepsCard } from "./RouteStepsCard";
+import { CalendarEventCard } from "./CalendarEventCard";
 import { MarkdownBody } from "../MarkdownBody";
 import { useCardLifecycle } from "../../stores/cardLifecycle";
 
@@ -181,6 +186,71 @@ function PartRouter({
           birthday={part.birthday}
           notes={part.notes}
           last_contact_at={part.last_contact_at}
+          actions={part.actions}
+          narration={part.narration}
+        />
+      );
+
+    // v0.28.29 Phase B
+    case "invoice_preview":
+      return (
+        <InvoicePreviewCard
+          invoice_number={part.invoice_number}
+          status={part.status}
+          issued_at={part.issued_at}
+          due_at={part.due_at}
+          from={part.from}
+          to={part.to}
+          line_items={part.line_items}
+          subtotal_cents={part.subtotal_cents}
+          tax_cents={part.tax_cents}
+          total_cents={part.total_cents}
+          currency={part.currency}
+          notes={part.notes}
+          document_id={part.document_id}
+          actions={part.actions}
+          narration={part.narration}
+        />
+      );
+    case "email_preview":
+      return (
+        <EmailPreviewCard
+          from={part.from}
+          to={part.to}
+          cc={part.cc}
+          bcc={part.bcc}
+          subject={part.subject}
+          body={part.body}
+          body_is_markdown={part.body_is_markdown}
+          attachments={part.attachments}
+          actions={part.actions}
+          narration={part.narration}
+        />
+      );
+    case "route_steps":
+      return (
+        <RouteStepsCard
+          from_label={part.from_label}
+          to_label={part.to_label}
+          total_distance_meters={part.total_distance_meters}
+          total_duration_seconds={part.total_duration_seconds}
+          profile={part.profile}
+          steps={part.steps}
+          narration={part.narration}
+        />
+      );
+    case "calendar_event":
+      return (
+        <CalendarEventCard
+          event_id={part.event_id}
+          title={part.title}
+          start={part.start}
+          end={part.end}
+          location={part.location}
+          attendees={part.attendees}
+          organizer={part.organizer}
+          description={part.description}
+          meeting_url={part.meeting_url}
           actions={part.actions}
           narration={part.narration}
         />
