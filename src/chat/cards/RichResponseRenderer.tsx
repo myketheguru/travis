@@ -30,6 +30,11 @@ import { InvoicePreviewCard } from "./InvoicePreviewCard";
 import { EmailPreviewCard } from "./EmailPreviewCard";
 import { RouteStepsCard } from "./RouteStepsCard";
 import { CalendarEventCard } from "./CalendarEventCard";
+// v0.28.30 Phase C interactive inputs
+import { SliderCard } from "./SliderCard";
+import { DatePickerCard } from "./DatePickerCard";
+import { SlotFormCard } from "./SlotFormCard";
+import { ApprovalMultiCard } from "./ApprovalMultiCard";
 import { MarkdownBody } from "../MarkdownBody";
 import { useCardLifecycle } from "../../stores/cardLifecycle";
 
@@ -252,6 +257,55 @@ function PartRouter({
           description={part.description}
           meeting_url={part.meeting_url}
           actions={part.actions}
+          narration={part.narration}
+        />
+      );
+
+    // v0.28.30 Phase C
+    case "slider":
+      return (
+        <SliderCard
+          prompt={part.prompt}
+          min={part.min}
+          max={part.max}
+          step={part.step}
+          value={part.value}
+          unit={part.unit}
+          format={part.format}
+          submit_verb={part.submit_verb}
+          submit_template={part.submit_template}
+          narration={part.narration}
+        />
+      );
+    case "datepicker":
+      return (
+        <DatePickerCard
+          prompt={part.prompt}
+          value={part.value}
+          min={part.min}
+          max={part.max}
+          submit_verb={part.submit_verb}
+          narration={part.narration}
+        />
+      );
+    case "slotform":
+      return (
+        <SlotFormCard
+          title={part.title}
+          intro={part.intro}
+          fields={part.fields}
+          submit_label={part.submit_label}
+          submit_verb={part.submit_verb}
+          narration={part.narration}
+        />
+      );
+    case "approval_multi":
+      return (
+        <ApprovalMultiCard
+          title={part.title}
+          action_kind={part.action_kind}
+          steps={part.steps}
+          final_submit_verb={part.final_submit_verb}
           narration={part.narration}
         />
       );

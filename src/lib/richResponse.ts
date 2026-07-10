@@ -43,7 +43,12 @@ export type MessagePart =
   | InvoicePreviewPart
   | EmailPreviewPart
   | RouteStepsPart
-  | CalendarEventPart;
+  | CalendarEventPart
+  // v0.28.30 — Phase C interactive inputs
+  | SliderPart
+  | DatePickerPart
+  | SlotFormPart
+  | ApprovalMultiPart;
 
 export interface BasePart {
   kind: MessagePart["kind"];
@@ -318,6 +323,72 @@ export interface CalendarEventPart extends BasePart {
   description?: string;
   meeting_url?: string;
   actions?: RowAction[];
+}
+
+// ─── Phase C (v0.28.30) interactive inputs ──────────────────────
+
+/** Numeric slider. On release, submits the value formatted per
+ *  `submit_template` — e.g. "set budget to $VALUE". */
+export interface SliderPart extends BasePart {
+  kind: "slider";
+  prompt?: string;
+  min: number;
+  max: number;
+  step?: number;
+  value: number;
+  unit?: string;
+  format?: "number" | "currency" | "percent" | "duration";
+  submit_verb?: string; // default: "set to"
+  submit_template?: string; // "$VALUE" placeholder; if absent uses "{submit_verb} {formatted}"
+}
+
+/** Inline date picker. Submits ISO date on select. */
+export interface DatePickerPart extends BasePart {
+  kind: "datepicker";
+  prompt?: string;
+  value?: string; // ISO YYYY-MM-DD
+  min?: string;
+  max?: string;
+  submit_verb?: string; // default: "set date to"
+}
+
+/** Mini form for workflow slot-filling. Each field carries a type
+ *  and validation. Submit collects all values and sends as JSON. */
+export interface SlotFormPart extends BasePart {
+  kind: "slotform";
+  title?: string;
+  intro?: string;
+  fields: SlotField[];
+  submit_label?: string; // default: "Continue"
+  submit_verb?: string; // template for what's sent to Travis. Default: JSON of values
+}
+export interface SlotField {
+  key: string;
+  label: string;
+  type: "text" | "longtext" | "number" | "currency" | "date" | "select" | "checkbox";
+  required?: boolean;
+  placeholder?: string;
+  help?: string;
+  value?: string | number | boolean;
+  options?: { value: string; label: string }[]; // for select
+  min?: number;
+  max?: number;
+}
+
+/** Multi-step approval flow. Each step needs its own confirm before
+ *  the whole action proceeds. Useful for "send + attach + notify"
+ *  or "generate → preview → send" workflows. */
+export interface ApprovalMultiPart extends BasePart {
+  kind: "approval_multi";
+  title?: string;
+  action_kind: string;
+  steps: {
+    label: string;
+    detail?: string;
+    verb: string;
+    approved?: boolean;
+  }[];
+  final_submit_verb: string;
 }
 
 // ─── Sub-payloads ─────────────────────────────────────────────────

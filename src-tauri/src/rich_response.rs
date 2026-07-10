@@ -331,6 +331,25 @@ Available part kinds and when to use each:
   title, start, end, location?, attendees?, organizer?, description?,
   meeting_url?, actions?}`. Distinct from `calendar` which is a
   time-window. Use when the answer is a specific meeting/appointment.
+- **slider** — numeric input the user slides. `{prompt?, min, max,
+  step?, value, unit?, format?, submit_verb?, submit_template?}`.
+  Use for "how much / how many" questions with a range. The value
+  submits as the next user turn on release.
+- **datepicker** — inline date picker. `{prompt?, value?, min?,
+  max?, submit_verb?}`. Use for date-only inputs (birthday, due
+  date). Submits ISO date on select.
+- **slotform** — multi-field form for workflow slot-filling.
+  `{title?, intro?, fields[], submit_label?, submit_verb?}`. Each
+  field: `{key, label, type, required?, placeholder?, help?, value?,
+  options?, min?, max?}`. Types: text, longtext, number, currency,
+  date, select, checkbox. Use when Travis needs several inputs at
+  once (drafting an invoice, scheduling a meeting) — beats
+  successive quickreplies.
+- **approval_multi** — multi-step approval for compound side effects.
+  `{title?, action_kind, steps[], final_submit_verb}`. Each step
+  `{label, detail?, verb, approved?}` must be individually checked
+  before the final proceed button unlocks. Use for high-stakes
+  compound actions ("send email + attach + notify slack").
 - **text** — a genuinely conversational reply (a joke, small talk,
   a follow-up question, an apology). NOT the default.
 
