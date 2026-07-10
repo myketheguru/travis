@@ -108,9 +108,30 @@ function InteractiveMap({
         if (map) addRouteLayer(map, mapPart);
         map?.resize();
       });
-      // Fall back to CartoDB raster if OpenFreeMap fetch fails.
+      // v0.28.33 — one-shot fallback. The previous handler swapped the
+      // style on ANY error event, and each setStyle triggered fresh
+      // load errors during initialization, giving an infinite reload
+      // loop that showed nothing but the DOM markers. Now we only
+      // fall back once, only when the primary style URL itself
+      // failed to load, and never in response to tile/expression/
+      // source-transient errors that resolve on their own.
+      let hasFellBack = false;
       map.on("error", (e) => {
-        console.warn("[map] style error, swapping to raster fallback:", e);
+        // Expression evaluation, tile 404s, and layer add errors all
+        // bubble through here. They're noise — the map recovers on
+        // its own. Log for triage and DO NOT swap the style.
+        const errMsg = (e as { error?: { message?: string } })?.error?.message ?? "";
+        const isPrimaryStyleFailure =
+          !hasFellBack &&
+          (errMsg.includes(STYLE_URL) ||
+            /style.*(load|fetch|parse)/i.test(errMsg) ||
+            /Failed to fetch/i.test(errMsg));
+        if (!isPrimaryStyleFailure) {
+          if (errMsg) console.debug("[map] transient error (ignored):", errMsg);
+          return;
+        }
+        hasFellBack = true;
+        console.warn("[map] primary style unavailable, swapping to raster fallback:", errMsg);
         try {
           map?.setStyle({
             version: 8,
