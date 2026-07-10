@@ -76,6 +76,13 @@ function InteractiveMap({
         style: STYLE_URL,
         center: [coords.lng, coords.lat],
         zoom: coords.zoom,
+        // v0.28.32 Stage 1 — sci-fi depth. Default pitch tilts the
+        // camera 55° so buildings extrude visibly. A subtle bearing
+        // gives an isometric feel. Users can still pan/zoom/rotate
+        // freely (MapLibre default gestures include drag-rotate).
+        pitch: 55,
+        bearing: -18,
+        maxPitch: 75,
         attributionControl: { compact: true },
       });
       mapRef.current = map;
@@ -89,6 +96,12 @@ function InteractiveMap({
         } catch {
           /* style layers may differ — ignore */
         }
+        // v0.28.32 — 3D building extrusions. Uses the openmaptiles
+        // building source-layer that OpenFreeMap ships. Height is
+        // interpolated from OSM data (`render_height` or `height`).
+        // Fill color subtly gradients from bronze-lavender at ground
+        // to lighter brand-purple at top so tall towers feel lit.
+        if (map) addBuildingExtrusion(map);
         // v0.28.27 — draw the route geometry as a glowing brand line
         // when the map part carries one. Called after style load so
         // the source + layer add cleanly.
@@ -344,16 +357,92 @@ function addRouteLayer(map: MapLibreMap, mapPart: MapPart) {
         if (lat < minLat) minLat = lat;
         if (lat > maxLat) maxLat = lat;
       }
+      // v0.28.32 — preserve the sci-fi camera pose (pitch + bearing)
+      // when fitting to route bounds. Without these, fitBounds resets
+      // to a top-down view and the 3D buildings visually collapse.
       map.fitBounds(
         [
           [minLng, minLat],
           [maxLng, maxLat],
         ],
-        { padding: 80, duration: 1400, essential: true },
+        {
+          padding: 80,
+          duration: 1400,
+          essential: true,
+          pitch: map.getPitch(),
+          bearing: map.getBearing(),
+        },
       );
     }
   } catch (e) {
     console.warn("[map] route layer add failed:", e);
+  }
+}
+
+/// v0.28.32 Stage 1 — 3D building extrusions.
+///
+/// OpenFreeMap tiles carry a `building` source layer with an OSM
+/// `render_height` attribute (numeric, meters). We add a
+/// `fill-extrusion` layer above the base style. Color interpolates
+/// with height: short structures stay ground-tone; towers grade
+/// toward a brighter lavender to feel lit. Opacity 0.82 so the
+/// glowing route line stays visible when it passes through dense
+/// urban blocks.
+///
+/// Silently no-ops when the style is the raster CartoDB fallback
+/// (no vector building layer) or when the layer already exists.
+function addBuildingExtrusion(map: MapLibreMap) {
+  const LAYER = "travis-3d-buildings";
+  try {
+    if (map.getLayer(LAYER)) return;
+    // OpenFreeMap uses the `openmaptiles` vector source; if it's
+    // missing (raster fallback path), bail.
+    if (!map.getSource("openmaptiles")) return;
+
+    // Find the first symbol layer so we insert extrusions BELOW
+    // labels/road-names. Labels then float on top of the buildings.
+    let beforeId: string | undefined;
+    for (const layer of map.getStyle().layers ?? []) {
+      if (layer.type === "symbol") { beforeId = layer.id; break; }
+    }
+
+    map.addLayer(
+      {
+        id: LAYER,
+        source: "openmaptiles",
+        "source-layer": "building",
+        type: "fill-extrusion",
+        minzoom: 13.5,
+        paint: {
+          "fill-extrusion-color": [
+            "interpolate",
+            ["linear"],
+            ["coalesce", ["get", "render_height"], ["get", "height"], 0],
+            0,   "rgba(38, 30, 62, 0.9)",
+            10,  "rgba(52, 40, 82, 0.9)",
+            30,  "rgba(78, 58, 122, 0.92)",
+            80,  "rgba(126, 90, 190, 0.92)",
+            200, "rgba(180, 140, 240, 0.95)",
+          ],
+          "fill-extrusion-height": [
+            "coalesce",
+            ["get", "render_height"],
+            ["get", "height"],
+            8,
+          ],
+          "fill-extrusion-base": [
+            "coalesce",
+            ["get", "render_min_height"],
+            ["get", "min_height"],
+            0,
+          ],
+          "fill-extrusion-opacity": 0.82,
+        },
+      },
+      beforeId,
+    );
+  } catch (e) {
+    console.warn("[map] 3D extrusion setup failed:", e);
   }
 }
 
