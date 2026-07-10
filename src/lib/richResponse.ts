@@ -30,7 +30,15 @@ export type MessagePart =
   | ListPart
   | ChartPart
   | MediaPart
-  | ThreadPart;
+  | ThreadPart
+  // v0.28.28 — Phase A rich response types
+  | TablePart
+  | KeyValuePart
+  | CalloutPart
+  | QuickReplyPart
+  | StepperPart
+  | CodeSnippetPart
+  | ContactCardPart;
 
 export interface BasePart {
   kind: MessagePart["kind"];
@@ -141,6 +149,93 @@ export interface ThreadPart extends BasePart {
 export interface ThreadTurn {
   author: "user" | "travis";
   parts: MessagePart[];
+}
+
+// ─── Phase A (v0.28.28) new part types ──────────────────────────
+
+/** Structured tabular data. Cell values are rendered by column type;
+ *  numbers right-align, currency/date formats when set. */
+export interface TablePart extends BasePart {
+  kind: "table";
+  title?: string;
+  columns: TableColumn[];
+  rows: (string | number | null)[][];
+  /** Optional per-row link/action for "click through". */
+  row_actions?: RowAction[];
+}
+export interface TableColumn {
+  key: string;
+  label: string;
+  align?: "left" | "right" | "center";
+  format?: "text" | "number" | "currency" | "date" | "duration" | "percent";
+  width?: number;
+}
+
+/** Compact strip of labeled facts. Better than a Table for a single
+ *  entity's attributes. */
+export interface KeyValuePart extends BasePart {
+  kind: "keyvalue";
+  title?: string;
+  items: { label: string; value: string; hint?: string }[];
+}
+
+/** Semantic message box — info / warn / success / error. */
+export interface CalloutPart extends BasePart {
+  kind: "callout";
+  severity: "info" | "warn" | "success" | "error";
+  title?: string;
+  body: string;
+}
+
+/** Pill options user can click to answer without typing. */
+export interface QuickReplyPart extends BasePart {
+  kind: "quickreply";
+  prompt?: string;
+  options: QuickReplyOption[];
+}
+export interface QuickReplyOption {
+  id: string;
+  label: string;
+  /** When clicked, this string is submitted to Travis as the next
+   *  user turn (defaults to label). */
+  value?: string;
+}
+
+/** Named workflow steps with status. Use for slot-fill progress
+ *  ("gathering → drafting → preview → send"). */
+export interface StepperPart extends BasePart {
+  kind: "stepper";
+  title?: string;
+  steps: StepperStep[];
+}
+export interface StepperStep {
+  label: string;
+  status: "done" | "active" | "pending" | "failed";
+  detail?: string;
+}
+
+/** Syntax-highlighted code snippet with copy button. */
+export interface CodeSnippetPart extends BasePart {
+  kind: "code_snippet";
+  code: string;
+  language?: string;
+  filename?: string;
+}
+
+/** Person as a first-class card — replaces prose "here's Sarah's info".
+ *  Fields mirror the people pack contact schema. */
+export interface ContactCardPart extends BasePart {
+  kind: "contact_card";
+  display_name: string;
+  relationship?: string;
+  organization?: string;
+  email?: string;
+  phone?: string;
+  birthday?: string;
+  notes?: string;
+  last_contact_at?: string;
+  /** Quick actions the card exposes ("Email", "Log a call"). */
+  actions?: RowAction[];
 }
 
 // ─── Sub-payloads ─────────────────────────────────────────────────

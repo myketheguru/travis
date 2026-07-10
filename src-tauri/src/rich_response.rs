@@ -286,6 +286,34 @@ Available part kinds and when to use each:
 - **chart** — numeric answer that would read better as a sparkline
   or bar.
 - **media** — the answer includes an image, video, or audio clip.
+- **table** — tabular data with columns and rows. Use for anything
+  that reads like a spreadsheet (subscriptions with amounts, tasks
+  with due dates, contacts with roles). Columns declare `label`,
+  optional `format` ("currency", "date", "duration", "percent",
+  "number"), optional `align`. Rows are arrays parallel to columns.
+- **keyvalue** — labeled facts strip for a single entity's
+  attributes ("here's Sarah's info", invoice metadata, config).
+  `items` is an array of `{label, value, hint?}`.
+- **callout** — semantic message box. `severity` is
+  info/warn/success/error. Use for things Travis wants to flag
+  distinctly ("you're on the free tier", "operation complete",
+  "this needs your attention"). Not for system errors.
+- **quickreply** — pill options the user clicks to answer without
+  typing. Use when the answer is one of a small closed set
+  ("Yes / No / Later", "This month / Last month / All time"). Each
+  option carries `{id, label, value?}`; `value` is what gets sent
+  to Travis as the next turn (defaults to label).
+- **stepper** — named workflow steps with status. Use for
+  slot-fill progress ("gathering info → drafting → previewing →
+  sent"). Each step: `{label, status: done|active|pending|failed,
+  detail?}`.
+- **code_snippet** — syntax-highlighted code with copy button.
+  `{code, language?, filename?}`. Prefer this over markdown code
+  fences whenever the code is a first-class artifact.
+- **contact_card** — first-class person card. Mirrors people-pack
+  contact schema: `{display_name, relationship?, organization?,
+  email?, phone?, birthday?, notes?, last_contact_at?, actions?}`.
+  Use whenever the answer is about a specific person's info.
 - **text** — a genuinely conversational reply (a joke, small talk,
   a follow-up question, an apology). NOT the default.
 

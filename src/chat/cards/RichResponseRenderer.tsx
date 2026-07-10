@@ -17,6 +17,14 @@ import { DocRefCard } from "./DocRefCard";
 import { ThreadCard } from "./ThreadCard";
 import { T2tConvoCard } from "./T2tConvoCard";
 import { ListCard } from "./ListCard";
+// v0.28.28 Phase A rich-response cards
+import { TableCard } from "./TableCard";
+import { KeyValueCard } from "./KeyValueCard";
+import { CalloutCard } from "./CalloutCard";
+import { QuickReplyCard } from "./QuickReplyCard";
+import { StepperCard } from "./StepperCard";
+import { CodeSnippetCard } from "./CodeSnippetCard";
+import { ContactCard } from "./ContactCard";
 import { MarkdownBody } from "../MarkdownBody";
 import { useCardLifecycle } from "../../stores/cardLifecycle";
 
@@ -120,6 +128,60 @@ function PartRouter({
         <ListCard
           title={part.title}
           rows={part.rows}
+          narration={part.narration}
+        />
+      );
+
+    // v0.28.28 Phase A
+    case "table":
+      return (
+        <TableCard
+          title={part.title}
+          columns={part.columns}
+          rows={part.rows}
+          narration={part.narration}
+        />
+      );
+    case "keyvalue":
+      return (
+        <KeyValueCard title={part.title} items={part.items} narration={part.narration} />
+      );
+    case "callout":
+      return (
+        <CalloutCard
+          severity={part.severity}
+          title={part.title}
+          body={part.body}
+          narration={part.narration}
+        />
+      );
+    case "quickreply":
+      return (
+        <QuickReplyCard prompt={part.prompt} options={part.options} narration={part.narration} />
+      );
+    case "stepper":
+      return <StepperCard title={part.title} steps={part.steps} narration={part.narration} />;
+    case "code_snippet":
+      return (
+        <CodeSnippetCard
+          code={part.code}
+          language={part.language}
+          filename={part.filename}
+          narration={part.narration}
+        />
+      );
+    case "contact_card":
+      return (
+        <ContactCard
+          display_name={part.display_name}
+          relationship={part.relationship}
+          organization={part.organization}
+          email={part.email}
+          phone={part.phone}
+          birthday={part.birthday}
+          notes={part.notes}
+          last_contact_at={part.last_contact_at}
+          actions={part.actions}
           narration={part.narration}
         />
       );
