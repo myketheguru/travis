@@ -10,7 +10,7 @@
  * Info card overlay: translucent slate-violet (lighter than v0.28.5)
  * with brand purple accents. Custom marker with pulse.
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { motion } from "framer-motion";
 import maplibregl, { type Map as MapLibreMap } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -27,7 +27,14 @@ const STYLE_URL = "https://tiles.openfreemap.org/styles/dark";
 
 export function MapCanvas() {
   const { focal } = useFocalContent();
-  const mapPart = extractMapPart(focal?.content);
+  // v0.28.34 — memoize on focal.content (a stable string) so mapPart
+  // holds a stable object reference across renders. Without this
+  // every render created a new mapPart, cascading fresh references
+  // through InteractiveMap's memos + effects.
+  const mapPart = useMemo(
+    () => extractMapPart(focal?.content),
+    [focal?.content],
+  );
   if (!mapPart) return <ChatCanvas />;
 
   const coords = coordsFromMapPart(mapPart);
@@ -50,9 +57,16 @@ function InteractiveMap({
 
   // v0.28.31 — decide markers to place based on part shape. For a
   // pure place, one marker in the middle. For a route, two markers
-  // (from + to) each with a hover label showing the endpoint name so
-  // the user doesn't have to guess which end is which.
-  const markerPlan = ((): { lat: number; lng: number; label?: string; kind: "place" | "from" | "to" }[] => {
+  // (from + to) each with a persistent label above the dot so the
+  // user doesn't have to guess which end is which.
+  //
+  // v0.28.34 — MUST be memoized. Previously a fresh array literal on
+  // every render, which made it a new reference each time, which
+  // caused the init useEffect (whose deps include markerPlan) to
+  // re-run on every render — destroying and recreating the entire
+  // MapLibre instance in a tight loop. That was the "openmap layer
+  // kept rerendering so fast" the user hit.
+  const markerPlan = useMemo(() => {
     const out: { lat: number; lng: number; label?: string; kind: "place" | "from" | "to" }[] = [];
     if (mapPart.route?.from?.lat != null && mapPart.route?.from?.lng != null) {
       out.push({ lat: mapPart.route.from.lat, lng: mapPart.route.from.lng, label: mapPart.route.from.label, kind: "from" });
@@ -64,7 +78,21 @@ function InteractiveMap({
       out.push({ lat: mapPart.place.lat, lng: mapPart.place.lng, label: mapPart.place.label, kind: "place" });
     }
     return out;
-  })();
+    // Primitive deps only so this recomputes ONLY when the actual
+    // marker positions/labels change, not when the enclosing mapPart
+    // reference churns.
+  }, [
+    mapPart.route?.from?.lat,
+    mapPart.route?.from?.lng,
+    mapPart.route?.from?.label,
+    mapPart.route?.to?.lat,
+    mapPart.route?.to?.lng,
+    mapPart.route?.to?.label,
+    mapPart.route?.destination_label,
+    mapPart.place?.lat,
+    mapPart.place?.lng,
+    mapPart.place?.label,
+  ]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -156,22 +184,9 @@ function InteractiveMap({
       });
       requestAnimationFrame(() => map?.resize());
 
-      // v0.28.31 — plant every planned marker with a persistent label
-      // beside it. Endpoint labels ("Festac", "Ikeja") + a colored dot
-      // are much clearer than an unlabeled pulse in the middle.
-      for (const m of markerPlan) {
-        const markerEl = document.createElement("div");
-        markerEl.className = `travis-map-marker travis-marker-${m.kind}`;
-        markerEl.innerHTML = `
-          <div class="travis-marker-pulse"></div>
-          <div class="travis-marker-dot"></div>
-          ${m.label ? `<div class="travis-marker-label">${escapeHtml(m.label)}</div>` : ""}
-        `;
-        const marker = new maplibregl.Marker({ element: markerEl })
-          .setLngLat([m.lng, m.lat])
-          .addTo(map);
-        markersRef.current.push(marker);
-      }
+      // v0.28.34 — marker planting moved to a dedicated sync effect
+      // below, keyed on `markerPlan`. Keeps map init decoupled from
+      // marker changes.
     } catch (err) {
       console.warn("[map] MapLibre init failed:", err);
     }
@@ -183,7 +198,39 @@ function InteractiveMap({
       try { mapRef.current?.remove(); } catch { /* ignore */ }
       mapRef.current = null;
     };
-  }, [coords.lat, coords.lng, coords.zoom, markerPlan]);
+    // v0.28.34 — deps intentionally exclude markerPlan. The plan is
+    // consumed at init to plant markers; if the plan changes
+    // afterward, the separate marker-sync effect below rebuilds
+    // markers in place without destroying the map. Including
+    // markerPlan (memoized or not) risks re-init on every content
+    // change, which is what tanked the map render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coords.lat, coords.lng, coords.zoom]);
+
+  // v0.28.34 — sync markers when markerPlan changes WITHOUT tearing
+  // down the map. Preserves camera state + tile progress across
+  // follow-up map updates.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    for (const marker of markersRef.current) {
+      try { marker.remove(); } catch { /* ignore */ }
+    }
+    markersRef.current = [];
+    for (const m of markerPlan) {
+      const markerEl = document.createElement("div");
+      markerEl.className = `travis-map-marker travis-marker-${m.kind}`;
+      markerEl.innerHTML = `
+        <div class="travis-marker-pulse"></div>
+        <div class="travis-marker-dot"></div>
+        ${m.label ? `<div class="travis-marker-label">${escapeHtml(m.label)}</div>` : ""}
+      `;
+      const marker = new maplibregl.Marker({ element: markerEl })
+        .setLngLat([m.lng, m.lat])
+        .addTo(map);
+      markersRef.current.push(marker);
+    }
+  }, [markerPlan]);
 
   useEffect(() => {
     if (!mapRef.current) return;
@@ -195,11 +242,17 @@ function InteractiveMap({
     });
   }, [coords.lat, coords.lng, coords.zoom]);
 
-  // v0.28.27 — reapply the route layer whenever mapPart identity
-  // changes (a follow-up turn produced a new map). fitBounds inside
-  // addRouteLayer overrides flyTo above when a route is present,
-  // giving the "pan to encompass both endpoints" behavior the user
-  // asked for.
+  // v0.28.27 — reapply the route layer whenever the underlying
+  // geometry actually changes (a follow-up turn produced a new
+  // map). fitBounds inside addRouteLayer overrides flyTo above when
+  // a route is present, giving the "pan to encompass both endpoints"
+  // behavior the user asked for.
+  //
+  // v0.28.34 — the dep was `mapPart` which is a fresh object every
+  // render, so this effect used to re-fire continuously and stack
+  // route-layer removes/adds against a not-yet-ready map. Use a
+  // stable geometry signature instead.
+  const geometrySig = JSON.stringify(mapPart.route?.geometry_geojson ?? null);
   useEffect(() => {
     if (!mapRef.current) return;
     const m = mapRef.current;
@@ -208,7 +261,11 @@ function InteractiveMap({
     } else {
       m.once("load", () => addRouteLayer(m, mapPart));
     }
-  }, [mapPart]);
+    // Depend on the stable signature only — mapPart itself is a fresh
+    // object every render. mapPart is closed over via the ref-based
+    // mapRef; the current geometry is what actually decides re-work.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [geometrySig]);
 
   const label =
     mapPart.route?.destination_label ?? mapPart.place?.label ?? "map";
