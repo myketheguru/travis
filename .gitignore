@@ -52,3 +52,15 @@ src-tauri/resources/python/
 # v0.26.4 — whisper model is fetched at build via scripts/fetch-whisper.mjs.
 # ~148 MB; well over GitHub's 100 MB file limit. Do not commit.
 src-tauri/resources/whisper/*.bin
+
+# v0.28.26 — piper binary + voice model fetched at build via
+# scripts/fetch-piper.mjs. Same reasoning as whisper. Keep the
+# folder (via .gitkeep) so the tauri.conf.json bundle glob still
+# resolves in dev before predev runs.
+src-tauri/resources/piper/*.onnx
+src-tauri/resources/piper/*.onnx.json
+src-tauri/resources/piper/piper
+src-tauri/resources/piper/piper.exe
+src-tauri/resources/piper/*.tar.gz
+src-tauri/resources/piper/*.zip
+src-tauri/resources/piper/espeak-ng-data/

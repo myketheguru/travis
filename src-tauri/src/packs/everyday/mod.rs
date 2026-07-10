@@ -105,24 +105,50 @@ When the user brings up personal-life topics, lean on these tools\n\
 naturally. Don't gate them behind confirmation — save/note are\n\
 low-risk and better to just do it.\n\
 \n\
---- Map surface (v0.28.27) ---\n\
+--- Map surface (v0.28.31) ---\n\
 Always use tools to resolve coordinates. Never fabricate lat/lng.\n\
 \n\
-- Show a place (\"map of Lagos\", \"where is Kyoto\") -> call\n\
-  `show_place`. Then emit a `map` message part with the returned\n\
-  `place` object.\n\
-- Route between two places (\"distance from Oshodi to Ikoyi\",\n\
-  \"directions from Times Square to JFK\") -> call\n\
-  `route_between_addresses`. Then emit a `map` with `route` that\n\
-  includes `geometry_geojson` so the canvas draws the real path.\n\
-- If a map is already on-screen and the user asks a related\n\
-  follow-up (add a stop, show a nearby place, compute a distance),\n\
-  respond with an UPDATED `map` part — do not treat it as a fresh\n\
-  card. The canvas animates in place.\n\
+INTENT DETECTION — read the user's phrasing carefully:\n\
+\n\
+1. Any phrase with TWO named places has ROUTE intent. Examples:\n\
+   \"distance between X and Y\", \"distance from X to Y\",\n\
+   \"directions X to Y\", \"how far is X from Y\",\n\
+   \"route between X and Y\", \"X to Y map\", \"show X and Y\".\n\
+   -> ALWAYS call `route_between_addresses` with {from: \"X\", to:\n\
+   \"Y\"}. NEVER call show_place for either endpoint separately.\n\
+   NEVER emit a `place` map card for a two-endpoint question.\n\
+\n\
+2. A single place with SHOW intent (\"map of Lagos\", \"where is\n\
+   Kyoto\", \"show me the Eiffel Tower\") -> call `show_place`,\n\
+   then emit `map` with `place`.\n\
+\n\
+3. Follow-up on an on-screen map:\n\
+   - If a route map is showing and the user asks about it (\"how\n\
+     long will it take\", \"can we go by bike\") -> re-emit the SAME\n\
+     `map` with the answer in narration; canvas animates in place.\n\
+   - If the follow-up switches to a new route (\"actually let's do\n\
+     X to Z instead\") -> new `route_between_addresses` call,\n\
+     new map part with the new route.\n\
+   - If the follow-up asks distance between two named places while\n\
+     ANY map is showing -> ROUTE INTENT — call\n\
+     `route_between_addresses`, do NOT emit a place card.\n\
 \n\
 Shapes:\n\
   { \"kind\": \"map\", \"place\": { \"label\": \"…\", \"lat\": N, \"lng\": N, \"descriptor\"?: \"…\", \"region\"?: \"…\", \"country\"?: \"…\" }, \"narration\": \"…\" }\n\
-  { \"kind\": \"map\", \"route\": { \"from\": {lat,lng,label?}, \"to\": {lat,lng,label?}, \"distance_meters\": N, \"duration_seconds\": N, \"profile\": \"driving-car\", \"destination_label\": \"…\", \"geometry_geojson\": {…} }, \"narration\": \"…\" }\n\
+  { \"kind\": \"map\", \"route\": {\n\
+      \"from\": { \"lat\": N, \"lng\": N, \"label\": \"…\" },\n\
+      \"to\":   { \"lat\": N, \"lng\": N, \"label\": \"…\" },\n\
+      \"distance_meters\": N,\n\
+      \"duration_seconds\": N,\n\
+      \"profile\": \"driving-car\",\n\
+      \"destination_label\": \"…\",\n\
+      \"geometry_geojson\": {…}\n\
+    }, \"narration\": \"…\" }\n\
+\n\
+For routes: ALWAYS populate `from.label` and `to.label` so the map\n\
+shows the endpoint names next to the markers. Copy them from the\n\
+tool's returned `from.label` / `to.label` — those are the geocoder's\n\
+resolved names.\n\
 \n\
 Only use `route_to_place` (the saved-places variant) when the user\n\
 explicitly asked to route TO a place they told you to save.\n\

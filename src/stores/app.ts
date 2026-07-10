@@ -179,7 +179,6 @@ const CHAT_PANE_FRACTION_KEY = "travis.chatPaneFraction";
 const DOC_FULLSCREEN_KEY = "travis.docFullscreen";
 const UI_SURFACE_KEY = "travis.uiSurface";
 const LAST_ACTIVITY_KEY = "travis.lastActivityAt";
-const IDLE_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 
 const readUiSurface = (): "v2" | "classic" => {
   try {
@@ -199,22 +198,13 @@ const writeUiSurface = (s: "v2" | "classic") => {
   }
 };
 
-/// v0.26 (v2 Shell 8) — the immersive canvas shows the opening greeting
-/// when this is the FIRST render of the current session AND either the
-/// user has never opened the app OR the last recorded activity was
-/// >= 24h ago. Called once at store-init.
-const computeInitialFirstMoment = (): boolean => {
-  try {
-    if (typeof localStorage === "undefined") return true;
-    const raw = localStorage.getItem(LAST_ACTIVITY_KEY);
-    if (!raw) return true;
-    const last = Number(raw);
-    if (!Number.isFinite(last)) return true;
-    return Date.now() - last >= IDLE_THRESHOLD_MS;
-  } catch {
-    return true;
-  }
-};
+/// v0.28.31 — always show the splash on cold boot. Every fresh app
+/// window (or dev reload) starts in the "first moment" state and
+/// only clears once the user actually engages (keyboard or mic —
+/// mouse doesn't count, see WorkspaceV2). The previous 24h idle
+/// gate meant a dev launch 5 minutes after the last one skipped the
+/// splash entirely, which is exactly what the user hit.
+const computeInitialFirstMoment = (): boolean => true;
 
 const stampActivityNow = () => {
   try {

@@ -406,6 +406,10 @@ export interface MapRoute {
 export interface LatLng {
   lat: number;
   lng: number;
+  /// v0.28.31 — optional endpoint label. When a route is emitted with
+  /// both endpoints labelled ("Festac", "Ikeja"), MapCanvas renders
+  /// them next to the markers so the user doesn't have to guess.
+  label?: string;
 }
 
 export interface CalendarEvent {

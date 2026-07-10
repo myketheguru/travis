@@ -45,8 +45,26 @@ function InteractiveMap({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
-  const markerRef = useRef<maplibregl.Marker | null>(null);
+  const markersRef = useRef<maplibregl.Marker[]>([]);
   const setMapExpanded = useAppStore((s) => s.setMapExpanded);
+
+  // v0.28.31 — decide markers to place based on part shape. For a
+  // pure place, one marker in the middle. For a route, two markers
+  // (from + to) each with a hover label showing the endpoint name so
+  // the user doesn't have to guess which end is which.
+  const markerPlan = ((): { lat: number; lng: number; label?: string; kind: "place" | "from" | "to" }[] => {
+    const out: { lat: number; lng: number; label?: string; kind: "place" | "from" | "to" }[] = [];
+    if (mapPart.route?.from?.lat != null && mapPart.route?.from?.lng != null) {
+      out.push({ lat: mapPart.route.from.lat, lng: mapPart.route.from.lng, label: mapPart.route.from.label, kind: "from" });
+    }
+    if (mapPart.route?.to?.lat != null && mapPart.route?.to?.lng != null) {
+      out.push({ lat: mapPart.route.to.lat, lng: mapPart.route.to.lng, label: mapPart.route.destination_label ?? mapPart.route.to.label, kind: "to" });
+    }
+    if (out.length === 0 && mapPart.place?.lat != null && mapPart.place?.lng != null) {
+      out.push({ lat: mapPart.place.lat, lng: mapPart.place.lng, label: mapPart.place.label, kind: "place" });
+    }
+    return out;
+  })();
 
   useEffect(() => {
     const el = containerRef.current;
@@ -104,26 +122,34 @@ function InteractiveMap({
       });
       requestAnimationFrame(() => map?.resize());
 
-      const markerEl = document.createElement("div");
-      markerEl.className = "travis-map-marker";
-      markerEl.innerHTML = `
-        <div class="travis-marker-pulse"></div>
-        <div class="travis-marker-dot"></div>
-      `;
-      const marker = new maplibregl.Marker({ element: markerEl })
-        .setLngLat([coords.lng, coords.lat])
-        .addTo(map);
-      markerRef.current = marker;
+      // v0.28.31 — plant every planned marker with a persistent label
+      // beside it. Endpoint labels ("Festac", "Ikeja") + a colored dot
+      // are much clearer than an unlabeled pulse in the middle.
+      for (const m of markerPlan) {
+        const markerEl = document.createElement("div");
+        markerEl.className = `travis-map-marker travis-marker-${m.kind}`;
+        markerEl.innerHTML = `
+          <div class="travis-marker-pulse"></div>
+          <div class="travis-marker-dot"></div>
+          ${m.label ? `<div class="travis-marker-label">${escapeHtml(m.label)}</div>` : ""}
+        `;
+        const marker = new maplibregl.Marker({ element: markerEl })
+          .setLngLat([m.lng, m.lat])
+          .addTo(map);
+        markersRef.current.push(marker);
+      }
     } catch (err) {
       console.warn("[map] MapLibre init failed:", err);
     }
     return () => {
-      try { markerRef.current?.remove(); } catch { /* ignore */ }
+      for (const marker of markersRef.current) {
+        try { marker.remove(); } catch { /* ignore */ }
+      }
+      markersRef.current = [];
       try { mapRef.current?.remove(); } catch { /* ignore */ }
-      markerRef.current = null;
       mapRef.current = null;
     };
-  }, [coords.lat, coords.lng, coords.zoom]);
+  }, [coords.lat, coords.lng, coords.zoom, markerPlan]);
 
   useEffect(() => {
     if (!mapRef.current) return;
@@ -331,6 +357,19 @@ function addRouteLayer(map: MapLibreMap, mapPart: MapPart) {
   }
 }
 
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => {
+    switch (c) {
+      case "&": return "&amp;";
+      case "<": return "&lt;";
+      case ">": return "&gt;";
+      case '"': return "&quot;";
+      case "'": return "&#39;";
+      default: return c;
+    }
+  });
+}
+
 function BrandMarkerStyles() {
   return (
     <style>
@@ -355,6 +394,27 @@ function BrandMarkerStyles() {
           position: relative;
           z-index: 2;
         }
+        /* v0.28.31 — endpoint differentiation: green start (from),
+           warm accent end (to). Keeps the brand purple for standalone
+           place cards. */
+        .travis-marker-from .travis-marker-dot {
+          background: radial-gradient(circle at 30% 30%, rgb(210, 255, 220), rgb(120, 220, 155));
+          box-shadow:
+            0 0 0 1px rgba(140, 230, 175, 0.45),
+            0 0 20px 4px rgba(140, 230, 175, 0.55);
+        }
+        .travis-marker-from .travis-marker-pulse {
+          background: rgba(140, 230, 175, 0.32);
+        }
+        .travis-marker-to .travis-marker-dot {
+          background: radial-gradient(circle at 30% 30%, rgb(255, 235, 210), rgb(255, 190, 130));
+          box-shadow:
+            0 0 0 1px rgba(255, 210, 130, 0.5),
+            0 0 20px 4px rgba(255, 210, 130, 0.6);
+        }
+        .travis-marker-to .travis-marker-pulse {
+          background: rgba(255, 210, 130, 0.32);
+        }
         .travis-marker-pulse {
           position: absolute;
           inset: 0;
@@ -362,6 +422,34 @@ function BrandMarkerStyles() {
           background: rgba(189, 158, 255, 0.32);
           animation: travis-marker-pulse 2.2s cubic-bezier(0.22, 1, 0.36, 1) infinite;
           z-index: 1;
+        }
+        /* v0.28.31 — persistent endpoint label. Offset above the dot
+           so the pulse ring doesn't clip it. Small backdrop for
+           legibility against light or dark map tiles. */
+        .travis-marker-label {
+          position: absolute;
+          bottom: calc(100% + 10px);
+          left: 50%;
+          transform: translateX(-50%);
+          padding: 3px 8px;
+          border-radius: 6px;
+          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+          font-size: 10.5px;
+          letter-spacing: 0.03em;
+          white-space: nowrap;
+          color: rgba(240, 240, 246, 0.95);
+          background: rgba(14, 12, 20, 0.82);
+          backdrop-filter: blur(6px);
+          border: 1px solid rgba(189, 158, 255, 0.35);
+          box-shadow: 0 4px 14px -6px rgba(0, 0, 0, 0.6);
+          pointer-events: none;
+          z-index: 3;
+        }
+        .travis-marker-from .travis-marker-label {
+          border-color: rgba(140, 230, 175, 0.45);
+        }
+        .travis-marker-to .travis-marker-label {
+          border-color: rgba(255, 210, 130, 0.5);
         }
         @keyframes travis-marker-pulse {
           0%   { transform: scale(0.6); opacity: 0.65; }
