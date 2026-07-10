@@ -71,6 +71,10 @@ function InteractiveMap({
         } catch {
           /* style layers may differ — ignore */
         }
+        // v0.28.27 — draw the route geometry as a glowing brand line
+        // when the map part carries one. Called after style load so
+        // the source + layer add cleanly.
+        if (map) addRouteLayer(map, mapPart);
         map?.resize();
       });
       // Fall back to CartoDB raster if OpenFreeMap fetch fails.
@@ -130,6 +134,21 @@ function InteractiveMap({
       essential: true,
     });
   }, [coords.lat, coords.lng, coords.zoom]);
+
+  // v0.28.27 — reapply the route layer whenever mapPart identity
+  // changes (a follow-up turn produced a new map). fitBounds inside
+  // addRouteLayer overrides flyTo above when a route is present,
+  // giving the "pan to encompass both endpoints" behavior the user
+  // asked for.
+  useEffect(() => {
+    if (!mapRef.current) return;
+    const m = mapRef.current;
+    if (m.isStyleLoaded()) {
+      addRouteLayer(m, mapPart);
+    } else {
+      m.once("load", () => addRouteLayer(m, mapPart));
+    }
+  }, [mapPart]);
 
   const label =
     mapPart.route?.destination_label ?? mapPart.place?.label ?? "map";
@@ -238,6 +257,78 @@ function InteractiveMap({
       </motion.div>
     </div>
   );
+}
+
+/// v0.28.27 — add the route as a source + line layer if the current
+/// map part carries a GeoJSON geometry. Idempotent: removes the
+/// previous source/layer first so a follow-up map update morphs the
+/// path in place instead of stacking. Also fits the camera to the
+/// route bounds so both endpoints land in view.
+function addRouteLayer(map: MapLibreMap, mapPart: MapPart) {
+  const geo = mapPart.route?.geometry_geojson;
+  const SRC = "travis-route";
+  const LYR = "travis-route-line";
+  const GLOW = "travis-route-glow";
+  try {
+    if (map.getLayer(LYR)) map.removeLayer(LYR);
+    if (map.getLayer(GLOW)) map.removeLayer(GLOW);
+    if (map.getSource(SRC)) map.removeSource(SRC);
+  } catch {
+    /* ignore */
+  }
+  if (!geo || typeof geo !== "object") return;
+  try {
+    map.addSource(SRC, {
+      type: "geojson",
+      data: { type: "Feature", geometry: geo as GeoJSON.Geometry, properties: {} },
+    });
+    // Wide soft glow underneath.
+    map.addLayer({
+      id: GLOW,
+      type: "line",
+      source: SRC,
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": "rgba(189, 158, 255, 0.35)",
+        "line-width": 10,
+        "line-blur": 6,
+      },
+    });
+    // Crisp inner line.
+    map.addLayer({
+      id: LYR,
+      type: "line",
+      source: SRC,
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": "rgb(220, 200, 255)",
+        "line-width": 3.5,
+      },
+    });
+    // Fit bounds around the LineString coords.
+    const coords = (geo as { coordinates?: number[][] }).coordinates ?? [];
+    if (coords.length >= 2) {
+      let minLng = coords[0][0];
+      let maxLng = coords[0][0];
+      let minLat = coords[0][1];
+      let maxLat = coords[0][1];
+      for (const [lng, lat] of coords) {
+        if (lng < minLng) minLng = lng;
+        if (lng > maxLng) maxLng = lng;
+        if (lat < minLat) minLat = lat;
+        if (lat > maxLat) maxLat = lat;
+      }
+      map.fitBounds(
+        [
+          [minLng, minLat],
+          [maxLng, maxLat],
+        ],
+        { padding: 80, duration: 1400, essential: true },
+      );
+    }
+  } catch (e) {
+    console.warn("[map] route layer add failed:", e);
+  }
 }
 
 function BrandMarkerStyles() {

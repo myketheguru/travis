@@ -170,6 +170,9 @@ export function useNativeVoice({ enabled }: Options) {
       playCue("wake");
       intentArmedRef.current = true;
       setActivity("listening");
+      // v0.28.27 — mic arm counts as user engagement, so the splash
+      // dismisses when Travis wakes for the user's first utterance.
+      useAppStore.getState().noteUserActivity();
       void nativeVoice.setArmed(true).catch(() => {});
     };
     // v0.28.12 — tapping mic while armed used to just call setArmed(false)

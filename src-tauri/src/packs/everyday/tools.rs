@@ -313,6 +313,122 @@ impl Tool for AddNoteTool {
     }
 }
 
+// ─── show_place (v0.28.27) ────────────────────────────────────────
+//
+// Geocode a free-form query (city, address, landmark) and hand the LLM
+// the coordinates + resolved label. LLM is instructed to emit a `map`
+// message part with `place` so the canvas centers there. Replaces the
+// LLM-fabricated coordinates path that was returning wrong locations.
+
+pub struct ShowPlaceTool;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ShowPlaceInput {
+    query: String,
+}
+
+#[async_trait]
+impl Tool for ShowPlaceTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "show_place".into(),
+            description: "Look up a place (city, neighborhood, address, landmark) \
+                and return real geocoded coordinates. Use this whenever the user \
+                asks to see a place on the map. After the tool call, emit a `map` \
+                message part with the returned `place` fields (label/lat/lng) so \
+                the canvas centers on the location. Never fabricate coordinates.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Free-form query: 'Lagos', 'Ikoyi Lagos', 'Empire State Building', '1600 Pennsylvania Ave'."
+                    }
+                },
+                "required": ["query"]
+            }),
+        }
+    }
+    async fn execute(&self, ctx: &ToolContext, input: Value) -> anyhow::Result<String> {
+        let p: ShowPlaceInput = serde_json::from_value(input)?;
+        let (lat, lng, label) = geocode(&ctx.http, &p.query).await?;
+        Ok(json!({
+            "query": p.query,
+            "resolved_label": label.unwrap_or(p.query.clone()),
+            "lat": lat,
+            "lng": lng,
+            "note": "Emit a `map` message part with a `place` object {label, lat, lng} so the user sees the location on the canvas. If they follow up with route/distance questions, call `route_between_addresses`."
+        }).to_string())
+    }
+}
+
+// ─── route_between_addresses (v0.28.27) ───────────────────────────
+//
+// The follow-up ask "distance between Oshodi and Ikoyi" was returning
+// another Lagos place card because there was no tool that took two
+// free-form addresses. This one geocodes both endpoints, fetches the
+// route + geometry, and returns everything the LLM needs to emit a
+// `map` with a `route` including `geometry_geojson` so MapCanvas draws
+// the real path — not a straight line, not a re-centered place card.
+
+pub struct RouteBetweenAddressesTool;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RouteBetweenInput {
+    from: String,
+    to: String,
+    #[serde(default)]
+    profile: Option<String>,
+}
+
+#[async_trait]
+impl Tool for RouteBetweenAddressesTool {
+    fn definition(&self) -> ToolDef {
+        ToolDef {
+            name: "route_between_addresses".into(),
+            description: "Get directions between two free-form places (cities, \
+                addresses, landmarks). Both endpoints get geocoded server-side. \
+                Returns distance, duration, and a GeoJSON LineString `geometry` \
+                for the actual path. After the tool call, emit a `map` message \
+                part with a `route` object that includes {from, to, \
+                distance_meters, duration_seconds, geometry_geojson, \
+                destination_label}. MapCanvas will pan to the route bounds and \
+                draw the path.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "from": { "type": "string", "description": "'Oshodi Lagos', 'Times Square', or an address." },
+                    "to":   { "type": "string" },
+                    "profile": {
+                        "type": "string",
+                        "enum": ["driving-car", "cycling-regular", "foot-walking"]
+                    }
+                },
+                "required": ["from", "to"]
+            }),
+        }
+    }
+    async fn execute(&self, ctx: &ToolContext, input: Value) -> anyhow::Result<String> {
+        let p: RouteBetweenInput = serde_json::from_value(input)?;
+        let (from_lat, from_lng, from_label) = geocode(&ctx.http, &p.from).await?;
+        let (to_lat, to_lng, to_label) = geocode(&ctx.http, &p.to).await?;
+        let profile = p.profile.unwrap_or_else(|| "driving-car".to_string());
+        let route = fetch_directions(&ctx.http, from_lat, from_lng, to_lat, to_lng, &profile).await?;
+        Ok(json!({
+            "from": { "lat": from_lat, "lng": from_lng, "label": from_label.unwrap_or(p.from.clone()) },
+            "to":   { "lat": to_lat,   "lng": to_lng,   "label": to_label.clone().unwrap_or(p.to.clone()) },
+            "destination_label": to_label.unwrap_or(p.to.clone()),
+            "profile": profile,
+            "distance_meters": route.distance_meters,
+            "duration_seconds": route.duration_seconds,
+            "geometry_geojson": route.geometry,
+            "note": "Emit a `map` message part with `route` set to {from, to, distance_meters, duration_seconds, profile, destination_label, geometry_geojson}. The frontend will pan to fit and draw the path."
+        }).to_string())
+    }
+}
+
 // ─── HTTP helpers (call the cloud maps proxy) ─────────────────────
 
 async fn geocode(
@@ -343,6 +459,9 @@ async fn geocode(
 struct Route {
     distance_meters: f64,
     duration_seconds: f64,
+    /// v0.28.27 — GeoJSON LineString (from ORS /geojson endpoint) so
+    /// MapCanvas can draw the actual path, not just a straight line.
+    geometry: Option<Value>,
 }
 
 async fn fetch_directions(
@@ -376,8 +495,10 @@ async fn fetch_directions(
         .get("durationSeconds")
         .and_then(|v| v.as_f64())
         .ok_or_else(|| anyhow::anyhow!("directions: missing durationSeconds"))?;
+    let geometry = resp.get("geometry").cloned();
     Ok(Route {
         distance_meters: distance,
         duration_seconds: duration,
+        geometry,
     })
 }

@@ -141,10 +141,11 @@ export function WorkspaceV2() {
   const railOpacity = canvasMode === "map" || canvasMode === "voice" ? 0.35 : 1;
 
   return (
-    <div
-      className="relative h-full min-h-0 overflow-hidden"
-      onMouseDown={noteUserActivity}
-    >
+    // v0.28.27 — mouse events no longer dismiss the splash. Only
+    // keyboard input (typed characters) and mic arm/voice engagement
+    // signal that the user has actually started interacting. Mouse
+    // moves / clicks on the empty canvas leave the splash intact.
+    <div className="relative h-full min-h-0 overflow-hidden">
       {/* Base canvas backdrop — ambient depth behind everything */}
       <CanvasBackdrop />
 

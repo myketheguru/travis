@@ -72,6 +72,11 @@ impl PackHandle for EverydayPack {
         registry.register(Box::new(tools::RouteToPlaceTool));
         registry.register(Box::new(tools::ListSavedPlacesTool));
         registry.register(Box::new(tools::AddNoteTool));
+        // v0.28.27 — general-purpose map tools that don't require a
+        // pre-saved place. Fix the "map of Lagos → distance between
+        // Oshodi and Ikoyi → returns Lagos again" flow.
+        registry.register(Box::new(tools::ShowPlaceTool));
+        registry.register(Box::new(tools::RouteBetweenAddressesTool));
     }
 }
 
@@ -100,27 +105,27 @@ When the user brings up personal-life topics, lean on these tools\n\
 naturally. Don't gate them behind confirmation — save/note are\n\
 low-risk and better to just do it.\n\
 \n\
---- Map surface (v0.28.3) ---\n\
-When the user asks to SEE a place (\"show me a map of Lagos\", \n\
-\"where is Kyoto\", \"map: the Eiffel Tower\"), emit a `map` message \n\
-part with a `place` object — NOT a `route`. Include lat/lng so the \n\
-UI can render an actual map centered there. Shape:\n\
-  {\n\
-    \"kind\": \"map\",\n\
-    \"place\": {\n\
-      \"label\": \"Lagos, Nigeria\",\n\
-      \"lat\": 6.5244,\n\
-      \"lng\": 3.3792,\n\
-      \"descriptor\": \"Largest city in Nigeria + West Africa's economic hub\",\n\
-      \"region\": \"Lagos State\",\n\
-      \"country\": \"Nigeria\"\n\
-    },\n\
-    \"narration\": \"one short sentence for voice output\"\n\
-  }\n\
-For well-known places you already know the approximate lat/lng; use \n\
-those directly. For obscure addresses call `save_place` to geocode. \n\
-Only use `route` (with distance/duration) when the user actually \n\
-wants directions FROM somewhere TO somewhere.\n\
+--- Map surface (v0.28.27) ---\n\
+Always use tools to resolve coordinates. Never fabricate lat/lng.\n\
+\n\
+- Show a place (\"map of Lagos\", \"where is Kyoto\") -> call\n\
+  `show_place`. Then emit a `map` message part with the returned\n\
+  `place` object.\n\
+- Route between two places (\"distance from Oshodi to Ikoyi\",\n\
+  \"directions from Times Square to JFK\") -> call\n\
+  `route_between_addresses`. Then emit a `map` with `route` that\n\
+  includes `geometry_geojson` so the canvas draws the real path.\n\
+- If a map is already on-screen and the user asks a related\n\
+  follow-up (add a stop, show a nearby place, compute a distance),\n\
+  respond with an UPDATED `map` part — do not treat it as a fresh\n\
+  card. The canvas animates in place.\n\
+\n\
+Shapes:\n\
+  { \"kind\": \"map\", \"place\": { \"label\": \"…\", \"lat\": N, \"lng\": N, \"descriptor\"?: \"…\", \"region\"?: \"…\", \"country\"?: \"…\" }, \"narration\": \"…\" }\n\
+  { \"kind\": \"map\", \"route\": { \"from\": {lat,lng,label?}, \"to\": {lat,lng,label?}, \"distance_meters\": N, \"duration_seconds\": N, \"profile\": \"driving-car\", \"destination_label\": \"…\", \"geometry_geojson\": {…} }, \"narration\": \"…\" }\n\
+\n\
+Only use `route_to_place` (the saved-places variant) when the user\n\
+explicitly asked to route TO a place they told you to save.\n\
 \n\
 --- Ambient listening (v0.28.4) ---\n\
 The user has a canvas toggle for AMBIENT LISTENING that captures\n\
