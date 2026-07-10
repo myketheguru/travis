@@ -328,3 +328,24 @@ pub async fn voice_utterance_for_message(
         })
     }))
 }
+
+/// v0.28.26 — synthesize speech via bundled Piper. Returns
+/// base64-encoded WAV bytes so the frontend can decode + play through
+/// an <audio> element without touching Tauri's asset protocol. Errors
+/// are surfaced as-is; the frontend swaps to speechSynthesis on any
+/// failure without user-visible drama.
+#[tauri::command]
+pub async fn piper_speak(app: AppHandle, text: String) -> Result<String, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    match super::piper::synthesize(&app, &text).await {
+        Ok(bytes) => Ok(STANDARD.encode(bytes)),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// v0.28.26 — cheap capability probe so the frontend knows whether
+/// to bother calling `piper_speak` at all.
+#[tauri::command]
+pub fn piper_available(app: AppHandle) -> bool {
+    super::piper::is_available(&app)
+}

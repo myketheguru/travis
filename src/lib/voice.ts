@@ -92,17 +92,137 @@ export function setSpeechAmplitudeSink(fn: ((amp: number) => void) | null) {
   onSpeechAmplitude = fn;
 }
 
+/** v0.28.26 — play a base64-encoded WAV returned by piper_speak.
+ *  Uses Web Audio to run an AnalyserNode-driven envelope so the
+ *  spheroid reacts to the *actual* Piper waveform instead of the
+ *  synthesized word-boundary pulses we do for speechSynthesis. */
+async function playPiperWav(b64: string): Promise<void> {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const blob = new Blob([bytes], { type: "audio/wav" });
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  audio.volume = 0.95;
+  currentPiperAudio = audio;
+
+  // Web Audio graph for amplitude reactivity. AudioContext is scoped
+  // to this utterance so it closes on end/error and doesn't leak.
+  const AC = (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext);
+  let ctx: AudioContext | null = null;
+  let analyser: AnalyserNode | null = null;
+  let rafId: number | null = null;
+  try {
+    ctx = new AC();
+    const src = ctx.createMediaElementSource(audio);
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    src.connect(analyser);
+    analyser.connect(ctx.destination);
+    const buf = new Uint8Array(analyser.frequencyBinCount);
+    const tick = () => {
+      if (!analyser) return;
+      analyser.getByteTimeDomainData(buf);
+      // Compute RMS as amplitude proxy, normalized ~[0,1].
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) {
+        const v = (buf[i] - 128) / 128;
+        sum += v * v;
+      }
+      const rms = Math.sqrt(sum / buf.length);
+      onSpeechAmplitude?.(Math.min(1, rms * 3.2));
+      rafId = window.requestAnimationFrame(tick);
+    };
+    tick();
+  } catch (e) {
+    console.warn("[voice] piper analyser init failed:", e);
+  }
+
+  return new Promise<void>((resolve) => {
+    const cleanup = () => {
+      if (rafId != null) window.cancelAnimationFrame(rafId);
+      onSpeechAmplitude?.(0);
+      if (ctx) {
+        try { ctx.close(); } catch { /* ignore */ }
+      }
+      URL.revokeObjectURL(url);
+      if (currentPiperAudio === audio) currentPiperAudio = null;
+      resolve();
+    };
+    audio.onended = cleanup;
+    audio.onerror = cleanup;
+    void audio.play().catch((e) => {
+      console.warn("[voice] audio.play failed:", e);
+      cleanup();
+    });
+  });
+}
+
+/** v0.28.26 — Piper capability memo. First `speak` call probes the
+ *  Rust side to see if the bundled Piper binary + voice model are
+ *  present. Subsequent calls skip the probe. Null means unknown yet;
+ *  false means confirmed unavailable (permanently fall back to OS
+ *  speechSynthesis this session). */
+let piperAvailability: boolean | null = null;
+
+async function ensurePiperProbed(): Promise<boolean> {
+  if (piperAvailability !== null) return piperAvailability;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    piperAvailability = Boolean(await invoke<boolean>("piper_available"));
+  } catch {
+    piperAvailability = false;
+  }
+  return piperAvailability;
+}
+
+/** v0.28.26 — playback state. We hold the active audio element so
+ *  a new `speak` can cancel it (mirrors speechSynthesis.cancel()). */
+let currentPiperAudio: HTMLAudioElement | null = null;
+
+function cancelPiperPlayback() {
+  if (currentPiperAudio) {
+    try {
+      currentPiperAudio.pause();
+      currentPiperAudio.src = "";
+    } catch {
+      /* ignore */
+    }
+    currentPiperAudio = null;
+  }
+}
+
 /** Speak `text` with the current preferences. Cancels any in-flight
  *  utterance. Returns a promise that resolves when speech finishes
  *  (or immediately if voice is disabled). */
 export async function speak(text: string): Promise<void> {
-  if (typeof speechSynthesis === "undefined") return;
   const state = readVoiceState();
-  if (!state.enabled) return;
-  speechSynthesis.cancel();
+  // v0.28.25 gating happens in ChatTurn; if we reach here TTS is on.
+  // But keep the belt-and-suspenders check for direct callers.
+  if (typeof speechSynthesis === "undefined" && !(await ensurePiperProbed()))
+    return;
+  if (!state.enabled && piperAvailability === false) return;
+  cancelPiperPlayback();
+  if (typeof speechSynthesis !== "undefined") speechSynthesis.cancel();
 
   const trimmed = text.trim();
   if (!trimmed) return;
+
+  // v0.28.26 — try Piper first for a consistent Travis voice everywhere.
+  // Fall back silently to the OS speechSynthesis if it isn't available
+  // (dev build without predev, unsupported host from fetch-piper.mjs,
+  // or a subprocess failure at runtime).
+  if (await ensurePiperProbed()) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const b64 = await invoke<string>("piper_speak", { text: trimmed });
+      await playPiperWav(b64);
+      return;
+    } catch (err) {
+      console.warn("[voice] piper_speak failed, falling back to speechSynthesis:", err);
+      piperAvailability = false; // don't keep retrying this session
+    }
+  }
 
   const voices = await listVoices();
   const preferred = state.preferredVoiceUri

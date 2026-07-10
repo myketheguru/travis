@@ -26,6 +26,11 @@
 pub mod capture;
 pub mod cmd;
 pub mod whisper_cache;
+/// v0.28.26 — Piper TTS subprocess wrapper. Turns text into WAV
+/// bytes we hand back to the frontend for playback. Bundled binary +
+/// voice model live under `resources/piper/`; runtime falls back to
+/// speechSynthesis if either is missing.
+pub mod piper;
 
 /// Target sample rate for whisper (16kHz). Exposed so the WAV writer
 /// in cmd.rs uses the same value the capture pipeline decimates to.
