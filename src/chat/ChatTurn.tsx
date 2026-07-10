@@ -8,6 +8,8 @@ import { RichResponseRenderer } from "./cards/RichResponseRenderer";
 import { parseRichResponse } from "../lib/richResponse";
 import { ThinkingSection } from "./ThinkingSection";
 import { FileCard } from "./FileCard";
+import { useAppStore } from "../stores/app";
+import { readVoiceState } from "../lib/voice";
 
 interface Props {
   message: ConversationMessage;
@@ -84,7 +86,26 @@ export function ChatTurn({
         .trim();
     }
     if (!spoken) return;
-    void import("../lib/voice").then((mod) => mod.speak(spoken));
+    // v0.28.25 — modality match. Speak only when the user's last turn
+    // came in via voice (speakNextResponse) OR the Settings toggle is
+    // on (accessibility override for users who want everything read
+    // aloud). Typed turns stay silent by default. Consume the flag so
+    // the next typed turn doesn't inherit voice mode.
+    const speakNext = useAppStore.getState().speakNextResponse;
+    const alwaysSpeak = readVoiceState().enabled;
+    if (!speakNext && !alwaysSpeak) return;
+    if (speakNext) useAppStore.getState().setSpeakNextResponse(false);
+    void import("../lib/voice").then((mod) =>
+      mod.speak(spoken).then(() => {
+        // v0.28.25 — after Travis finishes speaking a voice-initiated
+        // exchange, ask the mic to auto-re-arm briefly for the user's
+        // next turn. useNativeVoice listens for this and opens a ~6s
+        // window; if silent, the floor closes.
+        if (speakNext) {
+          window.dispatchEvent(new CustomEvent("travis:auto-arm-mic"));
+        }
+      }),
+    );
   }, [isAssistant, message.content]);
 
   // Extract structured fields from payload_json if present

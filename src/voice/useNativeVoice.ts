@@ -114,6 +114,10 @@ export function useNativeVoice({ enabled }: Options) {
                   transcript: trimmed,
                 });
               }
+              // v0.28.25 — modality-matched TTS. Mark this turn as spoken
+              // so ChatTurn narrates the assistant reply. Text turns
+              // leave it false, keeping typed exchanges silent.
+              useAppStore.getState().setSpeakNextResponse(true);
               setPendingComposerSubmit(trimmed);
               intentArmedRef.current = false;
               try {
@@ -219,6 +223,43 @@ export function useNativeVoice({ enabled }: Options) {
     window.addEventListener("travis:arm-voice", onArm);
     window.addEventListener("travis:disarm-voice", onDisarm);
 
+    // v0.28.25 — auto re-arm after Travis speaks a voice-initiated
+    // reply. ChatTurn dispatches `travis:auto-arm-mic` when the TTS
+    // promise resolves; we open a ~6 second window. If the user says
+    // anything, useNativeVoice's normal listening path picks it up as
+    // the next turn (with speakNextResponse=true). If silent, we
+    // disarm quietly. Guard: never override an already-armed state.
+    let autoArmTimeoutId: number | null = null;
+    const onAutoArm = () => {
+      if (intentArmedRef.current) return;
+      if (finalizingRef.current) return;
+      playCue("wake");
+      intentArmedRef.current = true;
+      setActivity("listening");
+      // Mark the next captured utterance as voice-modality so the
+      // conversation stays voice-first without the user re-saying
+      // "hey travis" every turn.
+      useAppStore.getState().setSpeakNextResponse(true);
+      void nativeVoice.setArmed(true).catch(() => {});
+      if (autoArmTimeoutId != null) window.clearTimeout(autoArmTimeoutId);
+      autoArmTimeoutId = window.setTimeout(() => {
+        // Only auto-disarm if we're still armed AND still listening
+        // (not mid-finalize). If user spoke, activity moved to
+        // "thinking" and this branch skips.
+        if (
+          intentArmedRef.current &&
+          useAppStore.getState().activity === "listening"
+        ) {
+          intentArmedRef.current = false;
+          useAppStore.getState().setSpeakNextResponse(false);
+          void nativeVoice.setArmed(false).catch(() => {});
+          setActivity("idle");
+        }
+        autoArmTimeoutId = null;
+      }, 6000);
+    };
+    window.addEventListener("travis:auto-arm-mic", onAutoArm);
+
     // Ambient listening: when the user has flipped ambient mode on,
     // we ALSO tell Rust to accumulate every VAD-bounded utterance so
     // we can grab transcripts even without an explicit arm. The
@@ -237,6 +278,8 @@ export function useNativeVoice({ enabled }: Options) {
       cancelled = true;
       window.removeEventListener("travis:arm-voice", onArm);
       window.removeEventListener("travis:disarm-voice", onDisarm);
+      window.removeEventListener("travis:auto-arm-mic", onAutoArm);
+      if (autoArmTimeoutId != null) window.clearTimeout(autoArmTimeoutId);
       unlisteners.forEach((u) => u());
       void nativeVoice.stop().catch(() => {});
       setSpeechAmplitude(0);

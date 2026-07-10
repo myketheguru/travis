@@ -114,6 +114,29 @@ type AppState = {
   /// so the audio_path can be linked to the newly-inserted user
   /// message via voice_utterance_link.
   pendingVoiceAudio: { audioPath: string; durationMs: number; transcript: string } | null;
+  /// v0.28.25 — modality-matched TTS. Voice submit paths set this
+  /// true; text submit sets false. ChatTurn reads it before speaking
+  /// the assistant response so typed turns stay silent. The Settings
+  /// voice-output toggle remains as an accessibility override.
+  speakNextResponse: boolean;
+  setSpeakNextResponse: (v: boolean) => void;
+  /// v0.28.25 — chat submit in flight. Decoupled from `activity`
+  /// (which many sources touch — voice pipeline, tick loops) so the
+  /// thinking indicator + composer disable can't flash while a
+  /// concurrent voice event flips activity. AskTab is the only writer.
+  chatBusy: boolean;
+  setChatBusy: (v: boolean) => void;
+  /// v0.28.25 — v2 doc-attach mirror. AskTab is the source of truth
+  /// for attachedDocs; Composer reads this to render the chip strip
+  /// + paperclip badge without dragging AskTab into view.
+  attachedDocsMirror: {
+    id: number | null;      // null while ingest is in flight
+    tempId: string | null;  // set when pending, used to remove
+    name: string;
+    kind: string;
+    pending: boolean;
+  }[];
+  setAttachedDocsMirror: (v: AppState["attachedDocsMirror"]) => void;
   setPendingVoiceAudio: (
     v: { audioPath: string; durationMs: number; transcript: string } | null,
   ) => void;
@@ -288,6 +311,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   setVoiceTranscribing: (v) => set({ voiceTranscribing: v }),
   pendingVoiceAudio: null,
   setPendingVoiceAudio: (v) => set({ pendingVoiceAudio: v }),
+  speakNextResponse: false,
+  setSpeakNextResponse: (v) => set({ speakNextResponse: v }),
+  chatBusy: false,
+  setChatBusy: (v) => set({ chatBusy: v }),
+  attachedDocsMirror: [],
+  setAttachedDocsMirror: (v) => set({ attachedDocsMirror: v }),
   status: null,
   profile: null,
   showDiagnostics: readDiag(),

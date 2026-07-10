@@ -30,6 +30,7 @@ interface RenderMessage {
 
 export function ChatCanvas() {
   const activity = useAppStore((s) => s.activity);
+  const chatBusy = useAppStore((s) => s.chatBusy);
   const voiceTranscribing = useAppStore((s) => s.voiceTranscribing);
   const pendingComposerSubmit = useAppStore((s) => s.pendingComposerSubmit);
   const { allMessages } = useFocalContent();
@@ -62,7 +63,9 @@ export function ChatCanvas() {
         optimistic: true,
       });
     }
-    if (activity === "thinking") {
+    // v0.28.25 — key off chatBusy too so the pending bubble doesn't
+    // vanish mid-submit when the voice pipeline flips activity.
+    if (chatBusy || activity === "thinking") {
       base.push({
         id: "__pending_assistant__",
         role: "assistant",
@@ -71,7 +74,7 @@ export function ChatCanvas() {
       });
     }
     return base;
-  }, [allMessages, optimistic, activity, voiceTranscribing]);
+  }, [allMessages, optimistic, activity, chatBusy, voiceTranscribing]);
 
   useEffect(() => {
     const el = scrollRef.current;

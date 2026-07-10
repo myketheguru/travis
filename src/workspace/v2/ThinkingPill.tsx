@@ -17,12 +17,15 @@ import { useAppStore } from "../../stores/app";
 
 export function ThinkingPill() {
   const activity = useAppStore((s) => s.activity);
+  const chatBusy = useAppStore((s) => s.chatBusy);
 
-  // v0.28.12 — also show during voice mode. Previously hidden because
-  // the spheroid was the visual, but the spheroid doesn't say WHAT
-  // Travis is doing. Now the pill overlays the top even in voice mode
-  // so the user knows Travis heard them + is working on it.
-  const visible = activity === "thinking";
+  // v0.28.25 — key off chatBusy in addition to activity==="thinking".
+  // Previously, when the user submitted from the in-map composer, a
+  // concurrent voice-pipeline finally() would flip activity to "idle"
+  // and this pill would flash then disappear. chatBusy is only
+  // touched by AskTab's submit path and holds through the full
+  // round-trip.
+  const visible = chatBusy || activity === "thinking";
 
   return (
     <AnimatePresence>

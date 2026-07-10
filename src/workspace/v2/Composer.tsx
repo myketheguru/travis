@@ -39,6 +39,9 @@ export function Composer() {
   function handleSubmit(overrideText?: string) {
     const trimmed = (overrideText ?? text).trim();
     if (!trimmed) return;
+    // v0.28.25 — typed turns explicitly opt out of TTS. Voice paths
+    // flip this on before their own setPendingComposerSubmit.
+    useAppStore.getState().setSpeakNextResponse(false);
     setPendingComposerSubmit(trimmed);
     setText("");
     noteUserActivity();
@@ -51,12 +54,18 @@ export function Composer() {
     }
   }
 
+  const chatBusy = useAppStore((s) => s.chatBusy);
   const placeholder = placeholderFor(canvasMode, focusedThread, activity);
-  const isPending = activity === "thinking";
+  // v0.28.25 — decouple from `activity` alone. Voice pipeline touches
+  // activity throughout its lifecycle; using chatBusy as the primary
+  // gate keeps the composer disabled through the full LLM round-trip
+  // and stops the double-submit race the user hit while in map view.
+  const isPending = chatBusy || activity === "thinking";
 
   return (
     <div className="absolute bottom-0 left-0 right-0 z-30 pointer-events-none px-4 pb-4">
       <div className="max-w-3xl mx-auto pointer-events-auto">
+        <AttachedDocsStrip />
         <motion.div
           layout
           animate={{
@@ -76,6 +85,7 @@ export function Composer() {
           }}
         >
           <VoiceArmButton disabled={isPending} />
+          <AttachButton disabled={isPending} />
           {/* v0.27.5 — live level meter appears while the mic is
               armed. Gives an at-a-glance answer to 'is my mic
               actually picking anything up?' before we transcribe. */}
@@ -166,6 +176,108 @@ function SubmitButton({
         </svg>
       )}
     </motion.button>
+  );
+}
+
+/// v0.28.25 — paperclip button. Dispatches `travis:pick-and-attach`;
+/// AskTab (invisibly mounted) opens the file picker and ingests.
+function AttachButton({ disabled }: { disabled: boolean }) {
+  return (
+    <button
+      onClick={() => {
+        window.dispatchEvent(new CustomEvent("travis:pick-and-attach"));
+      }}
+      disabled={disabled}
+      className="shrink-0 w-9 h-9 rounded-xl flex items-center justify-center transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+      style={{
+        background: "rgba(255, 255, 255, 0.04)",
+        border: "1px solid rgba(255, 255, 255, 0.10)",
+        color: "rgba(236, 236, 241, 0.7)",
+      }}
+      aria-label="Attach a file"
+      title="Attach a file"
+    >
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66L9.41 17.42a2 2 0 0 1-2.83-2.83l8.49-8.49" />
+      </svg>
+    </button>
+  );
+}
+
+/// v0.28.25 — chip strip that mirrors AskTab's attachedDocs from the
+/// store. Each chip has a small X that dispatches `travis:remove-attach`.
+function AttachedDocsStrip() {
+  const docs = useAppStore((s) => s.attachedDocsMirror);
+  if (docs.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5 mb-2 pl-1">
+      {docs.map((d, i) => {
+        const key = d.id != null ? `d-${d.id}` : `p-${d.tempId ?? i}`;
+        return (
+          <div
+            key={key}
+            className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11.5px]"
+            style={{
+              background: d.pending
+                ? "rgba(255, 210, 130, 0.10)"
+                : "rgba(189, 158, 255, 0.10)",
+              border: `1px solid ${
+                d.pending ? "rgba(255, 210, 130, 0.35)" : "rgba(189, 158, 255, 0.35)"
+              }`,
+              color: "rgba(236, 236, 241, 0.85)",
+              maxWidth: 220,
+            }}
+          >
+            {d.pending && (
+              <span
+                className="w-1.5 h-1.5 rounded-full"
+                style={{
+                  background: "rgba(255, 210, 130, 0.9)",
+                  boxShadow: "0 0 6px rgba(255, 210, 130, 0.7)",
+                }}
+                aria-label="ingesting"
+              />
+            )}
+            <span className="truncate">{d.name}</span>
+            <button
+              onClick={() => {
+                window.dispatchEvent(
+                  new CustomEvent("travis:remove-attach", {
+                    detail: { id: d.id ?? undefined, tempId: d.tempId ?? undefined },
+                  }),
+                );
+              }}
+              className="shrink-0 opacity-60 hover:opacity-100"
+              aria-label={`Remove ${d.name}`}
+              title="Remove"
+            >
+              <svg
+                width="10"
+                height="10"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                aria-hidden
+              >
+                <path d="M6 6l12 12M18 6L6 18" />
+              </svg>
+            </button>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

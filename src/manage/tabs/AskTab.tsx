@@ -184,6 +184,30 @@ export default function AskTab() {
   const [attachedDocs, setAttachedDocs] = useState<Attachment[]>([]);
   const [expandedDocs, setExpandedDocs] = useState<Set<number>>(new Set());
   const [dropHovering, setDropHovering] = useState(false);
+  // v0.28.25 — mirror attachedDocs to the app store so the v2 Composer
+  // (rendered off the AskTab subtree) can render chips + a paperclip
+  // badge without lifting all this into global state.
+  useEffect(() => {
+    const mirror = attachedDocs.map((a) => {
+      if (isPending(a)) {
+        return {
+          id: null,
+          tempId: a.tempId,
+          name: a.filename,
+          kind: "pending",
+          pending: true,
+        };
+      }
+      return {
+        id: a.id,
+        tempId: null,
+        name: a.displayName,
+        kind: a.kind,
+        pending: false,
+      };
+    });
+    useAppStore.getState().setAttachedDocsMirror(mirror);
+  }, [attachedDocs]);
   const [pendingDelete, setPendingDelete] = useState<number | null>(null);
   const setActivity = useAppStore((s) => s.setActivity);
   const pulse = useAppStore((s) => s.pulse);
@@ -442,6 +466,7 @@ export default function AskTab() {
     if (!text && ingested.length === 0) return;
     if (busy) return;
     setBusy(true);
+    useAppStore.getState().setChatBusy(true);
     setError(null);
     setActivity("thinking");
 
@@ -529,6 +554,7 @@ export default function AskTab() {
     } finally {
       setActivity("idle");
       setBusy(false);
+      useAppStore.getState().setChatBusy(false);
     }
   };
 
@@ -645,6 +671,31 @@ export default function AskTab() {
       }
     };
   }, [ingestFile]);
+
+  // v0.28.25 — v2 Composer bridge. Paperclip → dispatch
+  // `travis:pick-and-attach`; chip X → `travis:remove-attach` with id
+  // or tempId. Reuses handlePickFile + local setAttachedDocs.
+  useEffect(() => {
+    const onPick = () => { void handlePickFile(); };
+    const onRemove = (e: Event) => {
+      const detail = (e as CustomEvent).detail as
+        | { id?: number; tempId?: string }
+        | undefined;
+      if (!detail) return;
+      setAttachedDocs((prev) =>
+        prev.filter((a) => {
+          if (isPending(a)) return a.tempId !== detail.tempId;
+          return a.id !== detail.id;
+        }),
+      );
+    };
+    window.addEventListener("travis:pick-and-attach", onPick as EventListener);
+    window.addEventListener("travis:remove-attach", onRemove as EventListener);
+    return () => {
+      window.removeEventListener("travis:pick-and-attach", onPick as EventListener);
+      window.removeEventListener("travis:remove-attach", onRemove as EventListener);
+    };
+  }, [handlePickFile]);
 
   // Keep submitRef pointing at the current submit closure so the
   // ambient-command listener (registered once above) can call it with
