@@ -252,7 +252,14 @@ function InteractiveMap({
   // render, so this effect used to re-fire continuously and stack
   // route-layer removes/adds against a not-yet-ready map. Use a
   // stable geometry signature instead.
-  const geometrySig = JSON.stringify(mapPart.route?.geometry_geojson ?? null);
+  // v0.28.35 — sig covers both the ORS geometry AND the endpoint
+  // coords so the straight-line fallback triggers a re-render when a
+  // new route arrives without geometry.
+  const geometrySig = JSON.stringify({
+    geo: mapPart.route?.geometry_geojson ?? null,
+    from: mapPart.route?.from ? [mapPart.route.from.lat, mapPart.route.from.lng] : null,
+    to: mapPart.route?.to ? [mapPart.route.to.lat, mapPart.route.to.lng] : null,
+  });
   useEffect(() => {
     if (!mapRef.current) return;
     const m = mapRef.current;
@@ -382,7 +389,34 @@ function InteractiveMap({
 /// path in place instead of stacking. Also fits the camera to the
 /// route bounds so both endpoints land in view.
 function addRouteLayer(map: MapLibreMap, mapPart: MapPart) {
-  const geo = mapPart.route?.geometry_geojson;
+  // v0.28.35 — diagnostic + straight-line fallback. Real geometry is
+  // preferred (a proper ORS LineString following roads) but when the
+  // LLM omits geometry_geojson from the emitted map part — which we
+  // observed on live runs even though the tool returns it — we fall
+  // back to a straight LineString between the endpoints so the user
+  // always sees a line, not just two disconnected dots.
+  let geo: unknown = mapPart.route?.geometry_geojson;
+  console.debug("[map] addRouteLayer:", {
+    hasRoute: !!mapPart.route,
+    hasFrom: !!mapPart.route?.from,
+    hasTo: !!mapPart.route?.to,
+    hasGeometry: !!geo,
+    geometryType: (geo as { type?: string })?.type,
+  });
+  if (!geo && mapPart.route?.from && mapPart.route?.to) {
+    const f = mapPart.route.from;
+    const t = mapPart.route.to;
+    if (typeof f.lng === "number" && typeof f.lat === "number" && typeof t.lng === "number" && typeof t.lat === "number") {
+      geo = {
+        type: "LineString",
+        coordinates: [
+          [f.lng, f.lat],
+          [t.lng, t.lat],
+        ],
+      };
+      console.debug("[map] using straight-line fallback (no geometry_geojson in map part)");
+    }
+  }
   const SRC = "travis-route";
   const LYR = "travis-route-line";
   const GLOW = "travis-route-glow";
