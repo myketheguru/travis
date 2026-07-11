@@ -42,6 +42,7 @@ mod identity_cmd;
 mod journal;
 mod llm;
 mod manager;
+mod maps;
 mod memory;
 mod memory_cmd;
 mod discovery;
@@ -1017,6 +1018,7 @@ pub fn run() {
             voice::cmd::voice_utterance_for_message,
             voice::cmd::piper_speak,
             voice::cmd::piper_available,
+            maps::fetch_route_geometry,
             ambient::cmd::ambient_transcript_save,
             ambient::cmd::ambient_transcript_recent,
             steps::cmd::list_steps,

@@ -10,7 +10,7 @@
  * Info card overlay: translucent slate-violet (lighter than v0.28.5)
  * with brand purple accents. Custom marker with pulse.
  */
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import maplibregl, { type Map as MapLibreMap } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -54,6 +54,12 @@ function InteractiveMap({
   const mapRef = useRef<MapLibreMap | null>(null);
   const markersRef = useRef<maplibregl.Marker[]>([]);
   const setMapExpanded = useAppStore((s) => s.setMapExpanded);
+  // v0.28.36 — real-path fetch. When we have endpoints but no
+  // geometry from the LLM, hit the cloud maps proxy for the actual
+  // road-following LineString. Straight line renders instantly as a
+  // fallback while this resolves; the fetched geometry then upgrades
+  // the layer in place (like Google Maps loading the path).
+  const [fetchedGeometry, setFetchedGeometry] = useState<unknown | null>(null);
 
   // v0.28.31 — decide markers to place based on part shape. For a
   // pure place, one marker in the middle. For a route, two markers
@@ -254,19 +260,56 @@ function InteractiveMap({
   // stable geometry signature instead.
   // v0.28.35 — sig covers both the ORS geometry AND the endpoint
   // coords so the straight-line fallback triggers a re-render when a
-  // new route arrives without geometry.
+  // new route arrives without geometry. v0.28.36 also folds in
+  // fetchedGeometry so the upgrade path re-runs addRouteLayer.
   const geometrySig = JSON.stringify({
     geo: mapPart.route?.geometry_geojson ?? null,
     from: mapPart.route?.from ? [mapPart.route.from.lat, mapPart.route.from.lng] : null,
     to: mapPart.route?.to ? [mapPart.route.to.lat, mapPart.route.to.lng] : null,
+    fetched: fetchedGeometry ?? null,
   });
+
+  // v0.28.36 — fetch real road-following path in the background when
+  // the LLM didn't include one. On endpoint change we clear any
+  // previous fetched geometry so the straight-line renders first,
+  // then the real path swaps in when the invoke resolves.
+  const routeFromLat = mapPart.route?.from?.lat;
+  const routeFromLng = mapPart.route?.from?.lng;
+  const routeToLat = mapPart.route?.to?.lat;
+  const routeToLng = mapPart.route?.to?.lng;
+  const llmGeometryPresent = !!mapPart.route?.geometry_geojson;
+  const routeProfile = mapPart.route?.profile;
+  useEffect(() => {
+    if (llmGeometryPresent) return;
+    if (routeFromLat == null || routeFromLng == null || routeToLat == null || routeToLng == null) return;
+    let cancelled = false;
+    setFetchedGeometry(null); // clear stale on new endpoints
+    void (async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const result = await invoke<{ geometry: unknown }>("fetch_route_geometry", {
+          fromLat: routeFromLat,
+          fromLng: routeFromLng,
+          toLat: routeToLat,
+          toLng: routeToLng,
+          profile: routeProfile ?? "driving-car",
+        });
+        if (!cancelled && result?.geometry) {
+          setFetchedGeometry(result.geometry);
+        }
+      } catch (e) {
+        console.debug("[map] fetch_route_geometry failed, keeping straight-line fallback:", e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [routeFromLat, routeFromLng, routeToLat, routeToLng, llmGeometryPresent, routeProfile]);
   useEffect(() => {
     if (!mapRef.current) return;
     const m = mapRef.current;
     if (m.isStyleLoaded()) {
-      addRouteLayer(m, mapPart);
+      addRouteLayer(m, mapPart, fetchedGeometry);
     } else {
-      m.once("load", () => addRouteLayer(m, mapPart));
+      m.once("load", () => addRouteLayer(m, mapPart, fetchedGeometry));
     }
     // Depend on the stable signature only — mapPart itself is a fresh
     // object every render. mapPart is closed over via the ref-based
@@ -388,19 +431,17 @@ function InteractiveMap({
 /// previous source/layer first so a follow-up map update morphs the
 /// path in place instead of stacking. Also fits the camera to the
 /// route bounds so both endpoints land in view.
-function addRouteLayer(map: MapLibreMap, mapPart: MapPart) {
-  // v0.28.35 — diagnostic + straight-line fallback. Real geometry is
-  // preferred (a proper ORS LineString following roads) but when the
-  // LLM omits geometry_geojson from the emitted map part — which we
-  // observed on live runs even though the tool returns it — we fall
-  // back to a straight LineString between the endpoints so the user
-  // always sees a line, not just two disconnected dots.
-  let geo: unknown = mapPart.route?.geometry_geojson;
+function addRouteLayer(map: MapLibreMap, mapPart: MapPart, fetchedGeometry?: unknown | null) {
+  // v0.28.36 — three-tier geometry source:
+  //   1. LLM-supplied geometry_geojson (preferred, arrives with the reply)
+  //   2. Client-fetched geometry from /maps/directions (real road-follow)
+  //   3. Straight-line LineString between endpoints (instant, less pretty)
+  let geo: unknown = mapPart.route?.geometry_geojson ?? fetchedGeometry ?? null;
   console.debug("[map] addRouteLayer:", {
     hasRoute: !!mapPart.route,
     hasFrom: !!mapPart.route?.from,
     hasTo: !!mapPart.route?.to,
-    hasGeometry: !!geo,
+    source: mapPart.route?.geometry_geojson ? "llm" : fetchedGeometry ? "cloud-fetch" : geo ? "cache" : "none",
     geometryType: (geo as { type?: string })?.type,
   });
   if (!geo && mapPart.route?.from && mapPart.route?.to) {
