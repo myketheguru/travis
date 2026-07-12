@@ -141,9 +141,14 @@ Shapes:\n\
       \"distance_meters\": N,\n\
       \"duration_seconds\": N,\n\
       \"profile\": \"driving-car\",\n\
-      \"destination_label\": \"…\",\n\
-      \"geometry_geojson\": {…}\n\
+      \"destination_label\": \"…\"\n\
     }, \"narration\": \"…\" }\n\
+\n\
+CRITICAL: never include a `geometry_geojson` field on the route.\n\
+The client fetches the real road-following path on its own; if you\n\
+include one, the line will render as a straight cross-country cut\n\
+because your copied geometry is inevitably truncated. Leave it out\n\
+entirely and the client draws the actual roads.\n\
 \n\
 For routes: ALWAYS populate `from.label` and `to.label` so the map\n\
 shows the endpoint names next to the markers. Copy them from the\n\

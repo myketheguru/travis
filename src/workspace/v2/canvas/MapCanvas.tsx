@@ -60,6 +60,11 @@ function InteractiveMap({
   // fallback while this resolves; the fetched geometry then upgrades
   // the layer in place (like Google Maps loading the path).
   const [fetchedGeometry, setFetchedGeometry] = useState<unknown | null>(null);
+  // v0.28.42 — surface which geometry source is actively drawn so
+  // users (and I) can see at a glance whether the road-follow made
+  // it. Green = real ORS, yellow = LLM-supplied, red = straight
+  // fallback, gray = fetching.
+  const [pathSource, setPathSource] = useState<"cloud" | "llm" | "straight" | "loading" | "none">("none");
 
   // v0.28.31 — decide markers to place based on part shape. For a
   // pure place, one marker in the middle. For a route, two markers
@@ -307,9 +312,13 @@ function InteractiveMap({
   // and addRouteLayer picks whichever geometry actually has more
   // than 2 vertices.
   useEffect(() => {
-    if (routeFromLat == null || routeFromLng == null || routeToLat == null || routeToLng == null) return;
+    if (routeFromLat == null || routeFromLng == null || routeToLat == null || routeToLng == null) {
+      setPathSource("none");
+      return;
+    }
     let cancelled = false;
     setFetchedGeometry(null); // clear stale on new endpoints
+    setPathSource("loading");
     void (async () => {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
@@ -320,11 +329,16 @@ function InteractiveMap({
           toLng: routeToLng,
           profile: routeProfile ?? "driving-car",
         });
-        if (!cancelled && result?.geometry) {
+        if (cancelled) return;
+        if (result?.geometry) {
           setFetchedGeometry(result.geometry);
+        } else {
+          console.warn("[map] fetch_route_geometry returned no geometry");
         }
       } catch (e) {
-        console.debug("[map] fetch_route_geometry failed, keeping straight-line fallback:", e);
+        // v0.28.42 — warn instead of debug so failures land in
+        // production console + surface on the badge.
+        console.warn("[map] fetch_route_geometry failed:", e);
       }
     })();
     return () => { cancelled = true; };
@@ -333,12 +347,14 @@ function InteractiveMap({
     if (!mapRef.current) return;
     const m = mapRef.current;
     if (m.isStyleLoaded()) {
-      addRouteLayer(m, mapPart, fetchedGeometry);
+      const src = addRouteLayer(m, mapPart, fetchedGeometry);
+      if (src !== "none") setPathSource(src);
       applyMapOverlays(m, mapPart.overlays);
       maybeFlyAlong(m, mapPart, fetchedGeometry);
     } else {
       m.once("load", () => {
-        addRouteLayer(m, mapPart, fetchedGeometry);
+        const src = addRouteLayer(m, mapPart, fetchedGeometry);
+        if (src !== "none") setPathSource(src);
         applyMapOverlays(m, mapPart.overlays);
         maybeFlyAlong(m, mapPart, fetchedGeometry);
       });
@@ -407,10 +423,11 @@ function InteractiveMap({
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
             <div
-              className="text-[10px] uppercase tracking-[0.22em] font-mono mb-1"
+              className="text-[10px] uppercase tracking-[0.22em] font-mono mb-1 flex items-center gap-2"
               style={{ color: "rgba(189, 158, 255, 0.90)" }}
             >
-              // {mapPart.route ? "route" : "place"}
+              <span>// {mapPart.route ? "route" : "place"}</span>
+              {mapPart.route && <PathSourceBadge source={pathSource} />}
             </div>
             <div
               className="text-[17px] font-medium leading-tight truncate"
@@ -471,7 +488,11 @@ function InteractiveMap({
 /// previous source/layer first so a follow-up map update morphs the
 /// path in place instead of stacking. Also fits the camera to the
 /// route bounds so both endpoints land in view.
-function addRouteLayer(map: MapLibreMap, mapPart: MapPart, fetchedGeometry?: unknown | null) {
+function addRouteLayer(
+  map: MapLibreMap,
+  mapPart: MapPart,
+  fetchedGeometry?: unknown | null,
+): "cloud" | "llm" | "straight" | "none" {
   // v0.28.41 — pick whichever geometry has the MOST vertices. LLM
   // frequently invents a 2-point straight line for geometry_geojson;
   // when the client fetched a real ORS path (usually 30-200 pts),
@@ -486,10 +507,10 @@ function addRouteLayer(map: MapLibreMap, mapPart: MapPart, fetchedGeometry?: unk
   const llmCoords = llmGeo?.coordinates?.length ?? 0;
   const cloudCoords = cloudGeo?.coordinates?.length ?? 0;
   let geo: unknown = null;
-  let source: "llm" | "cloud-fetch" | "straight" | "none" = "none";
+  let source: "cloud" | "llm" | "straight" | "none" = "none";
   if (cloudCoords >= 3 && cloudCoords >= llmCoords) {
     geo = cloudGeo;
-    source = "cloud-fetch";
+    source = "cloud";
   } else if (llmCoords >= 3) {
     geo = llmGeo;
     source = "llm";
@@ -513,7 +534,8 @@ function addRouteLayer(map: MapLibreMap, mapPart: MapPart, fetchedGeometry?: unk
           [t.lng, t.lat],
         ],
       };
-      console.debug("[map] using straight-line fallback (no geometry_geojson in map part)");
+      source = "straight";
+      console.warn("[map] using straight-line fallback (no geometry available yet)");
     }
   }
   const SRC = "travis-route";
@@ -526,7 +548,7 @@ function addRouteLayer(map: MapLibreMap, mapPart: MapPart, fetchedGeometry?: unk
   } catch {
     /* ignore */
   }
-  if (!geo || typeof geo !== "object") return;
+  if (!geo || typeof geo !== "object") return source;
   try {
     map.addSource(SRC, {
       type: "geojson",
@@ -596,6 +618,7 @@ function addRouteLayer(map: MapLibreMap, mapPart: MapPart, fetchedGeometry?: unk
   } catch (e) {
     console.warn("[map] route layer add failed:", e);
   }
+  return source;
 }
 
 /// v0.28.39 Stage 5 — hover callouts on 3D buildings.
@@ -1219,6 +1242,47 @@ function escapeHtml(s: string): string {
       default: return c;
     }
   });
+}
+
+/// v0.28.42 — visible pip on the info card so the user (and I) can
+/// see at a glance whether the line drawn is the real ORS road path,
+/// the LLM-supplied one, a straight fallback, or an in-flight fetch.
+function PathSourceBadge({ source }: { source: "cloud" | "llm" | "straight" | "loading" | "none" }) {
+  if (source === "none") return null;
+  const config = {
+    cloud:    { color: "rgb(140, 230, 175)", label: "real path" },
+    llm:      { color: "rgb(255, 210, 130)", label: "llm path"  },
+    straight: { color: "rgb(255, 155, 155)", label: "straight"  },
+    loading:  { color: "rgba(236, 236, 241, 0.65)", label: "fetching…" },
+  }[source];
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        padding: "1px 6px",
+        borderRadius: 4,
+        border: `1px solid ${config.color}80`,
+        background: `${config.color}22`,
+        color: config.color,
+        fontSize: 8.5,
+        letterSpacing: "0.14em",
+      }}
+      title={`Route geometry source: ${config.label}`}
+    >
+      <span
+        style={{
+          width: 5,
+          height: 5,
+          borderRadius: "50%",
+          background: config.color,
+          boxShadow: `0 0 6px ${config.color}`,
+        }}
+      />
+      {config.label}
+    </span>
+  );
 }
 
 function BrandMarkerStyles() {

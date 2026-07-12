@@ -416,6 +416,14 @@ impl Tool for RouteBetweenAddressesTool {
         let (to_lat, to_lng, to_label) = geocode(&ctx.http, &p.to).await?;
         let profile = p.profile.unwrap_or_else(|| "driving-car".to_string());
         let route = fetch_directions(&ctx.http, from_lat, from_lng, to_lat, to_lng, &profile).await?;
+        // v0.28.42 — DO NOT return the geometry to the LLM. LLMs
+        // consistently truncate the 100+ vertex LineString down to
+        // 2 points when copying it through the JSON envelope,
+        // producing a straight cross-country line. The desktop
+        // client fetches its own copy from /maps/directions via the
+        // fetch_route_geometry Tauri command; we tell the LLM here
+        // that the geometry is handled entirely on the client.
+        let _ = route.geometry; // consumed to silence dead-code lint
         Ok(json!({
             "from": { "lat": from_lat, "lng": from_lng, "label": from_label.unwrap_or(p.from.clone()) },
             "to":   { "lat": to_lat,   "lng": to_lng,   "label": to_label.clone().unwrap_or(p.to.clone()) },
@@ -423,8 +431,7 @@ impl Tool for RouteBetweenAddressesTool {
             "profile": profile,
             "distance_meters": route.distance_meters,
             "duration_seconds": route.duration_seconds,
-            "geometry_geojson": route.geometry,
-            "note": "Emit a `map` message part with `route` set to {from, to, distance_meters, duration_seconds, profile, destination_label, geometry_geojson}. The frontend will pan to fit and draw the path."
+            "note": "Emit a `map` message part with `route` set to {from, to, distance_meters, duration_seconds, profile, destination_label}. DO NOT include `geometry_geojson` — the client fetches the real road-following path on its own and drawing the real route depends on you leaving it out."
         }).to_string())
     }
 }
