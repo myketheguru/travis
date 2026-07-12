@@ -136,6 +136,11 @@ function InteractiveMap({
         // Fill color subtly gradients from bronze-lavender at ground
         // to lighter brand-purple at top so tall towers feel lit.
         if (map) addBuildingExtrusion(map);
+        // v0.28.37 Stage 3 — actual 3D terrain via AWS Open Data
+        // Terrarium DEM tiles. MapLibre uses the encoded elevation
+        // to displace tile vertices when pitch > 0. Combined with
+        // the existing pitch: 55, mountains actually rise.
+        if (map) addTerrain(map);
         // v0.28.27 — draw the route geometry as a glowing brand line
         // when the map part carries one. Called after style load so
         // the source + layer add cleanly.
@@ -486,7 +491,10 @@ function addRouteLayer(map: MapLibreMap, mapPart: MapPart, fetchedGeometry?: unk
         "line-blur": 6,
       },
     });
-    // Crisp inner line.
+    // Crisp inner line. v0.28.37 Stage 4a — progressive draw. Uses a
+    // long dash + gap that starts fully offset (line invisible), then
+    // shifts the dash pattern over 1.4s so the line "draws itself"
+    // from origin to destination. Ends with a solid line.
     map.addLayer({
       id: LYR,
       type: "line",
@@ -495,8 +503,13 @@ function addRouteLayer(map: MapLibreMap, mapPart: MapPart, fetchedGeometry?: unk
       paint: {
         "line-color": "rgb(220, 200, 255)",
         "line-width": 3.5,
+        // Big dash + big gap. Total pattern length = 30 units in
+        // line-widths. dashArray moves left→right via the animation
+        // loop below.
+        "line-dasharray": [0, 4, 3],
       },
     });
+    animateRouteDraw(map, LYR);
     // Fit bounds around the LineString coords.
     const coords = (geo as { coordinates?: number[][] }).coordinates ?? [];
     if (coords.length >= 2) {
@@ -529,6 +542,95 @@ function addRouteLayer(map: MapLibreMap, mapPart: MapPart, fetchedGeometry?: unk
     }
   } catch (e) {
     console.warn("[map] route layer add failed:", e);
+  }
+}
+
+/// v0.28.37 Stage 4a — progressive route draw.
+///
+/// Cycles a `line-dasharray` from an all-invisible pattern through to
+/// solid over ~1.4s. Uses requestAnimationFrame + eased-out timing so
+/// the line grows fast at first then settles, mirroring the way
+/// Google Maps' route reveal feels. Silently no-ops if the layer
+/// disappears mid-animation (route swap during a follow-up).
+function animateRouteDraw(map: MapLibreMap, layerId: string) {
+  const start = performance.now();
+  const duration = 1400;
+  const ease = (t: number) => 1 - Math.pow(1 - t, 3); // easeOutCubic
+  const tick = () => {
+    if (!map.getLayer(layerId)) return;
+    const now = performance.now();
+    const t = Math.min(1, (now - start) / duration);
+    const eased = ease(t);
+    // Interpolate a dash pattern: at t=0, huge gap (line invisible);
+    // at t=1, solid line. Values are in line-widths.
+    // dashArray of [dashLen, gapLen] — as gap shrinks the line fills.
+    const dashLen = 1;
+    const gapLen = Math.max(0.001, 60 * (1 - eased));
+    try {
+      map.setPaintProperty(layerId, "line-dasharray", [dashLen, gapLen]);
+    } catch {
+      return;
+    }
+    if (t < 1) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+/// v0.28.37 Stage 3 — 3D terrain.
+///
+/// Adds a raster-dem source (AWS Open Data Terrarium tiles at
+/// s3.amazonaws.com/elevation-tiles-prod, terrarium encoding) and
+/// enables MapLibre's setTerrain(). Also drops a hillshade layer for
+/// subtle shading. Combined with the pitch: 55 default, mountains,
+/// coastal cliffs, and river valleys all rise visibly.
+///
+/// Bail silently if the source add fails — we want the base map to
+/// keep working on flaky networks.
+function addTerrain(map: MapLibreMap) {
+  const SRC = "travis-dem";
+  try {
+    if (!map.getSource(SRC)) {
+      map.addSource(SRC, {
+        type: "raster-dem",
+        tiles: [
+          "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png",
+        ],
+        tileSize: 256,
+        encoding: "terrarium",
+        maxzoom: 15,
+        attribution: "Elevation: AWS Open Data",
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    }
+    // Vertical exaggeration 1.4 makes rolling terrain read as
+    // "there's actual topography here" without cartoon spikes.
+    map.setTerrain({ source: SRC, exaggeration: 1.4 });
+
+    const HL = "travis-hillshade";
+    if (!map.getLayer(HL)) {
+      // Insert BEFORE the first symbol layer so labels sit above.
+      let beforeId: string | undefined;
+      for (const layer of map.getStyle().layers ?? []) {
+        if (layer.type === "symbol") { beforeId = layer.id; break; }
+      }
+      map.addLayer(
+        {
+          id: HL,
+          source: SRC,
+          type: "hillshade",
+          paint: {
+            "hillshade-shadow-color": "rgb(0, 0, 20)",
+            "hillshade-highlight-color": "rgba(200, 180, 250, 0.35)",
+            "hillshade-accent-color": "rgba(120, 80, 180, 0.5)",
+            "hillshade-illumination-direction": 315,
+            "hillshade-exaggeration": 0.55,
+          },
+        },
+        beforeId,
+      );
+    }
+  } catch (e) {
+    console.warn("[map] terrain setup failed:", e);
   }
 }
 
@@ -623,6 +725,18 @@ function BrandMarkerStyles() {
           display: flex;
           align-items: center;
           justify-content: center;
+          /* v0.28.37 — endpoint markers drop in from above the target
+             with a slight bounce. Read as "landing on the map"
+             instead of just appearing. */
+          animation: travis-marker-drop 0.65s cubic-bezier(0.32, 1.4, 0.5, 1) both;
+        }
+        @keyframes travis-marker-drop {
+          0%   { transform: translateY(-40px) scale(0.4); opacity: 0; }
+          70%  { transform: translateY(4px)   scale(1.05); opacity: 1; }
+          100% { transform: translateY(0)     scale(1);    opacity: 1; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .travis-map-marker { animation: none; }
         }
         .travis-marker-dot {
           width: 14px;
