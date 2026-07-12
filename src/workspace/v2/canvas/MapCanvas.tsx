@@ -244,7 +244,10 @@ function InteractiveMap({
         <div class="travis-marker-dot"></div>
         ${m.label ? `<div class="travis-marker-label">${escapeHtml(m.label)}</div>` : ""}
       `;
-      const marker = new maplibregl.Marker({ element: markerEl })
+      // v0.28.41 — explicit "bottom" anchor so the dot sits on the
+      // actual coordinate; the label floats above via the CSS
+      // `bottom: calc(100% + 10px)` rule.
+      const marker = new maplibregl.Marker({ element: markerEl, anchor: "bottom" })
         .setLngLat([m.lng, m.lat])
         .addTo(map);
       markersRef.current.push(marker);
@@ -294,10 +297,16 @@ function InteractiveMap({
   const routeFromLng = mapPart.route?.from?.lng;
   const routeToLat = mapPart.route?.to?.lat;
   const routeToLng = mapPart.route?.to?.lng;
-  const llmGeometryPresent = !!mapPart.route?.geometry_geojson;
   const routeProfile = mapPart.route?.profile;
+  // v0.28.41 — always fetch the real ORS geometry when we have
+  // endpoints, regardless of whether the LLM emitted a
+  // geometry_geojson. On live runs the LLM often invents a 2-point
+  // LineString between the endpoints (giving a straight line across
+  // rivers, buildings, etc.). We now treat any LLM-emitted geometry
+  // as a placeholder — the client fetches the road-following path
+  // and addRouteLayer picks whichever geometry actually has more
+  // than 2 vertices.
   useEffect(() => {
-    if (llmGeometryPresent) return;
     if (routeFromLat == null || routeFromLng == null || routeToLat == null || routeToLng == null) return;
     let cancelled = false;
     setFetchedGeometry(null); // clear stale on new endpoints
@@ -319,7 +328,7 @@ function InteractiveMap({
       }
     })();
     return () => { cancelled = true; };
-  }, [routeFromLat, routeFromLng, routeToLat, routeToLng, llmGeometryPresent, routeProfile]);
+  }, [routeFromLat, routeFromLng, routeToLat, routeToLng, routeProfile]);
   useEffect(() => {
     if (!mapRef.current) return;
     const m = mapRef.current;
@@ -463,17 +472,35 @@ function InteractiveMap({
 /// path in place instead of stacking. Also fits the camera to the
 /// route bounds so both endpoints land in view.
 function addRouteLayer(map: MapLibreMap, mapPart: MapPart, fetchedGeometry?: unknown | null) {
-  // v0.28.36 — three-tier geometry source:
-  //   1. LLM-supplied geometry_geojson (preferred, arrives with the reply)
-  //   2. Client-fetched geometry from /maps/directions (real road-follow)
-  //   3. Straight-line LineString between endpoints (instant, less pretty)
-  let geo: unknown = mapPart.route?.geometry_geojson ?? fetchedGeometry ?? null;
+  // v0.28.41 — pick whichever geometry has the MOST vertices. LLM
+  // frequently invents a 2-point straight line for geometry_geojson;
+  // when the client fetched a real ORS path (usually 30-200 pts),
+  // prefer that. Otherwise fall through to the straight-line
+  // fallback so the user still sees a connection.
+  const llmGeo = mapPart.route?.geometry_geojson as
+    | { type?: string; coordinates?: number[][] }
+    | undefined;
+  const cloudGeo = fetchedGeometry as
+    | { type?: string; coordinates?: number[][] }
+    | undefined;
+  const llmCoords = llmGeo?.coordinates?.length ?? 0;
+  const cloudCoords = cloudGeo?.coordinates?.length ?? 0;
+  let geo: unknown = null;
+  let source: "llm" | "cloud-fetch" | "straight" | "none" = "none";
+  if (cloudCoords >= 3 && cloudCoords >= llmCoords) {
+    geo = cloudGeo;
+    source = "cloud-fetch";
+  } else if (llmCoords >= 3) {
+    geo = llmGeo;
+    source = "llm";
+  }
   console.debug("[map] addRouteLayer:", {
     hasRoute: !!mapPart.route,
     hasFrom: !!mapPart.route?.from,
     hasTo: !!mapPart.route?.to,
-    source: mapPart.route?.geometry_geojson ? "llm" : fetchedGeometry ? "cloud-fetch" : geo ? "cache" : "none",
-    geometryType: (geo as { type?: string })?.type,
+    llmCoords,
+    cloudCoords,
+    source,
   });
   if (!geo && mapPart.route?.from && mapPart.route?.to) {
     const f = mapPart.route.from;
@@ -1200,8 +1227,8 @@ function BrandMarkerStyles() {
       {`
         .travis-map-marker {
           position: relative;
-          width: 26px;
-          height: 26px;
+          width: 32px;
+          height: 32px;
           display: flex;
           align-items: center;
           justify-content: center;
@@ -1209,24 +1236,30 @@ function BrandMarkerStyles() {
              with a slight bounce. Read as "landing on the map"
              instead of just appearing. */
           animation: travis-marker-drop 0.65s cubic-bezier(0.32, 1.4, 0.5, 1) both;
+          /* v0.28.41 — MapLibre draws markers as absolutely-positioned
+             DOM overlays. Force them above other transient overlays and
+             ensure they can't get "buried" behind sibling wrappers. */
+          z-index: 5;
+          pointer-events: auto;
         }
         @keyframes travis-marker-drop {
           0%   { transform: translateY(-40px) scale(0.4); opacity: 0; }
-          70%  { transform: translateY(4px)   scale(1.05); opacity: 1; }
+          70%  { transform: translateY(4px)   scale(1.15); opacity: 1; }
           100% { transform: translateY(0)     scale(1);    opacity: 1; }
         }
         @media (prefers-reduced-motion: reduce) {
-          .travis-map-marker { animation: none; }
+          .travis-map-marker { animation: none; opacity: 1 !important; }
         }
         .travis-marker-dot {
-          width: 14px;
-          height: 14px;
+          width: 18px;
+          height: 18px;
           border-radius: 50%;
-          background: radial-gradient(circle at 30% 30%, rgb(220, 200, 255), rgb(160, 120, 240));
-          border: 2px solid rgba(255, 255, 255, 0.85);
+          background: radial-gradient(circle at 30% 30%, rgb(230, 215, 255), rgb(160, 120, 240));
+          border: 2.5px solid rgba(255, 255, 255, 0.95);
           box-shadow:
-            0 0 0 1px rgba(189, 158, 255, 0.35),
-            0 0 20px 4px rgba(189, 158, 255, 0.55);
+            0 0 0 1.5px rgba(189, 158, 255, 0.45),
+            0 0 26px 6px rgba(189, 158, 255, 0.72),
+            0 2px 8px 0 rgba(0, 0, 0, 0.55);
           position: relative;
           z-index: 2;
         }
