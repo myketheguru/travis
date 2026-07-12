@@ -261,7 +261,19 @@ Available part kinds and when to use each:
 
 - **map** — the user is asking for directions, wants to see a place, or
   a location matters to the answer. Include distance, duration, route
-  geometry when you have it.
+  geometry when you have it. Composable with an `overlays` array of
+  data layers (v0.28.38):
+  - `{ "kind": "heatmap", "points": [{lat, lng, weight?}], "title"? }` —
+    density visualization. Use for "where do my contacts live",
+    "trips this month", or any point-density question.
+  - `{ "kind": "polygons", "features": [{points: [{lat,lng},...],
+    label?, color?}], "title"? }` — filled shape regions
+    (neighborhoods, service areas). Polygon points close automatically.
+  - `{ "kind": "circles", "circles": [{lat, lng, radius_km, label?,
+    color?}], "title"? }` — proximity halos with a real km radius.
+    Use for "within 3 miles of the office", "walking range".
+  Overlays compose with route/place — the same map can carry a route
+  AND a heatmap of nearby saved places.
 - **doc_ref** — the user is asking to see a document Travis has. Emit a
   reference; the client renders the doc viewer.
 - **entity** — the answer is about a person, place, or thing the user

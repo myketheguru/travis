@@ -16,7 +16,7 @@ import maplibregl, { type Map as MapLibreMap } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
 import { useFocalContent } from "../useFocalContent";
-import { parseRichResponse, type MapPart } from "../../../lib/richResponse";
+import { parseRichResponse, type MapPart, type MapOverlay } from "../../../lib/richResponse";
 import { useAppStore } from "../../../stores/app";
 import { ChatCanvas } from "./ChatCanvas";
 
@@ -145,6 +145,10 @@ function InteractiveMap({
         // when the map part carries one. Called after style load so
         // the source + layer add cleanly.
         if (map) addRouteLayer(map, mapPart);
+        // v0.28.38 Stage 2 — data overlays (heatmap / polygons /
+        // circles). Composable with routes; layers drop in above the
+        // basemap but below symbol labels.
+        if (map) applyMapOverlays(map, mapPart.overlays);
         map?.resize();
       });
       // v0.28.33 — one-shot fallback. The previous handler swapped the
@@ -267,11 +271,14 @@ function InteractiveMap({
   // coords so the straight-line fallback triggers a re-render when a
   // new route arrives without geometry. v0.28.36 also folds in
   // fetchedGeometry so the upgrade path re-runs addRouteLayer.
+  // v0.28.38 — also covers overlays so heatmap/polygon/circle
+  // changes re-run the layer sync.
   const geometrySig = JSON.stringify({
     geo: mapPart.route?.geometry_geojson ?? null,
     from: mapPart.route?.from ? [mapPart.route.from.lat, mapPart.route.from.lng] : null,
     to: mapPart.route?.to ? [mapPart.route.to.lat, mapPart.route.to.lng] : null,
     fetched: fetchedGeometry ?? null,
+    overlays: mapPart.overlays ?? null,
   });
 
   // v0.28.36 — fetch real road-following path in the background when
@@ -313,8 +320,12 @@ function InteractiveMap({
     const m = mapRef.current;
     if (m.isStyleLoaded()) {
       addRouteLayer(m, mapPart, fetchedGeometry);
+      applyMapOverlays(m, mapPart.overlays);
     } else {
-      m.once("load", () => addRouteLayer(m, mapPart, fetchedGeometry));
+      m.once("load", () => {
+        addRouteLayer(m, mapPart, fetchedGeometry);
+        applyMapOverlays(m, mapPart.overlays);
+      });
     }
     // Depend on the stable signature only — mapPart itself is a fresh
     // object every render. mapPart is closed over via the ref-based
@@ -543,6 +554,200 @@ function addRouteLayer(map: MapLibreMap, mapPart: MapPart, fetchedGeometry?: unk
   } catch (e) {
     console.warn("[map] route layer add failed:", e);
   }
+}
+
+/// v0.28.38 Stage 2 — apply data overlays on the map.
+///
+/// Idempotent: removes any prior travis-overlay-* layers/sources
+/// before adding new ones so follow-up turns replace the previous
+/// overlay set rather than stacking. Overlays are keyed by index —
+/// order in the array determines draw order (later = on top).
+function applyMapOverlays(map: MapLibreMap, overlays?: MapOverlay[]) {
+  const layers = map.getStyle().layers ?? [];
+  const sources = Object.keys(map.getStyle().sources ?? {});
+  for (const layer of layers) {
+    if (layer.id.startsWith("travis-overlay-")) {
+      try { map.removeLayer(layer.id); } catch { /* ignore */ }
+    }
+  }
+  for (const sid of sources) {
+    if (sid.startsWith("travis-overlay-")) {
+      try { map.removeSource(sid); } catch { /* ignore */ }
+    }
+  }
+  if (!overlays || overlays.length === 0) return;
+
+  // Insert overlays BELOW the first symbol layer so map labels stay
+  // legible on top of them.
+  let beforeId: string | undefined;
+  for (const layer of layers) {
+    if (layer.type === "symbol") { beforeId = layer.id; break; }
+  }
+
+  overlays.forEach((ov, i) => {
+    try {
+      if (ov.kind === "heatmap") applyHeatmap(map, ov, i, beforeId);
+      else if (ov.kind === "polygons") applyPolygons(map, ov, i, beforeId);
+      else if (ov.kind === "circles") applyCircles(map, ov, i, beforeId);
+    } catch (e) {
+      console.warn(`[map] overlay ${i} (${ov.kind}) add failed:`, e);
+    }
+  });
+}
+
+function applyHeatmap(
+  map: MapLibreMap,
+  ov: Extract<MapOverlay, { kind: "heatmap" }>,
+  i: number,
+  beforeId?: string,
+) {
+  const SRC = `travis-overlay-heatmap-${i}`;
+  const LYR = `travis-overlay-heatmap-${i}-layer`;
+  const features = ov.points.map((p) => ({
+    type: "Feature" as const,
+    geometry: { type: "Point" as const, coordinates: [p.lng, p.lat] },
+    properties: { weight: typeof p.weight === "number" ? p.weight : 1 },
+  }));
+  map.addSource(SRC, {
+    type: "geojson",
+    data: { type: "FeatureCollection", features },
+  });
+  map.addLayer(
+    {
+      id: LYR,
+      type: "heatmap",
+      source: SRC,
+      paint: {
+        "heatmap-weight": ["get", "weight"],
+        "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 0, 0.4, 15, 3],
+        "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 0, 8, 15, 55],
+        "heatmap-opacity": 0.75,
+        "heatmap-color": [
+          "interpolate", ["linear"], ["heatmap-density"],
+          0,   "rgba(38, 30, 62, 0)",
+          0.2, "rgba(78, 58, 122, 0.55)",
+          0.4, "rgba(126, 90, 190, 0.7)",
+          0.6, "rgba(189, 158, 255, 0.82)",
+          0.8, "rgba(240, 200, 255, 0.9)",
+          1,   "rgba(255, 230, 255, 0.95)",
+        ],
+      },
+    },
+    beforeId,
+  );
+}
+
+function applyPolygons(
+  map: MapLibreMap,
+  ov: Extract<MapOverlay, { kind: "polygons" }>,
+  i: number,
+  beforeId?: string,
+) {
+  const SRC = `travis-overlay-poly-${i}`;
+  const FILL = `travis-overlay-poly-${i}-fill`;
+  const OUTLINE = `travis-overlay-poly-${i}-outline`;
+  const features = ov.features
+    .filter((f) => f.points.length >= 3)
+    .map((f, idx) => ({
+      type: "Feature" as const,
+      geometry: {
+        type: "Polygon" as const,
+        coordinates: [
+          [...f.points.map((p) => [p.lng, p.lat] as [number, number]), [f.points[0].lng, f.points[0].lat] as [number, number]],
+        ],
+      },
+      properties: {
+        color: f.color ?? "rgba(189, 158, 255, 0.25)",
+        outline: f.color ?? "rgba(220, 210, 255, 0.75)",
+        label: f.label ?? `region-${idx}`,
+      },
+    }));
+  map.addSource(SRC, { type: "geojson", data: { type: "FeatureCollection", features } });
+  map.addLayer(
+    {
+      id: FILL,
+      type: "fill",
+      source: SRC,
+      paint: {
+        "fill-color": ["get", "color"],
+        "fill-outline-color": "rgba(220, 210, 255, 0.7)",
+      },
+    },
+    beforeId,
+  );
+  map.addLayer(
+    {
+      id: OUTLINE,
+      type: "line",
+      source: SRC,
+      paint: {
+        "line-color": ["get", "outline"],
+        "line-width": 1.5,
+      },
+    },
+    beforeId,
+  );
+}
+
+function applyCircles(
+  map: MapLibreMap,
+  ov: Extract<MapOverlay, { kind: "circles" }>,
+  i: number,
+  beforeId?: string,
+) {
+  const SRC = `travis-overlay-circle-${i}`;
+  const FILL = `travis-overlay-circle-${i}-fill`;
+  const OUTLINE = `travis-overlay-circle-${i}-outline`;
+  const features = ov.circles.map((c, idx) => ({
+    type: "Feature" as const,
+    geometry: geodesicCirclePolygon(c.lat, c.lng, c.radius_km),
+    properties: {
+      color: c.color ?? "rgba(189, 158, 255, 0.18)",
+      outline: c.color ?? "rgba(220, 200, 255, 0.75)",
+      label: c.label ?? `circle-${idx}`,
+    },
+  }));
+  map.addSource(SRC, { type: "geojson", data: { type: "FeatureCollection", features } });
+  map.addLayer(
+    {
+      id: FILL,
+      type: "fill",
+      source: SRC,
+      paint: {
+        "fill-color": ["get", "color"],
+      },
+    },
+    beforeId,
+  );
+  map.addLayer(
+    {
+      id: OUTLINE,
+      type: "line",
+      source: SRC,
+      paint: {
+        "line-color": ["get", "outline"],
+        "line-width": 1.5,
+        "line-dasharray": [2, 2],
+      },
+    },
+    beforeId,
+  );
+}
+
+/// Approximate a geodesic circle (constant km radius from a lat/lng
+/// center) as a 64-vertex Polygon. Accurate enough for on-screen
+/// overlay purposes; a Turf-based version would be more precise for
+/// tiny radii near the poles.
+function geodesicCirclePolygon(lat: number, lng: number, radiusKm: number, steps = 64): { type: "Polygon"; coordinates: number[][][] } {
+  const coords: number[][] = [];
+  const R = 6371; // Earth radius km
+  const dLat = (radiusKm / R) * (180 / Math.PI);
+  const dLng = dLat / Math.cos((lat * Math.PI) / 180);
+  for (let i = 0; i <= steps; i++) {
+    const t = (i / steps) * Math.PI * 2;
+    coords.push([lng + dLng * Math.cos(t), lat + dLat * Math.sin(t)]);
+  }
+  return { type: "Polygon", coordinates: [coords] };
 }
 
 /// v0.28.37 Stage 4a — progressive route draw.

@@ -73,6 +73,53 @@ export interface MapPart extends BasePart {
   /// the LLM emits `route`. Both are valid map surfaces.
   route?: MapRoute;
   place?: MapPlace;
+  /// v0.28.38 Stage 2 — data overlays. Composable with route/place.
+  /// Travis emits these to visualize density, regions, or ranges on
+  /// top of the base map — heatmaps of activity, polygon regions
+  /// with contextual coloring, proximity circles with a real radius.
+  overlays?: MapOverlay[];
+}
+
+export type MapOverlay =
+  | MapOverlayHeatmap
+  | MapOverlayPolygons
+  | MapOverlayCircles;
+
+/// Density visualization. Points can carry an optional weight so
+/// hot regions stay hot even at low zoom. Use for "where do my
+/// contacts live", "trips this month", "where did I have meetings".
+export interface MapOverlayHeatmap {
+  kind: "heatmap";
+  title?: string;
+  points: { lat: number; lng: number; weight?: number }[];
+}
+
+/// Filled polygon regions. Use for neighborhoods, districts, or
+/// arbitrary shapes ("service area", "voting district").
+export interface MapOverlayPolygons {
+  kind: "polygons";
+  title?: string;
+  features: {
+    points: { lat: number; lng: number }[];
+    label?: string;
+    /// CSS color. Defaults to Travis brand purple at 25% opacity.
+    color?: string;
+  }[];
+}
+
+/// Proximity halos with a real km radius. Renders as a geodesic
+/// circle polygon so 3 km looks like 3 km at every zoom. Use for
+/// "within 3 miles of the office", "delivery radius", "walking range".
+export interface MapOverlayCircles {
+  kind: "circles";
+  title?: string;
+  circles: {
+    lat: number;
+    lng: number;
+    radius_km: number;
+    label?: string;
+    color?: string;
+  }[];
 }
 
 export interface MapPlace {
