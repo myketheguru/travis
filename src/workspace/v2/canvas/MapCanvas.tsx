@@ -149,6 +149,10 @@ function InteractiveMap({
         // circles). Composable with routes; layers drop in above the
         // basemap but below symbol labels.
         if (map) applyMapOverlays(map, mapPart.overlays);
+        // v0.28.39 Stage 5 — hover callouts. When the cursor hovers a
+        // 3D building, the layer id changes to interactive and we can
+        // fetch OSM features under the pointer for a small tooltip.
+        if (map) wireBuildingHoverCallouts(map);
         map?.resize();
       });
       // v0.28.33 — one-shot fallback. The previous handler swapped the
@@ -365,6 +369,14 @@ function InteractiveMap({
           mixBlendMode: "screen",
         }}
       />
+      {/* v0.28.39 Stage 5 — scanline post-processing overlay. A
+          repeating horizontal gradient at low opacity gives the map
+          a subtle "screen" feel without obscuring detail. Blend
+          mode: overlay so light areas stay light and dark ones dark. */}
+      <div
+        className="absolute inset-0 pointer-events-none travis-map-scanlines"
+        aria-hidden
+      />
 
       <motion.div
         initial={{ opacity: 0, y: -8 }}
@@ -554,6 +566,75 @@ function addRouteLayer(map: MapLibreMap, mapPart: MapPart, fetchedGeometry?: unk
   } catch (e) {
     console.warn("[map] route layer add failed:", e);
   }
+}
+
+/// v0.28.39 Stage 5 — hover callouts on 3D buildings.
+///
+/// When the cursor enters a building extrusion, we cache the id and
+/// pull queryable properties (height, OSM name, kind) via
+/// map.queryRenderedFeatures. A single popup follows the cursor
+/// showing the tallest matching feature's info. Popup + listeners
+/// clean up when the map is torn down.
+function wireBuildingHoverCallouts(map: MapLibreMap) {
+  const LAYER = "travis-3d-buildings";
+  if (!map.getLayer(LAYER)) return;
+
+  const popup = new maplibregl.Popup({
+    closeButton: false,
+    closeOnClick: false,
+    className: "travis-map-popup",
+    maxWidth: "240px",
+    offset: 12,
+  });
+
+  const onMouseMove = (e: maplibregl.MapMouseEvent) => {
+    const features = map.queryRenderedFeatures(e.point, { layers: [LAYER] });
+    if (!features.length) {
+      popup.remove();
+      map.getCanvas().style.cursor = "";
+      return;
+    }
+    // Pick the tallest feature under the pointer (most likely what
+    // the user is aiming at).
+    let best = features[0];
+    for (const f of features) {
+      const h = (f.properties as { render_height?: number; height?: number }).render_height
+        ?? (f.properties as { render_height?: number; height?: number }).height
+        ?? 0;
+      const bestH = (best.properties as { render_height?: number; height?: number }).render_height
+        ?? (best.properties as { render_height?: number; height?: number }).height
+        ?? 0;
+      if (h > bestH) best = f;
+    }
+    const p = best.properties as {
+      render_height?: number;
+      height?: number;
+      name?: string;
+      class?: string;
+    };
+    const height = p.render_height ?? p.height;
+    const name = p.name ?? p.class ?? "building";
+    const heightHtml = typeof height === "number"
+      ? `<div class="travis-map-popup-meta">${Math.round(height)} m</div>`
+      : "";
+    popup
+      .setLngLat(e.lngLat)
+      .setHTML(
+        `<div class="travis-map-popup-inner">
+          <div class="travis-map-popup-kind">// structure</div>
+          <div class="travis-map-popup-name">${escapeHtml(name)}</div>
+          ${heightHtml}
+        </div>`,
+      )
+      .addTo(map);
+    map.getCanvas().style.cursor = "help";
+  };
+  const onMouseLeave = () => {
+    popup.remove();
+    map.getCanvas().style.cursor = "";
+  };
+  map.on("mousemove", LAYER, onMouseMove);
+  map.on("mouseleave", LAYER, onMouseLeave);
 }
 
 /// v0.28.38 Stage 2 — apply data overlays on the map.
@@ -1019,6 +1100,50 @@ function BrandMarkerStyles() {
         }
         @media (prefers-reduced-motion: reduce) {
           .travis-marker-pulse { animation: none; opacity: 0; }
+        }
+        /* v0.28.39 — scanlines. 3px band spacing keeps them visible
+           without banding hard. Blend + opacity keeps map legibility. */
+        .travis-map-scanlines {
+          background-image: repeating-linear-gradient(
+            to bottom,
+            rgba(189, 158, 255, 0.05) 0px,
+            rgba(189, 158, 255, 0.05) 1px,
+            transparent 1px,
+            transparent 3px
+          );
+          mix-blend-mode: overlay;
+          opacity: 0.55;
+        }
+        /* Hover callout popup. */
+        .travis-map-popup .maplibregl-popup-content {
+          background: rgba(14, 12, 20, 0.9);
+          border: 1px solid rgba(189, 158, 255, 0.4);
+          border-radius: 10px;
+          padding: 8px 10px;
+          box-shadow: 0 6px 20px -8px rgba(0, 0, 0, 0.65);
+          backdrop-filter: blur(8px);
+        }
+        .travis-map-popup .maplibregl-popup-tip {
+          border-top-color: rgba(189, 158, 255, 0.4) !important;
+        }
+        .travis-map-popup-kind {
+          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+          font-size: 9.5px;
+          letter-spacing: 0.22em;
+          text-transform: uppercase;
+          color: rgba(189, 158, 255, 0.85);
+          margin-bottom: 2px;
+        }
+        .travis-map-popup-name {
+          font-size: 13px;
+          color: rgba(240, 240, 246, 0.95);
+          letter-spacing: 0.005em;
+        }
+        .travis-map-popup-meta {
+          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+          font-size: 11px;
+          color: rgba(236, 236, 241, 0.7);
+          margin-top: 2px;
         }
       `}
     </style>
