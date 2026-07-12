@@ -283,6 +283,7 @@ function InteractiveMap({
     to: mapPart.route?.to ? [mapPart.route.to.lat, mapPart.route.to.lng] : null,
     fetched: fetchedGeometry ?? null,
     overlays: mapPart.overlays ?? null,
+    intent: mapPart.intent ?? null,
   });
 
   // v0.28.36 — fetch real road-following path in the background when
@@ -325,10 +326,12 @@ function InteractiveMap({
     if (m.isStyleLoaded()) {
       addRouteLayer(m, mapPart, fetchedGeometry);
       applyMapOverlays(m, mapPart.overlays);
+      maybeFlyAlong(m, mapPart, fetchedGeometry);
     } else {
       m.once("load", () => {
         addRouteLayer(m, mapPart, fetchedGeometry);
         applyMapOverlays(m, mapPart.overlays);
+        maybeFlyAlong(m, mapPart, fetchedGeometry);
       });
     }
     // Depend on the stable signature only — mapPart itself is a fresh
@@ -670,10 +673,100 @@ function applyMapOverlays(map: MapLibreMap, overlays?: MapOverlay[]) {
       if (ov.kind === "heatmap") applyHeatmap(map, ov, i, beforeId);
       else if (ov.kind === "polygons") applyPolygons(map, ov, i, beforeId);
       else if (ov.kind === "circles") applyCircles(map, ov, i, beforeId);
+      else if (ov.kind === "isochrone") void applyIsochrone(map, ov, i, beforeId);
     } catch (e) {
       console.warn(`[map] overlay ${i} (${ov.kind}) add failed:`, e);
     }
   });
+}
+
+/// v0.28.40 — isochrone overlay. Async because it hits the cloud
+/// /maps/reach endpoint (through the Rust fetch_isochrones command).
+/// Each minute cutoff becomes a nested polygon layer: larger cutoffs
+/// sit underneath so nested contours read cleanly. Colors gradient
+/// from bright violet (short reach) toward faded lavender (long reach).
+async function applyIsochrone(
+  map: MapLibreMap,
+  ov: Extract<MapOverlay, { kind: "isochrone" }>,
+  i: number,
+  beforeId?: string,
+) {
+  const SRC = `travis-overlay-isochrone-${i}`;
+  const FILL = `travis-overlay-isochrone-${i}-fill`;
+  const OUTLINE = `travis-overlay-isochrone-${i}-outline`;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const result = await invoke<{
+      profile: string;
+      features: { minutes: number; areaKm2: number; geometry: unknown }[];
+    }>("fetch_isochrones", {
+      centerLat: ov.center.lat,
+      centerLng: ov.center.lng,
+      minutes: ov.minutes,
+      profile: ov.profile ?? "driving-car",
+    });
+    // Sort descending so largest ring renders first (bottom), then
+    // smaller rings paint on top. Nested contours read at a glance.
+    const features = [...result.features].sort((a, b) => b.minutes - a.minutes);
+    if (features.length === 0) return;
+    if (map.getLayer(FILL)) map.removeLayer(FILL);
+    if (map.getLayer(OUTLINE)) map.removeLayer(OUTLINE);
+    if (map.getSource(SRC)) map.removeSource(SRC);
+
+    const maxMin = features[0].minutes || 1;
+    const feats = features.map((f) => ({
+      type: "Feature" as const,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      geometry: f.geometry as any,
+      properties: {
+        minutes: f.minutes,
+        // Small cutoff = darker/more saturated; large = paler.
+        color: colorForCutoff(f.minutes, maxMin),
+        outline: outlineForCutoff(f.minutes, maxMin),
+      },
+    }));
+    map.addSource(SRC, { type: "geojson", data: { type: "FeatureCollection", features: feats } });
+    map.addLayer(
+      {
+        id: FILL,
+        type: "fill",
+        source: SRC,
+        paint: {
+          "fill-color": ["get", "color"],
+          "fill-opacity": 0.55,
+        },
+      },
+      beforeId,
+    );
+    map.addLayer(
+      {
+        id: OUTLINE,
+        type: "line",
+        source: SRC,
+        paint: {
+          "line-color": ["get", "outline"],
+          "line-width": 1.5,
+        },
+      },
+      beforeId,
+    );
+  } catch (e) {
+    console.warn(`[map] isochrone overlay ${i} fetch/render failed:`, e);
+  }
+}
+
+function colorForCutoff(minutes: number, maxMin: number): string {
+  const t = Math.max(0, Math.min(1, minutes / maxMin));
+  // Bright violet at small cutoffs → soft lavender at large.
+  const hue = 268 - t * 6;
+  const sat = 80 - t * 25;
+  const light = 55 + t * 22;
+  const alpha = 0.25 + (1 - t) * 0.28;
+  return `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+}
+function outlineForCutoff(minutes: number, maxMin: number): string {
+  const t = Math.max(0, Math.min(1, minutes / maxMin));
+  return `hsla(${268 - t * 6}, ${90 - t * 15}%, ${70 + t * 15}%, 0.85)`;
 }
 
 function applyHeatmap(
@@ -829,6 +922,107 @@ function geodesicCirclePolygon(lat: number, lng: number, radiusKm: number, steps
     coords.push([lng + dLng * Math.cos(t), lat + dLat * Math.sin(t)]);
   }
   return { type: "Polygon", coordinates: [coords] };
+}
+
+/// v0.28.40 Stage 4b — fly-along camera. Animates the camera along
+/// the route geometry in a low-altitude following shot. Escape (or a
+/// new mapPart) cancels. Duration scales with route length: shorter
+/// hops feel snappy, longer routes get more air time.
+///
+/// Skips silently when there's no geometry or no intent. Bearing is
+/// updated per-segment so the camera "faces the direction of travel".
+let flyAlongAbort: (() => void) | null = null;
+
+function maybeFlyAlong(map: MapLibreMap, mapPart: MapPart, fetchedGeometry?: unknown | null) {
+  if (mapPart.intent !== "fly_along") return;
+  const geo = (mapPart.route?.geometry_geojson ?? fetchedGeometry) as
+    | { type?: string; coordinates?: number[][] }
+    | null
+    | undefined;
+  const coords = geo?.coordinates;
+  if (!coords || coords.length < 2) return;
+
+  // Cancel any prior in-flight tour first.
+  if (flyAlongAbort) { flyAlongAbort(); flyAlongAbort = null; }
+
+  const savedPitch = map.getPitch();
+  const savedBearing = map.getBearing();
+  const savedCenter = map.getCenter();
+  const savedZoom = map.getZoom();
+
+  const tourPitch = 68;
+  const tourZoom = 15.2;
+  // Duration scales: 5s min, 18s max, ~1s per 8 waypoints in between.
+  const durationMs = Math.max(5000, Math.min(18000, coords.length * 120));
+  const start = performance.now();
+  let cancelled = false;
+
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") stop(true);
+  };
+  const onClick = () => stop(true);
+  const onDrag = () => stop(true);
+  const stop = (restore: boolean) => {
+    if (cancelled) return;
+    cancelled = true;
+    window.removeEventListener("keydown", onKey);
+    map.off("click", onClick);
+    map.off("dragstart", onDrag);
+    if (restore) {
+      map.easeTo({
+        center: [savedCenter.lng, savedCenter.lat],
+        zoom: savedZoom,
+        pitch: savedPitch,
+        bearing: savedBearing,
+        duration: 900,
+        essential: true,
+      });
+    }
+    flyAlongAbort = null;
+  };
+  flyAlongAbort = () => stop(false);
+  window.addEventListener("keydown", onKey);
+  map.once("click", onClick);
+  map.once("dragstart", onDrag);
+
+  const bearingBetween = (a: number[], b: number[]): number => {
+    const [lng1, lat1] = a;
+    const [lng2, lat2] = b;
+    const φ1 = (lat1 * Math.PI) / 180;
+    const φ2 = (lat2 * Math.PI) / 180;
+    const λ1 = (lng1 * Math.PI) / 180;
+    const λ2 = (lng2 * Math.PI) / 180;
+    const y = Math.sin(λ2 - λ1) * Math.cos(φ2);
+    const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(λ2 - λ1);
+    const brng = (Math.atan2(y, x) * 180) / Math.PI;
+    return (brng + 360) % 360;
+  };
+
+  const tick = () => {
+    if (cancelled) return;
+    const now = performance.now();
+    const t = Math.min(1, (now - start) / durationMs);
+    // Ease in/out so the camera settles at both ends.
+    const eased = t < 0.5
+      ? 2 * t * t
+      : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    const idx = Math.min(coords.length - 2, Math.floor(eased * (coords.length - 1)));
+    const frac = (eased * (coords.length - 1)) - idx;
+    const a = coords[idx];
+    const b = coords[idx + 1];
+    const lng = a[0] + (b[0] - a[0]) * frac;
+    const lat = a[1] + (b[1] - a[1]) * frac;
+    const bearing = bearingBetween(a, b);
+    map.jumpTo({
+      center: [lng, lat],
+      zoom: tourZoom,
+      pitch: tourPitch,
+      bearing,
+    });
+    if (t < 1) requestAnimationFrame(tick);
+    else stop(true);
+  };
+  requestAnimationFrame(tick);
 }
 
 /// v0.28.37 Stage 4a — progressive route draw.

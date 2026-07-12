@@ -1019,6 +1019,7 @@ pub fn run() {
             voice::cmd::piper_speak,
             voice::cmd::piper_available,
             maps::fetch_route_geometry,
+            maps::fetch_isochrones,
             ambient::cmd::ambient_transcript_save,
             ambient::cmd::ambient_transcript_recent,
             steps::cmd::list_steps,

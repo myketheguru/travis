@@ -78,12 +78,18 @@ export interface MapPart extends BasePart {
   /// top of the base map — heatmaps of activity, polygon regions
   /// with contextual coloring, proximity circles with a real radius.
   overlays?: MapOverlay[];
+  /// v0.28.40 — cinematic intent. When set to "fly_along" AND the
+  /// map carries a route with geometry (or endpoints for a fetched
+  /// path), MapCanvas animates the camera along the route in a
+  /// following-close-to-the-ground shot. Escape / click cancels.
+  intent?: "fly_along";
 }
 
 export type MapOverlay =
   | MapOverlayHeatmap
   | MapOverlayPolygons
-  | MapOverlayCircles;
+  | MapOverlayCircles
+  | MapOverlayIsochrone;
 
 /// Density visualization. Points can carry an optional weight so
 /// hot regions stay hot even at low zoom. Use for "where do my
@@ -120,6 +126,19 @@ export interface MapOverlayCircles {
     label?: string;
     color?: string;
   }[];
+}
+
+/// Reachability isochrones — "how far can you get in N minutes."
+/// Client asks the cloud for real ORS polygons; renders as nested
+/// translucent brand-purple rings shaded by cutoff. Use for "walking
+/// distance from here", "15-min drive around the office".
+export interface MapOverlayIsochrone {
+  kind: "isochrone";
+  title?: string;
+  center: { lat: number; lng: number };
+  /// Ordered minute cutoffs. e.g. [5, 10, 15] renders three rings.
+  minutes: number[];
+  profile?: "driving-car" | "cycling-regular" | "foot-walking";
 }
 
 export interface MapPlace {

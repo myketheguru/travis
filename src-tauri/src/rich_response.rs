@@ -272,8 +272,17 @@ Available part kinds and when to use each:
   - `{ "kind": "circles", "circles": [{lat, lng, radius_km, label?,
     color?}], "title"? }` — proximity halos with a real km radius.
     Use for "within 3 miles of the office", "walking range".
+  - `{ "kind": "isochrone", "center": {lat, lng}, "minutes": [5, 10,
+    15], "profile"?: "driving-car" | "cycling-regular" |
+    "foot-walking", "title"? }` — reachability. Client fetches real
+    ORS isochrones and shades them as nested brand-purple rings.
+    Use for "how far can I get in 15 minutes driving from here",
+    "walking distance", "commute range".
   Overlays compose with route/place — the same map can carry a route
   AND a heatmap of nearby saved places.
+  Set `"intent": "fly_along"` on the map part to play a cinematic
+  camera flight along the route once it's drawn — use when the user
+  says "preview the drive", "take me through it", "fly along the route".
 - **doc_ref** — the user is asking to see a document Travis has. Emit a
   reference; the client renders the doc viewer.
 - **entity** — the answer is about a person, place, or thing the user
