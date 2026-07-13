@@ -1,5 +1,53 @@
 # Travis Changelog
 
+## v0.28.43 — Fix map marker displacement + surface path-fetch failure reason (2026-07-13)
+
+Two coordinated map fixes carried by the same screenshot: the endpoint
+markers were nowhere near their coordinates on a Lagos route, and the
+badge kept reading `STRAIGHT` with no explanation.
+
+### 1. Marker positioning (the "displaced markers" report)
+
+Markers were pinned to the map container's origin, not their
+geographic position. Root cause: `.travis-map-marker` carried the
+`travis-marker-drop` CSS animation with `animation-fill-mode: both`.
+MapLibre positions each marker by writing `element.style.transform =
+translate(x, y)` inline every frame, but a CSS animation's declared
+values override inline styles. When the drop-in animation ended, the
+100% keyframe (`transform: translateY(0) scale(1)`) stuck via
+`fill-mode: forwards`, and every subsequent MapLibre position update
+got clobbered. Result: after 0.65s all markers snapped to translate(0,
+0) of their offset parent, then hid behind the top-left overlay card.
+
+Fix: introduce a `.travis-marker-inner` wrapper and move the drop-in
+animation onto that. The marker root now has no `transform`
+declaration at all, so MapLibre's inline transform is the only writer.
+
+### 2. Badge no longer flashes STRAIGHT during a live fetch
+
+When a route rendered, the `geometrySig` effect ran on the same tick
+as the fetch effect and immediately committed the straight-line
+fallback source, overwriting `loading` before the cloud fetch could
+resolve. Users saw the badge jump straight to `STRAIGHT` even on
+runs where the fetch would ultimately succeed — actively misleading.
+
+Root cause was subtle: the sibling effect read its `isFetchingPath`
+guard from the pre-update render's closure, where the flag was still
+`false`. Fix uses a `useRef` (`isFetchingRef`) that's mutated
+synchronously in the fetch effect body, so the sibling effect sees
+the true in-flight state the same tick.
+
+### 3. Path-fetch failures surface their reason in the card
+
+When the fetch fails, the card now shows a small `path fetch: <reason>`
+line under the badge (e.g. `not signed in`, `cloud maps returned 502`,
+`no geometry in response`). No more silent STRAIGHT with no clue where
+the pipeline broke.
+
+Also directly commits `pathSource: "straight"` on fail/empty response
+(previously the badge could get stuck on `loading` forever, since
+`fetchedGeometry` staying null meant `geometrySig` never changed).
+
 ## v0.20.18 — Visual fidelity loop: sample-as-vision + verify_replication_match (2026-06-13)
 
 Three coordinated changes that close the "Claude.ai's invoice is 95%

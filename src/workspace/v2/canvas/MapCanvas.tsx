@@ -53,6 +53,11 @@ function InteractiveMap({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markersRef = useRef<maplibregl.Marker[]>([]);
+  // v0.28.43 — ref (not state) so it's visible synchronously in the
+  // sibling geometrySig effect the same tick the fetch starts. If we
+  // rely on `isFetchingPath` state, the sibling effect reads the
+  // previous render's `false` and prematurely commits "straight".
+  const isFetchingRef = useRef(false);
   const setMapExpanded = useAppStore((s) => s.setMapExpanded);
   // v0.28.36 — real-path fetch. When we have endpoints but no
   // geometry from the LLM, hit the cloud maps proxy for the actual
@@ -63,8 +68,11 @@ function InteractiveMap({
   // v0.28.42 — surface which geometry source is actively drawn so
   // users (and I) can see at a glance whether the road-follow made
   // it. Green = real ORS, yellow = LLM-supplied, red = straight
-  // fallback, gray = fetching.
+  // fallback, gray = fetching. v0.28.43 — separate a "fetch is in
+  // flight" flag from the source itself so the straight-line pass
+  // during load doesn't overwrite `loading` in the badge.
   const [pathSource, setPathSource] = useState<"cloud" | "llm" | "straight" | "loading" | "none">("none");
+  const [pathErrorReason, setPathErrorReason] = useState<string | null>(null);
 
   // v0.28.31 — decide markers to place based on part shape. For a
   // pure place, one marker in the middle. For a route, two markers
@@ -244,10 +252,21 @@ function InteractiveMap({
     for (const m of markerPlan) {
       const markerEl = document.createElement("div");
       markerEl.className = `travis-map-marker travis-marker-${m.kind}`;
+      // v0.28.43 — the drop-in animation MUST live on an inner
+      // element, not on markerEl itself. MapLibre positions markers
+      // by writing `element.style.transform = translate(x, y)` on
+      // every frame; a CSS `animation` with `fill-mode: both` on the
+      // same element overrides that inline transform (animations beat
+      // inline styles per the CSS cascade), pinning every marker at
+      // translate(0,0) of the map container after 0.65s — the "markers
+      // displaced" behavior. Keeping the outer element clean lets
+      // MapLibre's positioning stick.
       markerEl.innerHTML = `
-        <div class="travis-marker-pulse"></div>
-        <div class="travis-marker-dot"></div>
-        ${m.label ? `<div class="travis-marker-label">${escapeHtml(m.label)}</div>` : ""}
+        <div class="travis-marker-inner">
+          <div class="travis-marker-pulse"></div>
+          <div class="travis-marker-dot"></div>
+          ${m.label ? `<div class="travis-marker-label">${escapeHtml(m.label)}</div>` : ""}
+        </div>
       `;
       // v0.28.41 — explicit "bottom" anchor so the dot sits on the
       // actual coordinate; the label floats above via the CSS
@@ -314,11 +333,15 @@ function InteractiveMap({
   useEffect(() => {
     if (routeFromLat == null || routeFromLng == null || routeToLat == null || routeToLng == null) {
       setPathSource("none");
+      setPathErrorReason(null);
+      isFetchingRef.current = false;
       return;
     }
     let cancelled = false;
     setFetchedGeometry(null); // clear stale on new endpoints
     setPathSource("loading");
+    setPathErrorReason(null);
+    isFetchingRef.current = true;
     void (async () => {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
@@ -332,13 +355,28 @@ function InteractiveMap({
         if (cancelled) return;
         if (result?.geometry) {
           setFetchedGeometry(result.geometry);
+          // success — the geometrySig effect will commit "cloud"
+          // on its next run.
         } else {
           console.warn("[map] fetch_route_geometry returned no geometry");
+          setPathErrorReason("no geometry in response");
+          setPathSource("straight");
         }
       } catch (e) {
         // v0.28.42 — warn instead of debug so failures land in
         // production console + surface on the badge.
+        // v0.28.43 — also expose the reason on the badge so users
+        // can see WHY we fell back to the straight line without
+        // needing to open DevTools.
         console.warn("[map] fetch_route_geometry failed:", e);
+        if (!cancelled) {
+          setPathErrorReason(String(e).replace(/^Error:\s*/, "").slice(0, 80));
+          setPathSource("straight");
+        }
+      } finally {
+        if (!cancelled) {
+          isFetchingRef.current = false;
+        }
       }
     })();
     return () => { cancelled = true; };
@@ -346,15 +384,26 @@ function InteractiveMap({
   useEffect(() => {
     if (!mapRef.current) return;
     const m = mapRef.current;
+    // v0.28.43 — while a fetch is in flight, DON'T let a "straight"
+    // fallback overwrite "loading" in the badge. The straight line
+    // still gets drawn as a placeholder, but the badge continues to
+    // read "fetching…" until the invoke resolves. Read the ref (not
+    // state) because on the initial render the state hasn't
+    // propagated yet to this sibling effect's closure.
+    const commitSource = (src: "cloud" | "llm" | "straight" | "none") => {
+      if (src === "none") return;
+      if (src === "straight" && isFetchingRef.current) return;
+      setPathSource(src);
+    };
     if (m.isStyleLoaded()) {
       const src = addRouteLayer(m, mapPart, fetchedGeometry);
-      if (src !== "none") setPathSource(src);
+      commitSource(src);
       applyMapOverlays(m, mapPart.overlays);
       maybeFlyAlong(m, mapPart, fetchedGeometry);
     } else {
       m.once("load", () => {
         const src = addRouteLayer(m, mapPart, fetchedGeometry);
-        if (src !== "none") setPathSource(src);
+        commitSource(src);
         applyMapOverlays(m, mapPart.overlays);
         maybeFlyAlong(m, mapPart, fetchedGeometry);
       });
@@ -429,6 +478,15 @@ function InteractiveMap({
               <span>// {mapPart.route ? "route" : "place"}</span>
               {mapPart.route && <PathSourceBadge source={pathSource} />}
             </div>
+            {mapPart.route && pathSource === "straight" && pathErrorReason && (
+              <div
+                className="text-[10px] font-mono mb-1"
+                style={{ color: "rgba(255, 155, 155, 0.75)" }}
+                title="Why the road-follow fetch fell back to a straight line"
+              >
+                path fetch: {pathErrorReason}
+              </div>
+            )}
             <div
               className="text-[17px] font-medium leading-tight truncate"
               style={{ color: "rgb(240, 240, 246)" }}
@@ -1293,18 +1351,24 @@ function BrandMarkerStyles() {
           position: relative;
           width: 32px;
           height: 32px;
+          /* v0.28.43 — no animation and no transform on the marker
+             root. MapLibre owns this element's transform for
+             positioning; anything we add here fights it. Visual
+             flourishes live on .travis-marker-inner instead. */
+          z-index: 5;
+          pointer-events: auto;
+        }
+        .travis-marker-inner {
+          position: absolute;
+          inset: 0;
           display: flex;
           align-items: center;
           justify-content: center;
           /* v0.28.37 — endpoint markers drop in from above the target
              with a slight bounce. Read as "landing on the map"
-             instead of just appearing. */
+             instead of just appearing. v0.28.43 — moved off the root
+             so MapLibre's positioning transform is preserved. */
           animation: travis-marker-drop 0.65s cubic-bezier(0.32, 1.4, 0.5, 1) both;
-          /* v0.28.41 — MapLibre draws markers as absolutely-positioned
-             DOM overlays. Force them above other transient overlays and
-             ensure they can't get "buried" behind sibling wrappers. */
-          z-index: 5;
-          pointer-events: auto;
         }
         @keyframes travis-marker-drop {
           0%   { transform: translateY(-40px) scale(0.4); opacity: 0; }
@@ -1312,7 +1376,7 @@ function BrandMarkerStyles() {
           100% { transform: translateY(0)     scale(1);    opacity: 1; }
         }
         @media (prefers-reduced-motion: reduce) {
-          .travis-map-marker { animation: none; opacity: 1 !important; }
+          .travis-marker-inner { animation: none; opacity: 1 !important; }
         }
         .travis-marker-dot {
           width: 18px;
