@@ -34,6 +34,7 @@ import { HistoryOverlay } from "./HistoryOverlay";
 import { ResumeChip } from "./ResumeChip";
 import { QuickAccessDock } from "./QuickAccessDock";
 import { DocumentsOverlay } from "./DocumentsOverlay";
+import { ContactsOverlay } from "./ContactsOverlay";
 import { CanvasStage } from "./canvas/CanvasStage";
 import { useCanvasMode, useMapAutoExpand } from "./canvas/useCanvasMode";
 import { useNativeVoice } from "../../voice/useNativeVoice";
@@ -46,6 +47,7 @@ export function WorkspaceV2() {
   const setHistoryOverlayOpen = useAppStore((s) => s.setHistoryOverlayOpen);
   const setDocumentsOverlayOpen = useAppStore((s) => s.setDocumentsOverlayOpen);
   const setSettingsOverlayOpen = useAppStore((s) => s.setSettingsOverlayOpen);
+  const setContactsOverlayOpen = useAppStore((s) => s.setContactsOverlayOpen);
   const canvasMode = useCanvasMode();
   useFocalContent();
 
@@ -76,6 +78,13 @@ export function WorkspaceV2() {
         setDocumentsOverlayOpen(true);
         return;
       }
+      // v0.28.45 — ⌘⇧C opens Travis contacts overlay. Uses shift so
+      // it doesn't collide with copy.
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "c" || e.key === "C")) {
+        e.preventDefault();
+        setContactsOverlayOpen(true);
+        return;
+      }
       if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key.length === 1) {
         noteUserActivity();
       }
@@ -86,6 +95,7 @@ export function WorkspaceV2() {
     setSettingsOverlayOpen,
     setHistoryOverlayOpen,
     setDocumentsOverlayOpen,
+    setContactsOverlayOpen,
     noteUserActivity,
   ]);
 
@@ -213,6 +223,7 @@ export function WorkspaceV2() {
       <SettingsOverlay />
       <HistoryOverlay />
       <DocumentsOverlay />
+      <ContactsOverlay />
     </div>
   );
 }

@@ -139,7 +139,7 @@ export function T2tSection({ currentUserId }: Props) {
         </div>
         <input
           type="text"
-          placeholder="Optional note ('For the LTE ops coordination')"
+          placeholder="Optional note ('for planning our trip', 'for the campaign')"
           value={inviteReason}
           onChange={(e) => setInviteReason(e.target.value)}
           disabled={inviting}

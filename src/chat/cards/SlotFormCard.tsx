@@ -10,6 +10,7 @@
 import { useState } from "react";
 import { useAppStore } from "../../stores/app";
 import type { SlotField } from "../../lib/richResponse";
+import { Switch } from "../../ui/Switch";
 
 interface Props {
   title?: string;
@@ -169,15 +170,12 @@ function SlotInput({ field, value, onChange }: { field: SlotField; value: string
       );
     case "checkbox":
       return (
-        <label className="flex items-center gap-2 text-[13px]" style={{ color: "rgba(236, 236, 241, 0.92)" }}>
-          <input
-            type="checkbox"
-            checked={Boolean(value)}
-            onChange={(e) => onChange(e.target.checked)}
-            style={{ accentColor: "rgb(189, 158, 255)" }}
-          />
-          {field.placeholder ?? field.label}
-        </label>
+        <Switch
+          checked={Boolean(value)}
+          onChange={(v) => onChange(v)}
+          label={field.placeholder ?? field.label}
+          size="sm"
+        />
       );
     case "text":
     default:

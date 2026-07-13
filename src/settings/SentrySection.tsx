@@ -1,21 +1,27 @@
 /**
- * SentrySection — Sentry mode toggle (task 315).
+ * SentrySection — Sentry mode toggle.
  *
- * Opt-in foreground-window capture: samples app_name + window_title
- * every 30s, batches to /me/telemetry/ingest every 5 min. Cloud-side
- * consent (Sentry Phase 0) is a second layer — the ingest endpoint
- * discards events for kinds the user hasn't consented to.
+ * v0.28.45: turning Sentry on now goes through SentryConsentModal.
+ * The modal spells out what's captured, where it's stored, why we're
+ * asking, and what will never be captured — and the user has to
+ * scroll through and explicitly agree before enabling.
  *
- * Off by default. Every user has to flip this on themselves.
+ * Off by default. Turning it off never requires re-consent; only
+ * turning it back on after a scope expansion does.
  */
 import { useCallback, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { sentrySetEnabled, sentryStatus, type SentryStatus } from "../lib/cloud";
+import {
+  SentryConsentModal,
+  hasCurrentSentryConsent,
+} from "./SentryConsentModal";
 
 export function SentrySection() {
   const [status, setStatus] = useState<SentryStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [consentOpen, setConsentOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -32,17 +38,33 @@ export function SentrySection() {
     return () => clearInterval(t);
   }, [refresh]);
 
-  async function toggle() {
+  const setEnabled = async (next: boolean) => {
     if (busy || !status) return;
     setBusy(true);
     setError(null);
     try {
-      await sentrySetEnabled(!status.enabled);
+      await sentrySetEnabled(next);
       await refresh();
     } catch (e) {
       setError(String(e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  async function toggle() {
+    if (!status || busy) return;
+    // Turning OFF never needs consent.
+    if (status.enabled) {
+      await setEnabled(false);
+      return;
+    }
+    // Turning ON: gate through the consent modal unless the user has
+    // already agreed to the current version.
+    if (hasCurrentSentryConsent()) {
+      await setEnabled(true);
+    } else {
+      setConsentOpen(true);
     }
   }
 
@@ -51,10 +73,11 @@ export function SentrySection() {
   return (
     <div className="flex flex-col gap-3">
       <p className="text-bone-3 text-[11px] leading-relaxed">
-        Sentry mode lets Travis passively observe what apps + windows
-        you're using — no screen content, no keystrokes, just app +
-        window title every 30 seconds. Off by default; you can pause
-        or purge at any time.
+        Sentry mode lets Travis passively observe your workflow so it
+        can serve you better — noticing patterns, spotting overdue
+        items, resuming where you left off. Currently captures app +
+        window title every 30 seconds; screen snapshots are coming
+        next. Off by default; you can pause or purge at any time.
       </p>
 
       <div
@@ -121,6 +144,15 @@ export function SentrySection() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      <SentryConsentModal
+        open={consentOpen}
+        onAgree={async () => {
+          setConsentOpen(false);
+          await setEnabled(true);
+        }}
+        onCancel={() => setConsentOpen(false)}
+      />
     </div>
   );
 }

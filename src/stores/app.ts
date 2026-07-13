@@ -53,6 +53,10 @@ type AppState = {
   /// v0.26 (v2 Shell 12b) — documents overlay. Opened via the dock or
   /// ⌘D. Session-local.
   documentsOverlayOpen: boolean;
+  /// v0.28.45 — Travis contacts overlay (Travis-to-Travis flow). Opened
+  /// via the dock or ⌘⇧C. Extracted out of Settings so contact
+  /// management has its own canvas surface.
+  contactsOverlayOpen: boolean;
   /// v0.26 (v2 Shell 8) — true when the immersive canvas should show the
   /// opening greeting. Computed at mount from lastActivityAt: true on
   /// cold boot OR when idle >= 24h. Fades to false on first keystroke.
@@ -161,6 +165,7 @@ type AppState = {
   setSettingsOverlayOpen: (open: boolean) => void;
   setHistoryOverlayOpen: (open: boolean) => void;
   setDocumentsOverlayOpen: (open: boolean) => void;
+  setContactsOverlayOpen: (open: boolean) => void;
   setSpeechAmplitude: (a: number) => void;
   setPendingComposerSubmit: (t: string | null) => void;
   setAmbientListening: (on: boolean) => void;
@@ -367,6 +372,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setHistoryOverlayOpen: (open) => set({ historyOverlayOpen: open }),
   documentsOverlayOpen: false,
   setDocumentsOverlayOpen: (open) => set({ documentsOverlayOpen: open }),
+  contactsOverlayOpen: false,
+  setContactsOverlayOpen: (open) => set({ contactsOverlayOpen: open }),
   speechAmplitude: 0,
   setSpeechAmplitude: (a) => set({ speechAmplitude: Math.max(0, Math.min(1, a)) }),
   pendingComposerSubmit: null,

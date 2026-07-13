@@ -13,7 +13,7 @@ export function QuickAccessDock() {
   const setHistoryOverlayOpen = useAppStore((s) => s.setHistoryOverlayOpen);
   const setDocumentsOverlayOpen = useAppStore((s) => s.setDocumentsOverlayOpen);
   const setSettingsOverlayOpen = useAppStore((s) => s.setSettingsOverlayOpen);
-  const setUiSurface = useAppStore((s) => s.setUiSurface);
+  const setContactsOverlayOpen = useAppStore((s) => s.setContactsOverlayOpen);
 
   return (
     <div
@@ -37,15 +37,16 @@ export function QuickAccessDock() {
         onClick={() => setDocumentsOverlayOpen(true)}
       />
       <DockRow
+        label="Contacts"
+        shortcut="⌘⇧C"
+        icon={<ContactsIcon />}
+        onClick={() => setContactsOverlayOpen(true)}
+      />
+      <DockRow
         label="Settings"
         shortcut="⌘,"
         icon={<GearIcon />}
         onClick={() => setSettingsOverlayOpen(true)}
-      />
-      <DockRow
-        label="Classic view"
-        icon={<SwapIcon />}
-        onClick={() => setUiSurface("classic")}
       />
     </div>
   );
@@ -141,6 +142,17 @@ function DocIcon() {
   );
 }
 
+function ContactsIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <circle cx="9" cy="8" r="3.5" />
+      <path d="M2.5 20.5a6.5 6.5 0 0 1 13 0" />
+      <path d="M16.5 4a3.5 3.5 0 0 1 0 7" />
+      <path d="M17 13.5c1.9.7 3.3 2.3 3.5 4.5" />
+    </svg>
+  );
+}
+
 function GearIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -150,11 +162,3 @@ function GearIcon() {
   );
 }
 
-function SwapIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M4 8h14M4 8l4-4M4 8l4 4" />
-      <path d="M20 16H6M20 16l-4-4M20 16l-4 4" />
-    </svg>
-  );
-}

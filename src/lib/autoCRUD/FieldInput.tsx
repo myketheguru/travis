@@ -1,4 +1,5 @@
 import type { FieldDef } from "../packs";
+import { Switch } from "../../ui/Switch";
 
 /// Renders an input for a given field. The form treats the value as
 /// `unknown` (matches the JSON shape that flows back into pack_table_
@@ -149,18 +150,17 @@ export function FieldInput({
 
     case "bool":
       return (
-        <label className="flex items-center gap-2 cursor-pointer select-none">
-          <input
-            type="checkbox"
+        <div className="flex items-center gap-3">
+          <Switch
             checked={!!value}
             disabled={disabled}
-            onChange={(e) => onChange(e.target.checked)}
-            className="accent-pulse"
+            onChange={(v) => onChange(v)}
+            size="sm"
           />
           <span className="text-bone-2 text-sm">
             {value ? "Yes" : "No"}
           </span>
-        </label>
+        </div>
       );
 
     case "enum":

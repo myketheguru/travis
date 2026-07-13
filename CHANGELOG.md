@@ -1,5 +1,85 @@
 # Travis Changelog
 
+## v0.28.45 — Settings cleanup, switches, Travis contacts as its own flow, Sentry consent gate (2026-07-14)
+
+Six-item settings + T2T + Sentry pass.
+
+### 1. Shared Switch component replaces every checkbox
+
+New `src/ui/Switch.tsx` — brand-purple gradient track when on, dark
+track when off, framer-motion spring on the thumb (stiffness 480,
+damping 34). Two sizes (`sm` / `md`), optional label + description,
+`role="switch"` + keyboard toggle. All 10 checkbox sites swapped:
+
+- Settings.tsx: Travis Cloud toggle, Speak replies, "Hey Travis"
+  wake word, Actions permission, Proactive nudges, Cross-workspace
+  visibility, Pack enable card, Include-sensitive on export
+- lib/autoCRUD/FieldInput.tsx: bool field renderer
+- chat/cards/SlotFormCard.tsx: bool slot input
+
+No more `type="checkbox"` in the codebase.
+
+### 2. Default packs hidden from Settings
+
+Compiled-in packs (`lead-to-empower`, `tutoring`, `everyday`) are
+always-on scaffolding, not user-tunable UI. Frontend hardcoded slug
+set filters them out of `PacksSection` — only custom / add-on packs
+remain toggleable. Backend `PackInfo` API unchanged.
+
+### 3. Travis contacts extracted into its own canvas overlay
+
+`ContactsOverlay.tsx` — discovery-first layout. mDNS-discovered peers
+show up as AirDrop-style tiles (initials avatar + brand-purple pulse
+ring) polled every 2s, plus your existing contacts (accepted +
+incoming-pending with accept + outgoing-pending). "Invite by email"
+is a secondary button that expands an inline form.
+
+- Tap a nearby peer → sends a T2T invite using the email from their
+  mDNS TXT record. If they didn't broadcast one, the email form
+  opens with a hint.
+- Peers who are already contacts render dimmed with a "connected"
+  label instead of "invite".
+- New store field `contactsOverlayOpen`, keyboard shortcut ⌘⇧C,
+  dock row between Documents and Settings with a Contacts icon.
+- Old `T2tSection` removed from Settings entirely (import dropped).
+
+### 4. UI switcher button removed from canvas
+
+The "Classic view" DockRow + its `SwapIcon` are gone from
+`QuickAccessDock`. Surface switching still lives in Settings →
+Interface — the canvas is not the place for a button that swaps out
+the whole app.
+
+### 5. Sentry consent gate + honest copy
+
+`SentryConsentModal.tsx` — sleek dark card that opens when a user
+tries to turn Sentry on for the first time. Structured blocks:
+
+- What Travis captures (current + coming: screen snapshots)
+- Why we're asking (Travis becomes useful in workflow, not just
+  answers)
+- Where it lives (local first, rolling window to your account)
+- What Travis will NEVER capture (keystrokes, clipboard, password
+  fields, Sensitive workspaces)
+- Your controls (pause, purge, orb indicator)
+
+The "I agree — turn Sentry on" button stays disabled until the user
+scrolls to the bottom (soft attention gate). Accepted version stamped
+in localStorage; a future scope expansion will re-prompt. Turning
+Sentry OFF never asks.
+
+`SentrySection` copy rewritten to remove the "no screen content"
+promise since that scope is expanding. Actual Rust screenshot
+capture + cloud upload lands in v0.28.46.
+
+### 6. LTE-specific placeholder text removed
+
+`T2tSection.tsx` invite note placeholder now reads "for planning our
+trip / for the campaign" instead of the LTE-specific default. Only
+user-facing LTE placeholder in the codebase — internal comments and
+pack-scoped files are correctly named and untouched.
+
+
 ## v0.28.44 — Composer thinking state + map controls + backdrop polish + idle-orb fix (2026-07-13)
 
 Seven coordinated UI upgrades tightening up the composer, map,

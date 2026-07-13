@@ -35,10 +35,12 @@ import {
 } from "../lib/workspaces";
 import { VoiceDropdown } from "../components/VoiceDropdown";
 import { useAppStore } from "../stores/app";
-import { T2tSection } from "./T2tSection";
+// v0.28.45 — T2tSection moved to ContactsOverlay (canvas overlay,
+// ⌘⇧C or the dock's Contacts icon). Import stays via the overlay.
 import { McpSection } from "./McpSection";
 import { SentrySection } from "./SentrySection";
 import { InterfaceSection } from "./InterfaceSection";
+import { Switch } from "../ui/Switch";
 import {
   cloudConnectedAccounts,
   cloudDisconnectAccount,
@@ -456,10 +458,6 @@ export default function Settings({ onClose }: { onClose: () => void }) {
           <InterfaceSection />
         </Section>
 
-        <Section title="Travis-to-Travis">
-          <T2tSection currentUserId={cloudUser?.id} />
-        </Section>
-
         <Section title="MCP servers">
           <McpSection />
         </Section>
@@ -521,12 +519,10 @@ export default function Settings({ onClose }: { onClose: () => void }) {
                   so your spend never overshoots your plan.
                 </p>
               </div>
-              <label className="flex items-center gap-2 cursor-pointer select-none shrink-0">
-                <input
-                  type="checkbox"
+              <div className="shrink-0 flex items-center gap-2">
+                <Switch
                   checked={!useOwnLlm}
-                  onChange={(e) => {
-                    const goCloud = e.target.checked;
+                  onChange={(goCloud) => {
                     setUseOwnLlm(!goCloud);
                     if (goCloud) {
                       update({ provider: "travis_cloud" as Provider });
@@ -534,10 +530,10 @@ export default function Settings({ onClose }: { onClose: () => void }) {
                       update({ provider: "claude" as Provider });
                     }
                   }}
-                  className="accent-pulse"
+                  size="sm"
                 />
                 <span className="text-bone-2 text-xs">Use Travis Cloud</span>
-              </label>
+              </div>
             </div>
           </div>
 
@@ -765,16 +761,12 @@ function VoiceSection() {
         Let Travis read its replies to you. Uses your device's built-in
         voice for now — a Travis-branded voice ships in a follow-up.
       </p>
-      <label className="flex items-center gap-2 cursor-pointer select-none">
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={(e) => void toggle(e.target.checked)}
-          disabled={!ready}
-          className="accent-pulse"
-        />
-        <span className="text-bone-2 text-sm">Speak Travis's replies aloud</span>
-      </label>
+      <Switch
+        checked={enabled}
+        onChange={(v) => void toggle(v)}
+        disabled={!ready}
+        label="Speak Travis's replies aloud"
+      />
       {enabled && englishVoices.length > 0 && (
         <div className="mt-3">
           <label className="text-bone-3 text-[10px] tracking-[0.18em] uppercase block mb-1.5">
@@ -825,17 +817,11 @@ function AmbientControls() {
 
   return (
     <div>
-      <label className="flex items-center gap-2 cursor-pointer select-none">
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={(e) => toggle(e.target.checked)}
-          className="accent-pulse"
-        />
-        <span className="text-bone-2 text-sm">
-          Listen for me to say "Hey Travis"
-        </span>
-      </label>
+      <Switch
+        checked={enabled}
+        onChange={(v) => toggle(v)}
+        label={<>Listen for me to say &ldquo;Hey Travis&rdquo;</>}
+      />
       <p className="text-bone-3 text-[11px] leading-relaxed mt-1.5">
         When on, Travis stays listening in the background so you don't
         have to hold the mic. Uses more battery — good for desk sessions,
@@ -1059,18 +1045,12 @@ function ShellToolSection() {
             </p>
           </div>
 
-          <label className="flex items-center gap-2 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={enabled ?? false}
-              onChange={(e) => toggle(e.target.checked)}
-              disabled={enabled === null || busy}
-              className="accent-pulse"
-            />
-            <span className="text-bone-2 text-sm">
-              Let Travis run things on my computer (with my permission)
-            </span>
-          </label>
+          <Switch
+            checked={enabled ?? false}
+            onChange={(v) => toggle(v)}
+            disabled={enabled === null || busy}
+            label="Let Travis run things on my computer (with my permission)"
+          />
           {err && <p className="text-warn text-xs">{err}</p>}
         </div>
       </details>
@@ -1190,18 +1170,12 @@ function ProactiveSection() {
         On by default — turn off if it's too chatty.
       </p>
 
-      <label className="flex items-center gap-2 cursor-pointer select-none">
-        <input
-          type="checkbox"
-          checked={cfg?.enabled ?? false}
-          onChange={(e) => toggle(e.target.checked)}
-          disabled={cfg === null || busy}
-          className="accent-pulse"
-        />
-        <span className="text-bone-2 text-sm">
-          Let Travis nudge me when something's worth surfacing
-        </span>
-      </label>
+      <Switch
+        checked={cfg?.enabled ?? false}
+        onChange={(v) => toggle(v)}
+        disabled={cfg === null || busy}
+        label="Let Travis nudge me when something's worth surfacing"
+      />
 
       {cfg && (
         <div className="mt-2 flex flex-col gap-3 rounded-xl border border-ink-3 bg-ink-2/30 p-3.5">
@@ -1698,17 +1672,11 @@ function WorkspaceForm({
       </Field>
 
       <Field label="Cross-workspace visibility">
-        <label className="flex items-center gap-2 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={crossVisible}
-            onChange={(e) => setCrossVisible(e.target.checked)}
-            className="accent-pulse"
-          />
-          <span className="text-bone-2 text-sm">
-            Show this workspace's data in other workspaces' views
-          </span>
-        </label>
+        <Switch
+          checked={crossVisible}
+          onChange={(v) => setCrossVisible(v)}
+          label="Show this workspace's data in other workspaces' views"
+        />
         {sensitive && crossVisible && (
           <p className="text-warn text-[11px] mt-2 leading-relaxed">
             Sensitive workspaces are isolated by default. Toggling this on
@@ -1733,6 +1701,14 @@ function WorkspaceForm({
     </div>
   );
 }
+
+/// v0.28.45 — Runtime slugs of the packs that ship compiled into every
+/// Travis build (see `src-tauri/Cargo.toml` `[features] default = [...]`
+/// and `packs::compiled_in_packs()`). These are always-on and shouldn't
+/// appear in Settings — they'd be uncheckable clutter. Custom / add-on
+/// packs added via Org entitlements or future user install remain in
+/// the list. Update this set if a slug is added/renamed on the Rust side.
+const DEFAULT_PACK_SLUGS = new Set(["lead-to-empower", "tutoring", "everyday"]);
 
 function PacksSection() {
   const [packs, setPacks] = useState<PackInfo[] | null>(null);
@@ -1770,7 +1746,13 @@ function PacksSection() {
   // migration, or by a previous user toggle). For users with no
   // enabled packs, the section is hidden entirely — adding access
   // happens via Org admin, not self-service from a Free tier.
-  const managed = packs?.filter((p) => p.enabled) ?? null;
+  //
+  // v0.28.45 — Default (compiled-in) packs are always-on scaffolding
+  // and shouldn't clutter Settings. Only custom / add-on packs are
+  // meaningful to toggle from here.
+  const managed = packs
+    ?.filter((p) => p.enabled)
+    .filter((p) => !DEFAULT_PACK_SLUGS.has(p.slug)) ?? null;
   if (managed !== null && managed.length === 0) return null;
 
   return (
@@ -1787,22 +1769,17 @@ function PacksSection() {
           {managed.map((p) => {
             const isPending = pending.has(p.slug);
             return (
-              <label
+              <div
                 key={p.slug}
+                onClick={() => !isPending && toggle(p.slug, !p.enabled)}
                 className={
-                  "flex items-start gap-3 rounded-xl border px-4 py-3 transition-all cursor-pointer " +
+                  "flex items-start gap-3 rounded-xl border px-4 py-3 transition-all " +
+                  (isPending ? "cursor-wait opacity-70 " : "cursor-pointer ") +
                   (p.enabled
                     ? "border-pulse/60 bg-pulse/[0.07]"
                     : "border-ink-3 bg-ink-2/30 hover:border-ink-3/80 hover:bg-ink-2/50")
                 }
               >
-                <input
-                  type="checkbox"
-                  checked={p.enabled}
-                  disabled={isPending}
-                  onChange={(e) => toggle(p.slug, e.target.checked)}
-                  className="accent-pulse mt-0.5"
-                />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-baseline gap-2">
                     <span className="text-bone text-sm">{p.name}</span>
@@ -1816,7 +1793,18 @@ function PacksSection() {
                     </p>
                   )}
                 </div>
-              </label>
+                <div
+                  className="shrink-0"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <Switch
+                    checked={p.enabled}
+                    disabled={isPending}
+                    onChange={(v) => toggle(p.slug, v)}
+                    size="sm"
+                  />
+                </div>
+              </div>
             );
           })}
         </div>
@@ -1898,21 +1886,12 @@ function ExportSection() {
           tokens are stripped automatically.
         </p>
 
-        <label className="flex items-start gap-2 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={includeSensitive}
-            onChange={(e) => setIncludeSensitive(e.target.checked)}
-            className="accent-pulse mt-0.5"
-          />
-          <span className="text-bone-2 text-[12px] leading-snug">
-            Include sensitive workspaces (Health, Therapy, Legal, Finance).
-            <span className="text-bone-3 text-[10px] block mt-0.5">
-              Off by default — sensitive workspaces are isolated unless you
-              explicitly opt in. Turn on if you want a complete picture.
-            </span>
-          </span>
-        </label>
+        <Switch
+          checked={includeSensitive}
+          onChange={(v) => setIncludeSensitive(v)}
+          label="Include sensitive workspaces (Health, Therapy, Legal, Finance)."
+          description="Off by default — sensitive workspaces are isolated unless you explicitly opt in. Turn on if you want a complete picture."
+        />
 
         <div className="flex items-center gap-3">
           <button
