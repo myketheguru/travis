@@ -96,13 +96,16 @@ function useInactivityTick(): boolean {
       // Force re-eval so mode transitions out of idle immediately.
       setTick((n) => n + 1);
     };
+    // v0.28.44 — keyboard only. Mouse motion no longer counts as
+    // engagement — user reported the idle orb dismisses just from
+    // moving the cursor across the app, which contradicts the
+    // splash-only-fades-on-real-input spec at WorkspaceV2:144-147.
+    // Wake-word paths (voice engagement) call noteUserActivity()
+    // directly, so they still dismiss idle without needing a
+    // pointer listener here.
     window.addEventListener("keydown", markActive);
-    window.addEventListener("mousedown", markActive);
-    window.addEventListener("mousemove", markActive);
     return () => {
       window.removeEventListener("keydown", markActive);
-      window.removeEventListener("mousedown", markActive);
-      window.removeEventListener("mousemove", markActive);
     };
   }, []);
 

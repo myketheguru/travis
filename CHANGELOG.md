@@ -1,5 +1,91 @@
 # Travis Changelog
 
+## v0.28.44 — Composer thinking state + map controls + backdrop polish + idle-orb fix (2026-07-13)
+
+Seven coordinated UI upgrades tightening up the composer, map,
+backdrop, and idle-orb behavior. (A three.js "digital universe"
+backdrop was prototyped in this cycle but pulled before shipping —
+didn't meet the bar. Coming back in a future release.)
+
+### 1. Idle orb dismisses on keyboard only
+
+The idle/opening screen was dismissing on any mouse motion — a
+regression from the spec at `WorkspaceV2.tsx:144-147` which reads "mouse
+events no longer dismiss the splash. Only keyboard input… and mic arm."
+`useInactivityTick` (`useCanvasMode.ts:89`) was still listening on
+`mousemove` + `mousedown`. Removed both listeners. Wake-word paths
+already call `noteUserActivity()` directly, so voice engagement still
+dismisses idle without needing a pointer listener.
+
+### 2. Composer thinking state
+
+While a turn is in flight the composer now sports a rotating
+conic-gradient halo behind the input (2.6s per revolution, brand
+purple → mint → amber → purple), disabled input, and a real rotating
+spinner in the submit button (replacing the placeholder `...`). New
+`<ThinkingGlow>` sub-component; sits under the composer surface with
+`inset: -4` + `filter: blur(10px)` so what shows is color spilling
+around the border, not a solid ring. Respects
+`prefers-reduced-motion`.
+
+### 3. Persistent input on immersive views
+
+When Travis is thinking on the map / voice / idle canvas, the user's
+submitted text now stays on screen as a floating chip above the
+composer with a small spinner + a mode-aware status verb
+(`consulting maps`, `on the call`, `on it`). Fades after chatBusy
+flips false + a 1200ms dwell. Not rendered on chat view since the
+turn already shows in the message stream. New `<PendingRequestChip>`
+sub-component. Backed by a new `lastSubmittedText` field on the app
+store (`stores/app.ts`) which the composer writes on submit.
+
+### 4. More map controls
+
+Right rail on the map canvas gets a control stack: zoom in/out, reset
+compass to north, toggle pitch (flat ↔ 55° tilt), and fit-route (only
+when a route is present). Each control uses `easeTo` with a soft cubic
+so camera changes read as controlled motion rather than snaps.
+
+### 5. Overlay chip stack at top of map
+
+Every overlay currently on the map now surfaces as a chip in one row
+pinned to the top-center of the canvas. Route source (real/llm/
+straight/fetching), 3D terrain indicator, and one chip per
+mapPart.overlay (heatmap / regions / circles / reach). Route chip
+click flies to the route bounds. `PathSourceBadge` moved out of the
+info card into this stack so all overlay identity lives in one place.
+
+### 6. Nudge conversations hidden from history
+
+Proactive nudges were creating regular `conversation` rows with
+`kind='nudge'` and surfacing in the history switcher — clutter, and
+the wrong lane for a one-shot OS notification. `list_for_switcher`
+now filters `AND c.kind != 'nudge'` so nudges stay in the OS
+notification / attention-strip lane. Existing nudge rows disappear
+from the switcher without any migration.
+
+### 7. Grid stands out + cloth deformation under the cursor
+
+The mesh grid was so faint it barely read as a HUD reference. Now
+it's canvas-drawn instead of SVG, with two densities: minor cells
+every 80px at ~10% brand-purple opacity, plus major cells every
+320px at ~22% + a small dot at each major intersection so the
+surface has scale + structure.
+
+The grid IS the cloth: vertices near the cursor are pulled toward
+it with a smoothstep Gaussian falloff (radius 240px, max
+displacement 34px), and lines are rasterized as polylines through
+sample points every 20px so straight grid lines visibly bend — not
+concentric ripples, actual local deformation of the mesh, like
+stretched fabric magnetizing around a finger. The smoothed cursor
+lerps at 0.16/frame and relaxes gently when the pointer leaves the
+window instead of snapping back.
+
+Reduced-motion suppresses the deformation (grid renders static).
+No pointer events consumed — the canvas is `pointer-events: none`,
+so composer / HUD / map controls keep working normally.
+
+
 ## v0.28.43 — Fix map marker displacement + surface path-fetch failure reason (2026-07-13)
 
 Two coordinated map fixes carried by the same screenshot: the endpoint

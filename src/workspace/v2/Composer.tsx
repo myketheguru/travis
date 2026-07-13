@@ -6,7 +6,7 @@
  * the left drops a transcript straight in and submits.
  */
 import { useEffect, useRef, useState } from "react";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { useAppStore } from "../../stores/app";
 import { VoiceArmButton } from "./VoiceArmButton";
 import { MicMeter } from "./MicMeter";
@@ -42,6 +42,10 @@ export function Composer() {
     // v0.28.25 — typed turns explicitly opt out of TTS. Voice paths
     // flip this on before their own setPendingComposerSubmit.
     useAppStore.getState().setSpeakNextResponse(false);
+    // v0.28.44 — stash the text so PendingRequestChip can render it
+    // on immersive views (map, voice) while the LLM is still working.
+    // Cleared automatically after chatBusy flips false.
+    useAppStore.getState().setLastSubmittedText(trimmed);
     setPendingComposerSubmit(trimmed);
     setText("");
     noteUserActivity();
@@ -65,8 +69,11 @@ export function Composer() {
   return (
     <div className="absolute bottom-0 left-0 right-0 z-30 pointer-events-none px-4 pb-4">
       <div className="max-w-3xl mx-auto pointer-events-auto">
+        <PendingRequestChip canvasMode={canvasMode} />
         <AttachedDocsStrip />
-        <motion.div
+        <div className="relative">
+          <ThinkingGlow visible={isPending} />
+          <motion.div
           layout
           animate={{
             boxShadow: isFocused
@@ -77,7 +84,7 @@ export function Composer() {
               : "rgba(255, 255, 255, 0.16)",
           }}
           transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
-          className="rounded-2xl px-3 py-2 flex items-center gap-2"
+          className="relative rounded-2xl px-3 py-2 flex items-center gap-2"
           style={{
             background: "rgba(12, 12, 16, 0.85)",
             border: "1px solid rgba(255, 255, 255, 0.16)",
@@ -117,6 +124,7 @@ export function Composer() {
             onClick={() => handleSubmit()}
           />
         </motion.div>
+        </div>
         {focusedThread && (
           <div
             className="mt-2 text-center text-[10px] uppercase tracking-wider font-mono"
@@ -159,7 +167,34 @@ function SubmitButton({
       title={pending ? "Travis is thinking…" : "Send (Enter)"}
     >
       {pending ? (
-        <span className="text-[10px] font-mono">...</span>
+        // v0.28.44 — rotating arc instead of static "...". framer's
+        // infinite rotate honors prefers-reduced-motion via useReducedMotion
+        // in the parent scene; motion.span here inherits the same accessibility
+        // context. If the user has reduced motion on, transition duration
+        // is what changes, not the visibility of the spinner.
+        <motion.span
+          animate={{ rotate: 360 }}
+          transition={{ duration: 0.9, repeat: Infinity, ease: "linear" }}
+          className="inline-flex"
+          aria-hidden
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+            <circle
+              cx="12"
+              cy="12"
+              r="9"
+              stroke="currentColor"
+              strokeOpacity="0.25"
+              strokeWidth="2.2"
+            />
+            <path
+              d="M21 12a9 9 0 0 0-9-9"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+            />
+          </svg>
+        </motion.span>
       ) : (
         <svg
           width="16"
@@ -291,4 +326,138 @@ function placeholderFor(
   if (canvasMode === "voice") return "Or type instead…";
   if (canvasMode === "map") return "Refine, add a stop, or ask about the route…";
   return "Ask Travis anything…";
+}
+
+/// v0.28.44 — rotating conic-gradient halo behind the composer.
+/// Sits underneath the composer surface, sized 4px larger on every
+/// edge, blurred so what's visible is the color spilling out around
+/// the composer border. When `visible` is false, animates out over
+/// 300ms so the composer doesn't jarringly lose its ring the moment
+/// a response arrives.
+function ThinkingGlow({ visible }: { visible: boolean }) {
+  return (
+    <AnimatePresence>
+      {visible && (
+        <motion.div
+          key="glow"
+          aria-hidden
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+          className="absolute pointer-events-none rounded-[20px] overflow-hidden"
+          style={{ inset: -4 }}
+        >
+          <motion.div
+            className="absolute inset-0"
+            animate={{ rotate: 360 }}
+            transition={{ duration: 2.6, repeat: Infinity, ease: "linear" }}
+            style={{
+              background:
+                "conic-gradient(from 0deg, rgba(189,158,255,0) 0%, rgba(189,158,255,0.75) 15%, rgba(140,230,175,0.55) 35%, rgba(255,210,130,0.55) 55%, rgba(189,158,255,0.75) 80%, rgba(189,158,255,0) 100%)",
+              filter: "blur(10px)",
+            }}
+          />
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+/// v0.28.44 — floating chip above the composer that keeps the user's
+/// most recent input on screen while Travis is working, but only on
+/// immersive views (map/voice/idle) where the chat stream isn't
+/// visible. Chat view already shows the user turn in the message
+/// list, so the chip would be duplicative there.
+///
+/// Fades out ~1200ms after chatBusy flips false so the answer has
+/// room, then clears lastSubmittedText so the next turn starts fresh.
+function PendingRequestChip({ canvasMode }: { canvasMode: string }) {
+  const chatBusy = useAppStore((s) => s.chatBusy);
+  const activity = useAppStore((s) => s.activity);
+  const lastSubmittedText = useAppStore((s) => s.lastSubmittedText);
+  const setLastSubmittedText = useAppStore((s) => s.setLastSubmittedText);
+
+  // Only show on immersive views. Chat already surfaces the turn.
+  const eligibleView = canvasMode !== "chat";
+  // Keep chip up while a turn is in flight, plus a short trailing
+  // dwell after it completes so the user sees closure.
+  const shouldShow = Boolean(
+    eligibleView && lastSubmittedText && (chatBusy || activity === "thinking"),
+  );
+
+  useEffect(() => {
+    if (!lastSubmittedText) return;
+    if (chatBusy || activity === "thinking") return;
+    // Turn finished — dwell briefly, then clear.
+    const t = window.setTimeout(() => setLastSubmittedText(null), 1200);
+    return () => window.clearTimeout(t);
+  }, [chatBusy, activity, lastSubmittedText, setLastSubmittedText]);
+
+  const status = statusLabel(canvasMode, activity);
+
+  return (
+    <AnimatePresence>
+      {shouldShow && (
+        <motion.div
+          key="pending-chip"
+          initial={{ opacity: 0, y: 12, scale: 0.96 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 12, scale: 0.96 }}
+          transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+          className="mb-3 rounded-2xl px-3 py-2 flex items-start gap-2.5"
+          style={{
+            background:
+              "linear-gradient(180deg, rgba(28, 24, 40, 0.78), rgba(20, 18, 30, 0.72))",
+            border: "1px solid rgba(189, 158, 255, 0.32)",
+            backdropFilter: "blur(14px) saturate(1.2)",
+            boxShadow: "0 12px 40px -14px rgba(0, 0, 0, 0.6)",
+          }}
+        >
+          <motion.span
+            animate={{ rotate: 360 }}
+            transition={{ duration: 1.1, repeat: Infinity, ease: "linear" }}
+            className="shrink-0 mt-0.5 inline-flex"
+            aria-hidden
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="9" stroke="rgba(189,158,255,0.28)" strokeWidth="2.2" />
+              <path
+                d="M21 12a9 9 0 0 0-9-9"
+                stroke="rgba(189,158,255,0.95)"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+              />
+            </svg>
+          </motion.span>
+          <div className="min-w-0 flex-1">
+            <div
+              className="text-[10px] uppercase tracking-[0.22em] font-mono mb-0.5"
+              style={{ color: "rgba(189, 158, 255, 0.85)" }}
+            >
+              {status}
+            </div>
+            <div
+              className="text-[13.5px] leading-snug break-words"
+              style={{ color: "rgba(236, 236, 241, 0.94)" }}
+            >
+              {lastSubmittedText}
+            </div>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+/// Derives a small status verb from canvas mode + activity so the
+/// chip reads as "consulting maps…" on the map view rather than
+/// a generic "thinking…". This is a client-side derivation only —
+/// no new state to keep in sync with the LLM pipeline.
+function statusLabel(canvasMode: string, activity: string): string {
+  if (activity === "listening") return "// listening";
+  if (activity === "speaking") return "// speaking";
+  if (canvasMode === "map") return "// consulting maps";
+  if (canvasMode === "voice") return "// on the call";
+  return "// on it";
 }

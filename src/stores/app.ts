@@ -126,6 +126,13 @@ type AppState = {
   /// concurrent voice event flips activity. AskTab is the only writer.
   chatBusy: boolean;
   setChatBusy: (v: boolean) => void;
+  /// v0.28.44 — most recently submitted user text, kept visible on
+  /// immersive views (map, voice) so the user has proof Travis is
+  /// working on THEIR ask even when the chat stream isn't on screen.
+  /// Composer writes it on submit; the PendingRequestChip clears it
+  /// ~1200ms after chatBusy flips false so the answer can breathe.
+  lastSubmittedText: string | null;
+  setLastSubmittedText: (t: string | null) => void;
   /// v0.28.25 — v2 doc-attach mirror. AskTab is the source of truth
   /// for attachedDocs; Composer reads this to render the chip strip
   /// + paperclip badge without dragging AskTab into view.
@@ -305,6 +312,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSpeakNextResponse: (v) => set({ speakNextResponse: v }),
   chatBusy: false,
   setChatBusy: (v) => set({ chatBusy: v }),
+  lastSubmittedText: null,
+  setLastSubmittedText: (t) => set({ lastSubmittedText: t }),
   attachedDocsMirror: [],
   setAttachedDocsMirror: (v) => set({ attachedDocsMirror: v }),
   status: null,

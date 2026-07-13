@@ -455,6 +455,21 @@ function InteractiveMap({
         aria-hidden
       />
 
+      {/* v0.28.44 — overlay chip stack + map controls. Chips row is
+          top-center: one chip per active overlay (route, terrain,
+          heatmap, polygons, circles, isochrone). Controls rail is
+          right-center: reset compass, toggle pitch, zoom, fit route. */}
+      <OverlayChipStack
+        mapPart={mapPart}
+        pathSource={pathSource}
+        onFocusRoute={() => flyToRoute(mapRef.current, mapPart)}
+      />
+      <MapControls
+        mapRef={mapRef}
+        hasRoute={Boolean(mapPart.route?.from && mapPart.route?.to)}
+        onFitRoute={() => flyToRoute(mapRef.current, mapPart)}
+      />
+
       <motion.div
         initial={{ opacity: 0, y: -8 }}
         animate={{ opacity: 1, y: 0 }}
@@ -472,11 +487,10 @@ function InteractiveMap({
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
             <div
-              className="text-[10px] uppercase tracking-[0.22em] font-mono mb-1 flex items-center gap-2"
+              className="text-[10px] uppercase tracking-[0.22em] font-mono mb-1"
               style={{ color: "rgba(189, 158, 255, 0.90)" }}
             >
-              <span>// {mapPart.route ? "route" : "place"}</span>
-              {mapPart.route && <PathSourceBadge source={pathSource} />}
+              // {mapPart.route ? "route" : "place"}
             </div>
             {mapPart.route && pathSource === "straight" && pathErrorReason && (
               <div
@@ -1305,6 +1319,244 @@ function escapeHtml(s: string): string {
 /// v0.28.42 — visible pip on the info card so the user (and I) can
 /// see at a glance whether the line drawn is the real ORS road path,
 /// the LLM-supplied one, a straight fallback, or an in-flight fetch.
+/// v0.28.44 — camera helper. Flies to the route's endpoint bounding
+/// box while preserving pitch + bearing so the sci-fi camera pose
+/// isn't reset. Used by the fit-route control + overlay-chip click.
+function flyToRoute(map: MapLibreMap | null, mapPart: MapPart) {
+  if (!map) return;
+  const from = mapPart.route?.from;
+  const to = mapPart.route?.to;
+  if (from?.lat == null || from?.lng == null || to?.lat == null || to?.lng == null) return;
+  const minLng = Math.min(from.lng, to.lng);
+  const maxLng = Math.max(from.lng, to.lng);
+  const minLat = Math.min(from.lat, to.lat);
+  const maxLat = Math.max(from.lat, to.lat);
+  map.fitBounds(
+    [
+      [minLng, minLat],
+      [maxLng, maxLat],
+    ],
+    {
+      padding: 100,
+      duration: 1200,
+      essential: true,
+      pitch: map.getPitch(),
+      bearing: map.getBearing(),
+    },
+  );
+}
+
+/// v0.28.44 — horizontal chip stack pinned to the top of the map.
+/// Each chip identifies one active overlay layer (route source,
+/// terrain, plus one per mapPart.overlay). Clicking a chip flies
+/// to its bounds when it has focusable geometry. Kept read-only for
+/// now (LLM owns the overlay set) — toggling comes in a follow-up.
+function OverlayChipStack({
+  mapPart,
+  pathSource,
+  onFocusRoute,
+}: {
+  mapPart: MapPart;
+  pathSource: "cloud" | "llm" | "straight" | "loading" | "none";
+  onFocusRoute: () => void;
+}) {
+  const chips: Array<{
+    key: string;
+    color: string;
+    label: string;
+    title: string;
+    onClick?: () => void;
+  }> = [];
+
+  if (mapPart.route && pathSource !== "none") {
+    const cfg = ROUTE_SOURCE_CFG[pathSource];
+    chips.push({
+      key: `route-${pathSource}`,
+      color: cfg.color,
+      label: cfg.label,
+      title: `Route geometry source: ${cfg.label}. Click to re-frame the route.`,
+      onClick: onFocusRoute,
+    });
+  }
+
+  // Sci-fi map ships with 3D terrain always on for pitch > 0 — surface
+  // it as a chip so the user knows why hillshading is what it is.
+  chips.push({
+    key: "terrain",
+    color: "rgb(180, 200, 235)",
+    label: "3d terrain",
+    title: "3D terrain (AWS Terrarium DEM) is active.",
+  });
+
+  for (const [i, ov] of (mapPart.overlays ?? []).entries()) {
+    const cfg = OVERLAY_KIND_CFG[ov.kind] ?? {
+      color: "rgb(200, 200, 220)",
+      label: ov.kind,
+    };
+    chips.push({
+      key: `ov-${ov.kind}-${i}`,
+      color: cfg.color,
+      label: cfg.label,
+      title: `Overlay: ${cfg.label}`,
+    });
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.36, ease: [0.22, 1, 0.36, 1] }}
+      className="absolute top-3 left-1/2 pointer-events-auto"
+      style={{ transform: "translateX(-50%)", zIndex: 4 }}
+      aria-label="Active map overlays"
+    >
+      <div className="flex flex-wrap items-center justify-center gap-1.5 max-w-[70vw]">
+        {chips.map((c) => (
+          <button
+            key={c.key}
+            onClick={c.onClick}
+            disabled={!c.onClick}
+            title={c.title}
+            className="inline-flex items-center gap-1.5 rounded-full transition-transform"
+            style={{
+              padding: "4px 10px",
+              border: `1px solid ${c.color}66`,
+              background: `${c.color}1A`,
+              color: c.color,
+              backdropFilter: "blur(10px)",
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+              fontSize: 10.5,
+              letterSpacing: "0.14em",
+              cursor: c.onClick ? "pointer" : "default",
+            }}
+          >
+            <span
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: "50%",
+                background: c.color,
+                boxShadow: `0 0 8px ${c.color}`,
+              }}
+            />
+            {c.label}
+          </button>
+        ))}
+      </div>
+    </motion.div>
+  );
+}
+
+const ROUTE_SOURCE_CFG: Record<
+  "cloud" | "llm" | "straight" | "loading" | "none",
+  { color: string; label: string }
+> = {
+  cloud: { color: "rgb(140, 230, 175)", label: "real path" },
+  llm: { color: "rgb(255, 210, 130)", label: "llm path" },
+  straight: { color: "rgb(255, 155, 155)", label: "straight" },
+  loading: { color: "rgba(236, 236, 241, 0.75)", label: "fetching…" },
+  none: { color: "transparent", label: "" },
+};
+
+const OVERLAY_KIND_CFG: Record<MapOverlay["kind"], { color: string; label: string }> = {
+  heatmap: { color: "rgb(255, 130, 170)", label: "heatmap" },
+  polygons: { color: "rgb(180, 230, 255)", label: "regions" },
+  circles: { color: "rgb(200, 175, 255)", label: "circles" },
+  isochrone: { color: "rgb(220, 195, 130)", label: "reach" },
+};
+
+/// v0.28.44 — right-rail map controls. Reset compass to north,
+/// toggle pitch flat/tilted, zoom, and fit route. Buttons are
+/// pointer-events-auto against the pointer-events-none map overlay
+/// stack. Each button flies the camera with a soft ease so it reads
+/// as controlled motion, not a snap.
+function MapControls({
+  mapRef,
+  hasRoute,
+  onFitRoute,
+}: {
+  mapRef: React.RefObject<MapLibreMap | null>;
+  hasRoute: boolean;
+  onFitRoute: () => void;
+}) {
+  const [isTilted, setIsTilted] = useState(true);
+
+  const resetCompass = () => {
+    const m = mapRef.current;
+    if (!m) return;
+    m.easeTo({ bearing: 0, duration: 700 });
+  };
+  const togglePitch = () => {
+    const m = mapRef.current;
+    if (!m) return;
+    const next = isTilted ? 0 : 55;
+    m.easeTo({ pitch: next, duration: 700 });
+    setIsTilted(!isTilted);
+  };
+  const zoomIn = () => {
+    const m = mapRef.current;
+    if (!m) return;
+    m.easeTo({ zoom: m.getZoom() + 1, duration: 400 });
+  };
+  const zoomOut = () => {
+    const m = mapRef.current;
+    if (!m) return;
+    m.easeTo({ zoom: m.getZoom() - 1, duration: 400 });
+  };
+
+  const btnStyle: React.CSSProperties = {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    background: "rgba(14, 12, 20, 0.72)",
+    border: "1px solid rgba(189, 158, 255, 0.32)",
+    color: "rgba(236, 236, 241, 0.92)",
+    backdropFilter: "blur(12px)",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: 12 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.36, ease: [0.22, 1, 0.36, 1] }}
+      className="absolute right-4 top-1/2 pointer-events-auto flex flex-col gap-2"
+      style={{ transform: "translateY(-50%)", zIndex: 4 }}
+      aria-label="Map controls"
+    >
+      <button style={btnStyle} onClick={zoomIn} title="Zoom in" aria-label="Zoom in">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+      </button>
+      <button style={btnStyle} onClick={zoomOut} title="Zoom out" aria-label="Zoom out">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M5 12h14" /></svg>
+      </button>
+      <button style={btnStyle} onClick={resetCompass} title="Reset bearing to north" aria-label="Reset bearing to north">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 6l3 8-3-2-3 2z" fill="currentColor" />
+        </svg>
+      </button>
+      <button style={btnStyle} onClick={togglePitch} title={isTilted ? "Flatten (top-down)" : "Tilt (3D perspective)"} aria-label="Toggle pitch">
+        {isTilted ? (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 18h18M6 14l6-8 6 8" /></svg>
+        ) : (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="8" width="16" height="10" /></svg>
+        )}
+      </button>
+      {hasRoute && (
+        <button style={btnStyle} onClick={onFitRoute} title="Fit route in view" aria-label="Fit route in view">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 4h6M14 4h6v6M20 14v6h-6M10 20H4v-6" />
+          </svg>
+        </button>
+      )}
+    </motion.div>
+  );
+}
+
 function PathSourceBadge({ source }: { source: "cloud" | "llm" | "straight" | "loading" | "none" }) {
   if (source === "none") return null;
   const config = {

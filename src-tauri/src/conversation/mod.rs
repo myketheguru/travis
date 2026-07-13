@@ -375,6 +375,7 @@ pub async fn list_for_switcher(
               ORDER BY m.id ASC LIMIT 1) AS preview
          FROM conversation c
          WHERE c.workspace_id IN ({ws_clause})
+           AND c.kind != 'nudge'
            AND (
              ?1 IS NULL
              OR LOWER(IFNULL(c.title, '')) LIKE ?1
