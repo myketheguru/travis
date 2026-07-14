@@ -1,5 +1,14 @@
 # Travis Changelog
 
+## v0.28.56 — Hotfix: libgbm-dev for Linux linker (2026-07-14)
+
+v0.28.55 got past PipeWire's struct mismatch by moving to
+ubuntu-24.04, but the linker then errored `unable to find library
+-lgbm`. Mesa's Generic Buffer Manager gets pulled by the newer
+xcap/PipeWire path. Both workflows now install `libgbm-dev`
+alongside the other deps. macOS + Windows already succeeded on
+v0.28.55, so this is the last Linux hurdle. No product changes.
+
 ## v0.28.55 — Hotfix: Linux runner → ubuntu-24.04 (2026-07-14)
 
 v0.28.54 installed libpipewire-0.3-dev but ubuntu-22.04 ships

@@ -101,6 +101,7 @@ jobs:
             libxrandr-dev \
             libxcb-randr0-dev \
             libpipewire-0.3-dev \
+            libgbm-dev \
             libclang-dev \
             clang \
             patchelf
