@@ -6,7 +6,7 @@
 
 use tauri::State;
 
-use crate::cloud::t2t::{self, Relationship, T2tQuery};
+use crate::cloud::t2t::{self, PairRedeemResult, PairToken, Relationship, T2tQuery};
 use crate::AppState;
 
 #[tauri::command]
@@ -43,6 +43,25 @@ pub async fn t2t_revoke(
     reason: Option<String>,
 ) -> Result<(), String> {
     t2t::revoke_relationship(&state.http, &id, reason.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ─── Pair tokens (v0.28.46) ──────────────────────────────────────
+
+#[tauri::command]
+pub async fn t2t_pair_create_token(state: State<'_, AppState>) -> Result<PairToken, String> {
+    t2t::create_pair_token(&state.http)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn t2t_pair_redeem(
+    state: State<'_, AppState>,
+    token: String,
+) -> Result<PairRedeemResult, String> {
+    t2t::redeem_pair_token(&state.http, &token)
         .await
         .map_err(|e| e.to_string())
 }

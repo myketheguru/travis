@@ -57,6 +57,11 @@ type AppState = {
   /// via the dock or ⌘⇧C. Extracted out of Settings so contact
   /// management has its own canvas surface.
   contactsOverlayOpen: boolean;
+  /// v0.28.46 — one-shot bridge: when a `travis://pair?tok=…` deep link
+  /// fires, the top-level handler stashes the token here + opens the
+  /// contacts overlay. ContactsOverlay reads and clears it, then
+  /// auto-redeems. Null when nothing is pending.
+  pendingPairToken: string | null;
   /// v0.26 (v2 Shell 8) — true when the immersive canvas should show the
   /// opening greeting. Computed at mount from lastActivityAt: true on
   /// cold boot OR when idle >= 24h. Fades to false on first keystroke.
@@ -166,6 +171,7 @@ type AppState = {
   setHistoryOverlayOpen: (open: boolean) => void;
   setDocumentsOverlayOpen: (open: boolean) => void;
   setContactsOverlayOpen: (open: boolean) => void;
+  setPendingPairToken: (token: string | null) => void;
   setSpeechAmplitude: (a: number) => void;
   setPendingComposerSubmit: (t: string | null) => void;
   setAmbientListening: (on: boolean) => void;
@@ -374,6 +380,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setDocumentsOverlayOpen: (open) => set({ documentsOverlayOpen: open }),
   contactsOverlayOpen: false,
   setContactsOverlayOpen: (open) => set({ contactsOverlayOpen: open }),
+  pendingPairToken: null,
+  setPendingPairToken: (token) => set({ pendingPairToken: token }),
   speechAmplitude: 0,
   setSpeechAmplitude: (a) => set({ speechAmplitude: Math.max(0, Math.min(1, a)) }),
   pendingComposerSubmit: null,

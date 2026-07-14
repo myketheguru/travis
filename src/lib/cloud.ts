@@ -432,6 +432,32 @@ export function t2tRevoke(id: string, reason?: string): Promise<void> {
   return invoke<void>("t2t_revoke", { id, reason: reason ?? null });
 }
 
+// v0.28.46 — pair tokens (QR / deep-link pairing beyond LAN).
+
+export interface PairToken {
+  token: string;
+  expires_at: string;
+  deep_link: string;
+}
+
+export interface PairRedeemResult {
+  ok: boolean;
+  relationship_id: string;
+  other_user: {
+    id: string;
+    name: string | null;
+    email: string;
+  } | null;
+}
+
+export function t2tPairCreateToken(): Promise<PairToken> {
+  return invoke<PairToken>("t2t_pair_create_token");
+}
+
+export function t2tPairRedeem(token: string): Promise<PairRedeemResult> {
+  return invoke<PairRedeemResult>("t2t_pair_redeem", { token });
+}
+
 export function t2tSendQuery(
   toUserId: string,
   question: string,

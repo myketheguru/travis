@@ -18,8 +18,9 @@
  * Mounted from WorkspaceV2. Opens via the dock's Contacts icon or
  * ⌘⇧C.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import QRCode from "qrcode";
 import { useAppStore } from "../../stores/app";
 import {
   cloudStatus,
@@ -28,8 +29,11 @@ import {
   t2tAccept,
   t2tInvite,
   t2tListRelationships,
+  t2tPairCreateToken,
+  t2tPairRedeem,
   t2tRevoke,
   type DiscoveredPeer,
+  type PairToken,
   type T2tRelationship,
 } from "../../lib/cloud";
 
@@ -109,6 +113,9 @@ function ContactsBody({ open }: { open: boolean }) {
   const [error, setError] = useState<string | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [pendingInviteEmail, setPendingInviteEmail] = useState<string | null>(null);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [redeemOpen, setRedeemOpen] = useState(false);
+  const [prefillRedeemToken, setPrefillRedeemToken] = useState<string | null>(null);
 
   const refreshRelationships = useCallback(async () => {
     try {
@@ -223,6 +230,41 @@ function ContactsBody({ open }: { open: boolean }) {
     }
   };
 
+  const redeemPairCode = useCallback(
+    async (rawToken: string) => {
+      const token = rawToken.trim().toUpperCase();
+      if (!token) return;
+      try {
+        const result = await t2tPairRedeem(token);
+        const label =
+          result.other_user?.name ??
+          result.other_user?.email ??
+          "another Travis";
+        setFlash(`Paired with ${label}`);
+        setRedeemOpen(false);
+        setPrefillRedeemToken(null);
+        await refreshRelationships();
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [refreshRelationships],
+  );
+
+  // v0.28.46 — WorkspaceV2 listens for `travis://pair` at the window
+  // level and stashes the token in the store (so cold-boot deep links
+  // still land). Here we watch the store; when a token appears, show
+  // the redeem modal + auto-redeem, then clear it.
+  const pendingPairToken = useAppStore((s) => s.pendingPairToken);
+  const setPendingPairToken = useAppStore((s) => s.setPendingPairToken);
+  useEffect(() => {
+    if (!pendingPairToken) return;
+    setRedeemOpen(true);
+    setPrefillRedeemToken(pendingPairToken);
+    void redeemPairCode(pendingPairToken);
+    setPendingPairToken(null);
+  }, [pendingPairToken, redeemPairCode, setPendingPairToken]);
+
   return (
     <>
       <header className="mb-5">
@@ -315,20 +357,23 @@ function ContactsBody({ open }: { open: boolean }) {
         </div>
       </div>
 
-      {/* INVITE BY EMAIL */}
+      {/* PAIR + INVITE ACTIONS */}
       <div className="mt-6 pt-4 border-t border-white/[0.06]">
         {!inviteOpen ? (
-          <button
-            onClick={() => setInviteOpen(true)}
-            className="text-[11.5px] uppercase tracking-[0.18em] font-mono px-3 py-2 rounded-lg transition-colors"
-            style={{
-              background: "rgba(189, 158, 255, 0.10)",
-              color: "rgb(189, 158, 255)",
-              border: "1px solid rgba(189, 158, 255, 0.35)",
-            }}
-          >
-            + Invite by email
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <SecondaryAction onClick={() => setShareOpen(true)} icon={<QrIcon />}>
+              Share pair code
+            </SecondaryAction>
+            <SecondaryAction
+              onClick={() => setRedeemOpen(true)}
+              icon={<EnterIcon />}
+            >
+              Enter pair code
+            </SecondaryAction>
+            <SecondaryAction onClick={() => setInviteOpen(true)}>
+              + Invite by email
+            </SecondaryAction>
+          </div>
         ) : (
           <InviteForm
             initialEmail={pendingInviteEmail ?? ""}
@@ -340,6 +385,17 @@ function ContactsBody({ open }: { open: boolean }) {
           />
         )}
       </div>
+
+      <SharePairModal open={shareOpen} onClose={() => setShareOpen(false)} />
+      <RedeemPairModal
+        open={redeemOpen}
+        initialToken={prefillRedeemToken ?? ""}
+        onCancel={() => {
+          setRedeemOpen(false);
+          setPrefillRedeemToken(null);
+        }}
+        onSubmit={redeemPairCode}
+      />
 
       {/* Flashes */}
       <AnimatePresence>
@@ -688,4 +744,379 @@ function initialsFor(name: string): string {
   if (parts.length === 0) return "??";
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+// ─── Pair action controls ──────────────────────────────────────────
+
+function SecondaryAction({
+  children,
+  onClick,
+  icon,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  icon?: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="text-[11.5px] uppercase tracking-[0.18em] font-mono px-3 py-2 rounded-lg transition-colors inline-flex items-center gap-1.5"
+      style={{
+        background: "rgba(189, 158, 255, 0.10)",
+        color: "rgb(189, 158, 255)",
+        border: "1px solid rgba(189, 158, 255, 0.35)",
+      }}
+    >
+      {icon}
+      {children}
+    </button>
+  );
+}
+
+function QrIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <rect x="3" y="3" width="7" height="7" />
+      <rect x="14" y="3" width="7" height="7" />
+      <rect x="3" y="14" width="7" height="7" />
+      <path d="M14 14h3v3h-3zM19 14h2M14 19h2M19 21h2" />
+    </svg>
+  );
+}
+
+function EnterIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M4 12h12M12 6l6 6-6 6" />
+      <path d="M20 4v16" />
+    </svg>
+  );
+}
+
+// ─── Share pair modal ──────────────────────────────────────────────
+
+function SharePairModal({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}) {
+  const [token, setToken] = useState<PairToken | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [copyFlash, setCopyFlash] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const issue = useCallback(async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const t = await t2tPairCreateToken();
+      setToken(t);
+      // Render the QR from the deep link so scanning opens Travis
+      // automatically instead of just displaying the code text.
+      const png = await QRCode.toDataURL(t.deep_link, {
+        errorCorrectionLevel: "M",
+        margin: 1,
+        width: 260,
+        color: {
+          dark: "#EDE7FF",
+          light: "#00000000",
+        },
+      });
+      setQrDataUrl(png);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (open && !token) void issue();
+    if (!open) {
+      // Reset on close so a fresh token issues next time.
+      setToken(null);
+      setQrDataUrl(null);
+      setErr(null);
+    }
+  }, [open, token, issue]);
+
+  const copyCode = () => {
+    if (!token) return;
+    void navigator.clipboard.writeText(token.token);
+    setCopyFlash(true);
+    window.setTimeout(() => setCopyFlash(false), 1500);
+  };
+
+  const copyLink = () => {
+    if (!token) return;
+    void navigator.clipboard.writeText(token.deep_link);
+    setCopyFlash(true);
+    window.setTimeout(() => setCopyFlash(false), 1500);
+  };
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          key="share-backdrop"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.24 }}
+          className="fixed inset-0 z-50 flex items-center justify-center px-4"
+          style={{ background: "rgba(0, 0, 0, 0.6)", backdropFilter: "blur(4px)" }}
+          onClick={onClose}
+        >
+          <motion.div
+            initial={{ opacity: 0, y: 12, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 8, scale: 0.98 }}
+            transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+            className="relative rounded-2xl overflow-hidden"
+            style={{
+              width: "min(420px, 92vw)",
+              background: "rgb(14, 12, 20)",
+              border: "1px solid rgba(189, 158, 255, 0.32)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={onClose}
+              className="absolute top-3 right-3 z-10 w-7 h-7 rounded-full flex items-center justify-center"
+              style={{
+                background: "rgba(255, 255, 255, 0.04)",
+                border: "1px solid rgba(255, 255, 255, 0.08)",
+                color: "rgba(236, 236, 241, 0.7)",
+              }}
+              title="Close"
+            >
+              ✕
+            </button>
+            <div className="p-6 flex flex-col items-center gap-4">
+              <div
+                className="text-[10px] uppercase tracking-[0.22em] font-mono"
+                style={{ color: "rgba(189, 158, 255, 0.85)" }}
+              >
+                // pair code
+              </div>
+              <div
+                className="rounded-xl p-4"
+                style={{
+                  background: "rgba(255, 255, 255, 0.03)",
+                  border: "1px solid rgba(189, 158, 255, 0.22)",
+                  width: 260,
+                  height: 260,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                {qrDataUrl ? (
+                  <img
+                    src={qrDataUrl}
+                    alt="Pair code QR"
+                    width={228}
+                    height={228}
+                    style={{ imageRendering: "pixelated" }}
+                  />
+                ) : (
+                  <div
+                    className="text-[11px] font-mono"
+                    style={{ color: "rgba(236, 236, 241, 0.6)" }}
+                  >
+                    {err ? err : busy ? "issuing…" : ""}
+                  </div>
+                )}
+              </div>
+              {token && (
+                <>
+                  <button
+                    onClick={copyCode}
+                    className="text-[22px] font-mono px-4 py-2 rounded-lg tracking-[0.24em] transition-colors"
+                    style={{
+                      background: "rgba(189, 158, 255, 0.10)",
+                      color: "rgb(240, 240, 246)",
+                      border: "1px solid rgba(189, 158, 255, 0.35)",
+                      letterSpacing: "0.24em",
+                    }}
+                    title="Copy the code"
+                  >
+                    {token.token}
+                  </button>
+                  <p
+                    className="text-[11.5px] text-center leading-relaxed max-w-xs"
+                    style={{ color: "rgba(236, 236, 241, 0.62)" }}
+                  >
+                    They can scan the QR to open Travis and pair, or type the
+                    code above into their <strong>Enter pair code</strong> flow.
+                    Expires in 24 hours.
+                  </p>
+                  <button
+                    onClick={copyLink}
+                    className="text-[11px] uppercase tracking-[0.18em] font-mono px-3 py-1.5 rounded-md"
+                    style={{
+                      background: "rgba(255, 255, 255, 0.04)",
+                      color: "rgba(236, 236, 241, 0.75)",
+                      border: "1px solid rgba(255, 255, 255, 0.1)",
+                    }}
+                  >
+                    {copyFlash ? "copied ✓" : "copy deep link"}
+                  </button>
+                </>
+              )}
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+// ─── Redeem pair modal ─────────────────────────────────────────────
+
+function RedeemPairModal({
+  open,
+  initialToken,
+  onCancel,
+  onSubmit,
+}: {
+  open: boolean;
+  initialToken: string;
+  onCancel: () => void;
+  onSubmit: (token: string) => Promise<void>;
+}) {
+  const [value, setValue] = useState(initialToken);
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setValue(initialToken);
+      // Focus so a paste + Enter works immediately.
+      window.setTimeout(() => inputRef.current?.focus(), 60);
+    }
+  }, [open, initialToken]);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!value.trim() || busy) return;
+    setBusy(true);
+    try {
+      await onSubmit(value);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          key="redeem-backdrop"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.24 }}
+          className="fixed inset-0 z-50 flex items-center justify-center px-4"
+          style={{ background: "rgba(0, 0, 0, 0.6)", backdropFilter: "blur(4px)" }}
+          onClick={onCancel}
+        >
+          <motion.form
+            onSubmit={submit}
+            initial={{ opacity: 0, y: 12, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 8, scale: 0.98 }}
+            transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+            className="relative rounded-2xl overflow-hidden p-6 flex flex-col gap-4"
+            style={{
+              width: "min(400px, 92vw)",
+              background: "rgb(14, 12, 20)",
+              border: "1px solid rgba(189, 158, 255, 0.32)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div>
+              <div
+                className="text-[10px] uppercase tracking-[0.22em] font-mono mb-1"
+                style={{ color: "rgba(189, 158, 255, 0.85)" }}
+              >
+                // enter pair code
+              </div>
+              <p
+                className="text-[12.5px] leading-relaxed"
+                style={{ color: "rgba(236, 236, 241, 0.72)" }}
+              >
+                Ask the other person to share their pair code from{" "}
+                <em>Contacts → Share pair code</em>. Then type the 8-character
+                code below.
+              </p>
+            </div>
+            <input
+              ref={inputRef}
+              value={value}
+              onChange={(e) => setValue(e.target.value.toUpperCase())}
+              disabled={busy}
+              maxLength={12}
+              spellCheck={false}
+              autoCapitalize="characters"
+              autoComplete="off"
+              placeholder="ABCD2345"
+              className="w-full bg-white/[0.02] border rounded-md px-3 py-2 text-[18px] font-mono text-center tracking-[0.32em] text-white placeholder:text-white/25 focus:outline-none focus:border-[#bd9eff]/50 disabled:opacity-50"
+              style={{ borderColor: "rgba(255, 255, 255, 0.12)" }}
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={onCancel}
+                disabled={busy}
+                className="text-[11.5px] uppercase tracking-[0.16em] font-mono px-3 py-1.5 rounded-md"
+                style={{
+                  background: "rgba(255, 255, 255, 0.04)",
+                  color: "rgba(236, 236, 241, 0.75)",
+                  border: "1px solid rgba(255, 255, 255, 0.1)",
+                }}
+              >
+                cancel
+              </button>
+              <button
+                type="submit"
+                disabled={busy || !value.trim()}
+                className="text-[11.5px] uppercase tracking-[0.16em] font-mono px-4 py-1.5 rounded-md disabled:opacity-40"
+                style={{
+                  background: "rgba(189, 158, 255, 0.16)",
+                  color: "rgb(189, 158, 255)",
+                  border: "1px solid rgba(189, 158, 255, 0.45)",
+                }}
+              >
+                {busy ? "pairing…" : "pair"}
+              </button>
+            </div>
+          </motion.form>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
 }

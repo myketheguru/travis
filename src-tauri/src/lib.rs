@@ -204,8 +204,9 @@ pub fn run() {
             // launched from the browser ("Open Travis", "Update from
             // the dashboard"). Two URLs are wired today:
             //
-            //   travis://open      → bring main window to foreground
-            //   travis://update    → trigger the Tauri updater check
+            //   travis://open        → bring main window to foreground
+            //   travis://update      → trigger the Tauri updater check
+            //   travis://pair?tok=X  → open ContactsOverlay + auto-redeem
             //
             // Other paths log + ignore so we can add more later
             // without bricking older builds.
@@ -239,6 +240,35 @@ pub fn run() {
                                     let _ = win.eval(
                                         "window.dispatchEvent(new CustomEvent('travis://update'))",
                                     );
+                                }
+                            }
+                            "pair" => {
+                                // v0.28.46 — pair-token deep link.
+                                // Bring the window forward and hand the
+                                // token off to JS. ContactsOverlay
+                                // listens for `travis://pair` and
+                                // auto-redeems.
+                                let token = url
+                                    .query_pairs()
+                                    .find(|(k, _)| k == "tok")
+                                    .map(|(_, v)| v.to_string())
+                                    .unwrap_or_default();
+                                // Token is only ever A-Z2-9 per server,
+                                // so simple interpolation is safe. Belt
+                                // + suspenders: strip anything that
+                                // isn't alphanumeric before injecting.
+                                let safe: String = token
+                                    .chars()
+                                    .filter(|c| c.is_ascii_alphanumeric())
+                                    .collect();
+                                if let Some(win) = dl_handle.get_webview_window("main") {
+                                    let _ = win.show();
+                                    let _ = win.unminimize();
+                                    let _ = win.set_focus();
+                                    let js = format!(
+                                        "window.dispatchEvent(new CustomEvent('travis://pair', {{ detail: {{ token: '{safe}' }} }}))"
+                                    );
+                                    let _ = win.eval(&js);
                                 }
                             }
                             _ => {
@@ -890,6 +920,8 @@ pub fn run() {
             cloud::t2t_cmd::t2t_invite,
             cloud::t2t_cmd::t2t_accept,
             cloud::t2t_cmd::t2t_revoke,
+            cloud::t2t_cmd::t2t_pair_create_token,
+            cloud::t2t_cmd::t2t_pair_redeem,
             cloud::t2t_cmd::t2t_send_query,
             cloud::t2t_cmd::t2t_inbox,
             cloud::t2t_cmd::t2t_outbox,

@@ -165,6 +165,59 @@ pub async fn revoke_relationship(
     Ok(())
 }
 
+// ─── Pair tokens (v0.28.46) ──────────────────────────────────────
+// Short-lived codes that let two Travises pair beyond the LAN.
+// Backend endpoints POST /t2t/pair/token and POST /t2t/pair/redeem.
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PairToken {
+    pub token: String,
+    pub expires_at: String,
+    pub deep_link: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PairRedeemResult {
+    pub ok: bool,
+    pub relationship_id: String,
+    pub other_user: Option<PairOtherUser>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PairOtherUser {
+    pub id: String,
+    pub name: Option<String>,
+    pub email: String,
+}
+
+pub async fn create_pair_token(http: &reqwest::Client) -> Result<PairToken> {
+    let resp = http
+        .post(format!("{CLOUD_BASE}/t2t/pair/token"))
+        .header("authorization", auth_header()?)
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(resp.json().await?)
+}
+
+pub async fn redeem_pair_token(
+    http: &reqwest::Client,
+    token: &str,
+) -> Result<PairRedeemResult> {
+    #[derive(Serialize)]
+    struct Req<'a> {
+        token: &'a str,
+    }
+    let resp = http
+        .post(format!("{CLOUD_BASE}/t2t/pair/redeem"))
+        .header("authorization", auth_header()?)
+        .json(&Req { token })
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(resp.json().await?)
+}
+
 // ─── Queries ──────────────────────────────────────────────────────
 
 pub async fn send_query(

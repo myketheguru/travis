@@ -1,5 +1,66 @@
 # Travis Changelog
 
+## v0.28.46 — QR / deep-link pair (beyond-LAN Travis discovery) (2026-07-14)
+
+Pair with another Travis over any channel, not just the LAN. First
+of the "beyond-LAN discovery" tranche; cloud rendezvous, circles/org
+auto-discovery, and Bluetooth LE proximity follow in v0.28.47+.
+
+### Cloud (travis-cloud)
+
+Two new endpoints on `/t2t/pair/*`:
+
+- `POST /t2t/pair/token` — issue a fresh 8-character pair code for
+  the current user (alphabet excludes ambiguous 0/O/1/I). Stored in
+  KV with a 24-hour TTL. Response includes the code, expiry, and a
+  deep-link URL (`travis://pair?tok=…`).
+- `POST /t2t/pair/redeem` — consume a token, create two active
+  relationship rows in both directions so the two Travises can
+  immediately message each other. Idempotent for the redeemer. Skips
+  the pending step since both sides have explicitly consented
+  (issuer by creating the token, redeemer by entering it).
+
+### Desktop
+
+- `src-tauri/src/cloud/t2t.rs` + `t2t_cmd.rs`: `create_pair_token` +
+  `redeem_pair_token` HTTP clients and their Tauri commands
+  (`t2t_pair_create_token`, `t2t_pair_redeem`).
+- `src-tauri/src/lib.rs`: new `travis://pair?tok=…` deep-link
+  handler. Extracts + sanitizes the token to A-Z/2-9, brings the main
+  window forward, dispatches a `travis://pair` window event with the
+  token.
+- `WorkspaceV2`: window-level listener for the deep-link event. On
+  fire, stashes the token in the new `pendingPairToken` store field
+  and opens the contacts overlay. This means a `travis://pair` URL
+  works whether Travis is already running, minimized, or cold-booting
+  from a browser click.
+- `ContactsOverlay`: three actions row in the footer — **Share pair
+  code**, **Enter pair code**, and **Invite by email**. Both pair
+  actions open sleek modals.
+  - **Share** issues a token immediately, renders a QR (encoding the
+    deep link), shows the plain-text 8-char code below in a clickable
+    button that copies it, and a secondary button to copy the deep
+    link. Auto-refreshes on next open.
+  - **Enter** shows a single centered 8-char input; auto-uppercase,
+    focus + Enter submits. If a `pendingPairToken` shows up from the
+    store, the modal pre-fills + auto-redeems.
+- Success flashes surface "Paired with $name" once relationships
+  refresh.
+
+### Dependencies
+
+- `qrcode` + `@types/qrcode` — client-side QR rendering into a
+  data-URL PNG. No image round-trip.
+
+### What's still coming
+
+- Cloud rendezvous UI (surface "beyond your network" matches) —
+  v0.28.47
+- Circles + Org auto-discovery — v0.28.47
+- Bluetooth LE proximity — v0.28.48
+- Sentry Rust screenshot capture + cloud upload — v0.28.49
+
+
 ## v0.28.45 — Settings cleanup, switches, Travis contacts as its own flow, Sentry consent gate (2026-07-14)
 
 Six-item settings + T2T + Sentry pass.

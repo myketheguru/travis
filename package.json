@@ -1,7 +1,7 @@
 {
   "name": "travis",
   "private": true,
-  "version": "0.28.45",
+  "version": "0.28.46",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -22,10 +22,12 @@
     "@tauri-apps/plugin-notification": "~2.3.0",
     "@tauri-apps/plugin-opener": "2.5.3",
     "@tauri-apps/plugin-updater": "~2.10.0",
+    "@types/qrcode": "^1.5.6",
     "clsx": "^2.1.1",
     "framer-motion": "^11.11.17",
     "maplibre-gl": "^5.0.0",
     "prism-react-renderer": "^2.4.1",
+    "qrcode": "^1.5.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",

@@ -48,6 +48,7 @@ export function WorkspaceV2() {
   const setDocumentsOverlayOpen = useAppStore((s) => s.setDocumentsOverlayOpen);
   const setSettingsOverlayOpen = useAppStore((s) => s.setSettingsOverlayOpen);
   const setContactsOverlayOpen = useAppStore((s) => s.setContactsOverlayOpen);
+  const setPendingPairToken = useAppStore((s) => s.setPendingPairToken);
   const canvasMode = useCanvasMode();
   useFocalContent();
 
@@ -98,6 +99,22 @@ export function WorkspaceV2() {
     setContactsOverlayOpen,
     noteUserActivity,
   ]);
+
+  // v0.28.46 — travis://pair?tok=… deep link. Rust dispatches
+  // `travis://pair` on window; open contacts + stash the token so
+  // the overlay can auto-redeem once mounted.
+  useEffect(() => {
+    const onPair = (e: Event) => {
+      const detail = (e as CustomEvent<{ token: string }>).detail;
+      if (detail?.token) {
+        setPendingPairToken(detail.token);
+        setContactsOverlayOpen(true);
+      }
+    };
+    window.addEventListener("travis://pair" as keyof WindowEventMap, onPair);
+    return () =>
+      window.removeEventListener("travis://pair" as keyof WindowEventMap, onPair);
+  }, [setContactsOverlayOpen, setPendingPairToken]);
 
   // v0.27.6 — Spacebar longpress (1.5s) push-to-talk. Only fires when
   // focus is NOT inside an input/textarea so it never eats a real
