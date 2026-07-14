@@ -1,5 +1,62 @@
 # Travis Changelog
 
+## v0.28.51 — Real BLE central-role scan via btleplug (2026-07-14)
+
+Cutting the scaffold. Central-role Bluetooth LE scan is now live —
+Travis actually looks for peers advertising the Travis service UUID
+on every OS it ships to. Peripheral-role (advertise) is deliberately
+still a no-op because btleplug doesn't cover it consistently across
+platforms; that ships in v0.28.52 layered on top of this.
+
+### Rust
+
+- New dep `btleplug = "0.11"` — cross-platform BLE central via
+  BlueZ (Linux) / CoreBluetooth (macOS) / WinRT (Windows).
+- `src-tauri/src/ble/mod.rs` rewritten: `ensure_scanner()` spins a
+  singleton tokio task on first frontend call. That task opens the
+  default adapter, starts a scan filtered to the Travis service
+  UUID (`550e8400-e29b-41d4-a716-446655440073`), and listens on
+  the central event stream — every `DeviceDiscovered` /
+  `DeviceUpdated` for a peripheral whose properties actually list
+  the Travis service gets folded into a shared `RwLock<HashMap>`.
+  Disconnects prune the entry.
+- `scan_peers()` becomes async; reads a snapshot from the shared
+  map. First call kicks off the scanner; subsequent calls return
+  the current known set (updated every ~2s from the frontend
+  poll). Any failure to open the adapter is logged but not
+  surfaced — the frontend just sees an empty BLE list, which is
+  the correct fallback on machines without Bluetooth.
+
+### Platform bits
+
+- **Linux**: `libdbus-1-dev` added to both `ci.yml` and
+  `release.yml` build-deps (btleplug's Linux backend needs BlueZ
+  which speaks D-Bus).
+- **macOS**: `src-tauri/Info.plist` added with
+  `NSBluetoothAlwaysUsageDescription` +
+  `NSBluetoothPeripheralUsageDescription`. Without these
+  CBCentralManager refuses to start. Tauri 2 auto-merges this
+  file into the bundle's `Contents/Info.plist`. Copy is plain and
+  honest ("Travis uses Bluetooth to find nearby Travises so you
+  can share files…").
+- **Windows**: nothing extra — WinRT doesn't require a manifest
+  entry for a desktop app's BLE central use.
+
+### What still hurts
+
+Peripheral-role. btleplug won't advertise cross-platform (Linux
+would need `bluer`, macOS partial via CoreBluetooth peripheral APIs,
+Windows very limited). Until v0.28.52 layers a peripheral crate on
+top, a Travis running v0.28.51 can *see* peers that advertise the
+Travis service (e.g. same-network Travises using a companion
+script) but can't be seen back over BLE. mDNS + circles + QR pair
+still cover discovery in the meantime.
+
+Verified locally with `npx tsc --noEmit`. Watching CI closely on
+this push since it's the first native-crate addition since the
+CI-blindness episode.
+
+
 ## v0.28.50 — Fix radar glitching (2026-07-14)
 
 The v0.28.49 radar was glitching because of two `% 1` modulo wraps

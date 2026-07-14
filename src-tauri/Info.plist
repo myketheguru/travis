@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- v0.28.51 — required by macOS before an app may open the
+       Bluetooth adapter. Without this key CBCentralManager refuses
+       to start scanning. Copy is user-facing (shown in the system
+       prompt), so keep it plain-English + honest. -->
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>Travis uses Bluetooth to find nearby Travises so you can share files or start a chat without setting up a network.</string>
+  <key>NSBluetoothPeripheralUsageDescription</key>
+  <string>Travis uses Bluetooth to broadcast its presence so other Travises nearby can find you.</string>
+</dict>
+</plist>

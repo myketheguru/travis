@@ -1,6 +1,6 @@
 [package]
 name = "travis"
-version = "0.28.50"
+version = "0.28.51"
 description = "Travis — local-first AI operations assistant"
 authors = ["myketheguru"]
 edition = "2021"
@@ -105,3 +105,11 @@ active-win-pos-rs = "0.9"
 # can render an audio player next to the transcript.
 hound = "3.5"
 uuid = { version = "1", features = ["v4"] }
+# v0.28.51 — Bluetooth LE (task #379). Central role (scan) is real
+# and cross-platform via btleplug's per-OS backends (BlueZ / CoreBT /
+# WinRT). Peripheral role (advertise) is not shipped yet — btleplug
+# doesn't cover it cross-platform, so peer discovery works one-way
+# until v0.28.52 pairs this with a peripheral crate. Linux CI needs
+# libdbus-1-dev; macOS bundle needs NSBluetoothAlwaysUsageDescription;
+# Windows uses WinRT and needs no extra manifest.
+btleplug = "0.11"

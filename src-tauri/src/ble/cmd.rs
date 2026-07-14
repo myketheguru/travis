@@ -1,10 +1,10 @@
-//! Tauri commands for BLE (v0.28.49 scaffold).
+//! Tauri commands for BLE (v0.28.51 — btleplug scan).
 
 use crate::ble::{self, BlePeer};
 
 #[tauri::command]
 pub async fn ble_scan_peers() -> Result<Vec<BlePeer>, String> {
-    Ok(ble::scan_peers())
+    Ok(ble::scan_peers().await)
 }
 
 #[tauri::command]
