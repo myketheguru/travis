@@ -458,6 +458,69 @@ export function t2tPairRedeem(token: string): Promise<PairRedeemResult> {
   return invoke<PairRedeemResult>("t2t_pair_redeem", { token });
 }
 
+// v0.28.48 — Circles: named groups for beyond-LAN Travis discovery.
+
+export interface Circle {
+  id: string;
+  name: string;
+  description: string | null;
+  join_code: string;
+  creator_id: string | null;
+  created_at: string | null;
+  role: string;
+  member_count: number;
+}
+
+export interface CircleMember {
+  id: string;
+  name: string | null;
+  email: string;
+  role: string;
+  joined_at: string;
+}
+
+export interface CircleContact {
+  id: string;
+  name: string | null;
+  email: string;
+}
+
+export interface CircleJoinResult {
+  id: string;
+  name: string;
+  description: string | null;
+  role: string;
+  already_member: boolean;
+}
+
+export function circlesCreate(name: string, description?: string): Promise<Circle> {
+  return invoke<Circle>("circles_create", { name, description: description ?? null });
+}
+
+export function circlesList(): Promise<Circle[]> {
+  return invoke<Circle[]>("circles_list");
+}
+
+export function circlesJoin(code: string): Promise<CircleJoinResult> {
+  return invoke<CircleJoinResult>("circles_join", { code });
+}
+
+export function circlesLeave(id: string): Promise<void> {
+  return invoke<void>("circles_leave", { id });
+}
+
+export function circlesMembers(id: string): Promise<CircleMember[]> {
+  return invoke<CircleMember[]>("circles_members", { id });
+}
+
+export function circlesContacts(): Promise<CircleContact[]> {
+  return invoke<CircleContact[]>("circles_contacts");
+}
+
+export function circlesDelete(id: string): Promise<void> {
+  return invoke<void>("circles_delete", { id });
+}
+
 export function t2tSendQuery(
   toUserId: string,
   question: string,

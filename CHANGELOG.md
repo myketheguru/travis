@@ -1,5 +1,49 @@
 # Travis Changelog
 
+## v0.28.48 — Circles: named groups for beyond-LAN discovery (2026-07-14)
+
+Everyone in the same circle is auto-discoverable to each other — no
+separate T2T invite needed. Works over any network since it's cloud-
+brokered. Ships alongside the v0.28.46 QR pair flow as the second
+beyond-LAN discovery mechanism.
+
+### Cloud
+
+- Migration `0057_circles.sql` — new `circle` + `circle_member`
+  tables. Circle rows carry a unique 8-character join code (alphabet
+  excludes 0/O/1/I for readability).
+- Routes at `/circles`:
+  - `POST /circles` — create (creator becomes owner + first member)
+  - `GET /circles` — list mine with member counts and my role
+  - `POST /circles/join` — join by code (idempotent)
+  - `POST /circles/:id/leave` — leave; last member auto-deletes the
+    circle
+  - `GET /circles/:id/members` — members of a circle I'm in
+  - `GET /circles/contacts` — dedup'd list of everyone in every
+    circle I'm in (feeds the "In your circles" row)
+  - `DELETE /circles/:id` — owner-only teardown
+
+### Desktop
+
+- `src-tauri/src/cloud/circles.rs` + `circles_cmd.rs`: HTTP clients
+  and Tauri commands (`circles_create` / `_list` / `_join` / `_leave`
+  / `_members` / `_contacts` / `_delete`).
+- `ContactsOverlay` gets two new sections:
+  - **Your circles** — collapsible rows with name, description,
+    role, member count, join code (click to copy), and a leave (or
+    delete for owners) button. Expanding a row loads and lists
+    members.
+  - **In your circles** — flat list of every distinct person you
+    share at least one circle with, avatars + name.
+- Two new modals reached from the action row:
+  - **Create circle** — name + optional description → gets you back
+    a shareable join code.
+  - **Join circle** — 8-char code input, auto-uppercase, Enter to
+    submit.
+- Older cloud deployments (without `/circles`) fall through
+  silently — the UI just doesn't render the two new sections.
+
+
 ## v0.28.47 — Unblock the CI pipeline (2026-07-14)
 
 **None of v0.28.44 / v0.28.45 / v0.28.46 actually shipped to users.**

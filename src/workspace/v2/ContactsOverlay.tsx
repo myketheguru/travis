@@ -23,6 +23,13 @@ import { motion, AnimatePresence } from "framer-motion";
 import QRCode from "qrcode";
 import { useAppStore } from "../../stores/app";
 import {
+  circlesContacts,
+  circlesCreate,
+  circlesDelete,
+  circlesJoin,
+  circlesLeave,
+  circlesList,
+  circlesMembers,
   cloudStatus,
   discoveryPeers,
   discoveryStart,
@@ -32,6 +39,9 @@ import {
   t2tPairCreateToken,
   t2tPairRedeem,
   t2tRevoke,
+  type Circle,
+  type CircleContact,
+  type CircleMember,
   type DiscoveredPeer,
   type PairToken,
   type T2tRelationship,
@@ -116,6 +126,10 @@ function ContactsBody({ open }: { open: boolean }) {
   const [shareOpen, setShareOpen] = useState(false);
   const [redeemOpen, setRedeemOpen] = useState(false);
   const [prefillRedeemToken, setPrefillRedeemToken] = useState<string | null>(null);
+  const [circles, setCircles] = useState<Circle[]>([]);
+  const [circleContacts, setCircleContacts] = useState<CircleContact[]>([]);
+  const [createCircleOpen, setCreateCircleOpen] = useState(false);
+  const [joinCircleOpen, setJoinCircleOpen] = useState(false);
 
   const refreshRelationships = useCallback(async () => {
     try {
@@ -123,6 +137,22 @@ function ContactsBody({ open }: { open: boolean }) {
       setRelationships(list);
     } catch (e) {
       setError(String(e));
+    }
+  }, []);
+
+  const refreshCircles = useCallback(async () => {
+    try {
+      const [list, contacts] = await Promise.all([
+        circlesList(),
+        circlesContacts(),
+      ]);
+      setCircles(list);
+      setCircleContacts(contacts);
+    } catch (e) {
+      // Circles is a new endpoint — swallow 404s so older cloud
+      // deployments don't spam errors. Only report other failures.
+      const msg = String(e);
+      if (!msg.includes("404")) setError(msg);
     }
   }, []);
 
@@ -138,6 +168,7 @@ function ContactsBody({ open }: { open: boolean }) {
       })
       .catch(() => {});
     void refreshRelationships();
+    void refreshCircles();
 
     const poll = async () => {
       try {
@@ -153,7 +184,7 @@ function ContactsBody({ open }: { open: boolean }) {
       cancelled = true;
       window.clearInterval(t);
     };
-  }, [open, refreshRelationships]);
+  }, [open, refreshRelationships, refreshCircles]);
 
   // Auto-clear flashes so the UI settles.
   useEffect(() => {
@@ -225,6 +256,52 @@ function ContactsBody({ open }: { open: boolean }) {
       setPendingInviteEmail(null);
       setInviteOpen(false);
       await refreshRelationships();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const createCircle = async (name: string, description?: string) => {
+    try {
+      const c = await circlesCreate(name, description);
+      setFlash(`Created "${c.name}" · code ${c.join_code}`);
+      setCreateCircleOpen(false);
+      await refreshCircles();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const joinCircleByCode = async (code: string) => {
+    try {
+      const r = await circlesJoin(code);
+      setFlash(
+        r.already_member
+          ? `Already in "${r.name}"`
+          : `Joined "${r.name}"`,
+      );
+      setJoinCircleOpen(false);
+      await refreshCircles();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const leaveCircle = async (c: Circle) => {
+    try {
+      await circlesLeave(c.id);
+      setFlash(`Left "${c.name}"`);
+      await refreshCircles();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const deleteCircle = async (c: Circle) => {
+    try {
+      await circlesDelete(c.id);
+      setFlash(`Deleted "${c.name}"`);
+      await refreshCircles();
     } catch (e) {
       setError(String(e));
     }
@@ -313,6 +390,85 @@ function ContactsBody({ open }: { open: boolean }) {
         )}
       </div>
 
+      {/* CIRCLES */}
+      {circles.length > 0 && (
+        <div className="mt-6">
+          <SectionHeader
+            label="Your circles"
+            hint={
+              circles.length > 0
+                ? `${circles.length} ${circles.length === 1 ? "group" : "groups"}`
+                : undefined
+            }
+          />
+          <div className="mt-2 flex flex-col gap-1.5">
+            {circles.map((c) => (
+              <CircleRow
+                key={c.id}
+                circle={c}
+                onLeave={() => leaveCircle(c)}
+                onDelete={() => deleteCircle(c)}
+                onFlash={setFlash}
+                onError={setError}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* IN YOUR CIRCLES — contacts derived from shared circles */}
+      {circleContacts.length > 0 && (
+        <div className="mt-6">
+          <SectionHeader
+            label="In your circles"
+            hint={
+              circleContacts.length > 0
+                ? `${circleContacts.length} ${circleContacts.length === 1 ? "person" : "people"}`
+                : undefined
+            }
+          />
+          <div className="mt-2 flex flex-col gap-1.5">
+            {circleContacts.map((cc) => (
+              <div
+                key={cc.id}
+                className="flex items-center gap-3 rounded-lg px-3 py-2"
+                style={{
+                  background: "rgba(255, 255, 255, 0.02)",
+                  border: "1px solid rgba(255, 255, 255, 0.06)",
+                }}
+              >
+                <div
+                  className="w-8 h-8 rounded-full flex items-center justify-center shrink-0"
+                  style={{
+                    background: "rgba(189, 158, 255, 0.18)",
+                    border: "1px solid rgba(189, 158, 255, 0.35)",
+                    color: "rgba(250, 248, 255, 0.9)",
+                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                    fontSize: 10.5,
+                  }}
+                >
+                  {initialsFor(cc.name ?? cc.email)}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div
+                    className="text-[13px] font-medium truncate"
+                    style={{ color: "rgba(240, 240, 246, 0.94)" }}
+                  >
+                    {cc.name ?? cc.email}
+                  </div>
+                  <div
+                    className="text-[10.5px] font-mono"
+                    style={{ color: "rgba(189, 158, 255, 0.75)" }}
+                  >
+                    via circle
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* CONTACTS */}
       <div className="mt-6">
         <SectionHeader
@@ -370,6 +526,18 @@ function ContactsBody({ open }: { open: boolean }) {
             >
               Enter pair code
             </SecondaryAction>
+            <SecondaryAction
+              onClick={() => setCreateCircleOpen(true)}
+              icon={<CircleIcon />}
+            >
+              Create circle
+            </SecondaryAction>
+            <SecondaryAction
+              onClick={() => setJoinCircleOpen(true)}
+              icon={<CircleJoinIcon />}
+            >
+              Join circle
+            </SecondaryAction>
             <SecondaryAction onClick={() => setInviteOpen(true)}>
               + Invite by email
             </SecondaryAction>
@@ -395,6 +563,16 @@ function ContactsBody({ open }: { open: boolean }) {
           setPrefillRedeemToken(null);
         }}
         onSubmit={redeemPairCode}
+      />
+      <CreateCircleModal
+        open={createCircleOpen}
+        onCancel={() => setCreateCircleOpen(false)}
+        onSubmit={createCircle}
+      />
+      <JoinCircleModal
+        open={joinCircleOpen}
+        onCancel={() => setJoinCircleOpen(false)}
+        onSubmit={joinCircleByCode}
       />
 
       {/* Flashes */}
@@ -1112,6 +1290,505 @@ function RedeemPairModal({
                 }}
               >
                 {busy ? "pairing…" : "pair"}
+              </button>
+            </div>
+          </motion.form>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+// ─── Circles ───────────────────────────────────────────────────────
+
+function CircleIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <circle cx="8" cy="10" r="4" />
+      <circle cx="16" cy="10" r="4" />
+      <path d="M4 20c0-2.2 1.8-4 4-4M20 20c0-2.2-1.8-4-4-4" />
+    </svg>
+  );
+}
+
+function CircleJoinIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <circle cx="14" cy="12" r="6" />
+      <path d="M3 12h6M6 9l-3 3 3 3" />
+    </svg>
+  );
+}
+
+function CircleRow({
+  circle,
+  onLeave,
+  onDelete,
+  onFlash,
+  onError,
+}: {
+  circle: Circle;
+  onLeave: () => void;
+  onDelete: () => void;
+  onFlash: (msg: string) => void;
+  onError: (msg: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [members, setMembers] = useState<CircleMember[] | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const loadMembers = async () => {
+    if (members) return;
+    try {
+      const list = await circlesMembers(circle.id);
+      setMembers(list);
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+
+  const toggle = async () => {
+    if (!expanded) await loadMembers();
+    setExpanded((v) => !v);
+  };
+
+  const copyCode = () => {
+    void navigator.clipboard.writeText(circle.join_code);
+    onFlash(`Copied "${circle.join_code}"`);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
+
+  const isOwner = circle.role === "owner";
+
+  return (
+    <div
+      className="rounded-lg overflow-hidden"
+      style={{
+        background: "rgba(255, 255, 255, 0.02)",
+        border: "1px solid rgba(255, 255, 255, 0.06)",
+      }}
+    >
+      <div className="flex items-center gap-3 px-3 py-2">
+        <button
+          onClick={toggle}
+          className="w-8 h-8 rounded-md flex items-center justify-center shrink-0 transition-colors"
+          style={{
+            background: "rgba(189, 158, 255, 0.14)",
+            border: "1px solid rgba(189, 158, 255, 0.30)",
+            color: "rgba(240, 240, 246, 0.85)",
+          }}
+          title={expanded ? "Collapse" : "Show members"}
+        >
+          <motion.span
+            animate={{ rotate: expanded ? 90 : 0 }}
+            transition={{ duration: 0.18 }}
+            className="inline-flex"
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 6l6 6-6 6" />
+            </svg>
+          </motion.span>
+        </button>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-2">
+            <span
+              className="text-[13.5px] font-medium truncate"
+              style={{ color: "rgba(240, 240, 246, 0.94)" }}
+            >
+              {circle.name}
+            </span>
+            <span
+              className="text-[10px] font-mono"
+              style={{ color: "rgba(189, 158, 255, 0.75)" }}
+            >
+              {isOwner ? "owner" : "member"}
+            </span>
+          </div>
+          {circle.description && (
+            <div
+              className="text-[11.5px] mt-0.5 leading-snug truncate"
+              style={{ color: "rgba(236, 236, 241, 0.62)" }}
+            >
+              {circle.description}
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            onClick={copyCode}
+            className="text-[10.5px] uppercase tracking-[0.16em] font-mono px-2.5 py-1 rounded-md"
+            style={{
+              background: "rgba(189, 158, 255, 0.10)",
+              color: "rgb(189, 158, 255)",
+              border: "1px solid rgba(189, 158, 255, 0.35)",
+            }}
+            title="Copy join code"
+          >
+            {copied ? "copied ✓" : circle.join_code}
+          </button>
+          <span
+            className="text-[10.5px] font-mono"
+            style={{ color: "rgba(236, 236, 241, 0.55)" }}
+            title={`${circle.member_count} member${circle.member_count === 1 ? "" : "s"}`}
+          >
+            {circle.member_count}
+          </span>
+          {isOwner ? (
+            <button
+              onClick={onDelete}
+              className="text-[10.5px] uppercase tracking-[0.16em] font-mono px-2.5 py-1 rounded-md"
+              style={{
+                background: "rgba(255, 255, 255, 0.04)",
+                color: "rgba(255, 155, 155, 0.75)",
+                border: "1px solid rgba(255, 155, 155, 0.30)",
+              }}
+              title="Delete circle (owner only — removes for all members)"
+            >
+              delete
+            </button>
+          ) : (
+            <button
+              onClick={onLeave}
+              className="text-[10.5px] uppercase tracking-[0.16em] font-mono px-2.5 py-1 rounded-md"
+              style={{
+                background: "rgba(255, 255, 255, 0.04)",
+                color: "rgba(236, 236, 241, 0.65)",
+                border: "1px solid rgba(255, 255, 255, 0.10)",
+              }}
+            >
+              leave
+            </button>
+          )}
+        </div>
+      </div>
+
+      <AnimatePresence>
+        {expanded && (
+          <motion.div
+            key="members"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+            className="overflow-hidden"
+            style={{ borderTop: "1px solid rgba(255, 255, 255, 0.06)" }}
+          >
+            <div className="px-3 py-2 flex flex-col gap-1.5">
+              {members === null ? (
+                <div
+                  className="text-[11.5px] font-mono"
+                  style={{ color: "rgba(236, 236, 241, 0.55)" }}
+                >
+                  loading members…
+                </div>
+              ) : members.length === 0 ? (
+                <div
+                  className="text-[11.5px]"
+                  style={{ color: "rgba(236, 236, 241, 0.55)" }}
+                >
+                  Just you so far. Share the join code to bring people in.
+                </div>
+              ) : (
+                members.map((m) => (
+                  <div
+                    key={m.id}
+                    className="flex items-center gap-2 text-[12.5px]"
+                    style={{ color: "rgba(236, 236, 241, 0.88)" }}
+                  >
+                    <div
+                      className="w-6 h-6 rounded-full flex items-center justify-center shrink-0"
+                      style={{
+                        background: "rgba(189, 158, 255, 0.14)",
+                        border: "1px solid rgba(189, 158, 255, 0.28)",
+                        color: "rgba(250, 248, 255, 0.9)",
+                        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                        fontSize: 9,
+                      }}
+                    >
+                      {initialsFor(m.name ?? m.email)}
+                    </div>
+                    <span className="truncate">{m.name ?? m.email}</span>
+                    {m.role === "owner" && (
+                      <span
+                        className="text-[9.5px] uppercase tracking-[0.14em] font-mono"
+                        style={{ color: "rgba(189, 158, 255, 0.75)" }}
+                      >
+                        owner
+                      </span>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function CreateCircleModal({
+  open,
+  onCancel,
+  onSubmit,
+}: {
+  open: boolean;
+  onCancel: () => void;
+  onSubmit: (name: string, description?: string) => Promise<void>;
+}) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setName("");
+      setDescription("");
+      window.setTimeout(() => inputRef.current?.focus(), 60);
+    }
+  }, [open]);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim() || busy) return;
+    setBusy(true);
+    try {
+      await onSubmit(name, description || undefined);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          key="create-circle-backdrop"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.24 }}
+          className="fixed inset-0 z-50 flex items-center justify-center px-4"
+          style={{ background: "rgba(0, 0, 0, 0.6)", backdropFilter: "blur(4px)" }}
+          onClick={onCancel}
+        >
+          <motion.form
+            onSubmit={submit}
+            initial={{ opacity: 0, y: 12, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 8, scale: 0.98 }}
+            transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+            className="relative rounded-2xl overflow-hidden p-6 flex flex-col gap-3"
+            style={{
+              width: "min(420px, 92vw)",
+              background: "rgb(14, 12, 20)",
+              border: "1px solid rgba(189, 158, 255, 0.32)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div>
+              <div
+                className="text-[10px] uppercase tracking-[0.22em] font-mono mb-1"
+                style={{ color: "rgba(189, 158, 255, 0.85)" }}
+              >
+                // new circle
+              </div>
+              <p
+                className="text-[12.5px] leading-relaxed"
+                style={{ color: "rgba(236, 236, 241, 0.72)" }}
+              >
+                A circle groups a few Travises together. Everyone in it
+                is auto-discoverable to each other — no separate invite
+                needed. You'll get a join code to share.
+              </p>
+            </div>
+            <input
+              ref={inputRef}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              disabled={busy}
+              maxLength={80}
+              placeholder="Circle name (e.g. 'Family', 'Book club')"
+              className="w-full bg-white/[0.02] border rounded-md px-3 py-2 text-[13px] text-white placeholder:text-white/40 focus:outline-none focus:border-[#bd9eff]/50 disabled:opacity-50"
+              style={{ borderColor: "rgba(255, 255, 255, 0.12)" }}
+            />
+            <input
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              disabled={busy}
+              maxLength={200}
+              placeholder="Description (optional)"
+              className="w-full bg-white/[0.02] border rounded-md px-3 py-2 text-[12.5px] text-white placeholder:text-white/40 focus:outline-none focus:border-[#bd9eff]/50 disabled:opacity-50"
+              style={{ borderColor: "rgba(255, 255, 255, 0.10)" }}
+            />
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={onCancel}
+                disabled={busy}
+                className="text-[11.5px] uppercase tracking-[0.16em] font-mono px-3 py-1.5 rounded-md"
+                style={{
+                  background: "rgba(255, 255, 255, 0.04)",
+                  color: "rgba(236, 236, 241, 0.75)",
+                  border: "1px solid rgba(255, 255, 255, 0.1)",
+                }}
+              >
+                cancel
+              </button>
+              <button
+                type="submit"
+                disabled={busy || !name.trim()}
+                className="text-[11.5px] uppercase tracking-[0.16em] font-mono px-4 py-1.5 rounded-md disabled:opacity-40"
+                style={{
+                  background: "rgba(189, 158, 255, 0.16)",
+                  color: "rgb(189, 158, 255)",
+                  border: "1px solid rgba(189, 158, 255, 0.45)",
+                }}
+              >
+                {busy ? "creating…" : "create"}
+              </button>
+            </div>
+          </motion.form>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+function JoinCircleModal({
+  open,
+  onCancel,
+  onSubmit,
+}: {
+  open: boolean;
+  onCancel: () => void;
+  onSubmit: (code: string) => Promise<void>;
+}) {
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setCode("");
+      window.setTimeout(() => inputRef.current?.focus(), 60);
+    }
+  }, [open]);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!code.trim() || busy) return;
+    setBusy(true);
+    try {
+      await onSubmit(code);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          key="join-circle-backdrop"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.24 }}
+          className="fixed inset-0 z-50 flex items-center justify-center px-4"
+          style={{ background: "rgba(0, 0, 0, 0.6)", backdropFilter: "blur(4px)" }}
+          onClick={onCancel}
+        >
+          <motion.form
+            onSubmit={submit}
+            initial={{ opacity: 0, y: 12, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 8, scale: 0.98 }}
+            transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+            className="relative rounded-2xl overflow-hidden p-6 flex flex-col gap-3"
+            style={{
+              width: "min(400px, 92vw)",
+              background: "rgb(14, 12, 20)",
+              border: "1px solid rgba(189, 158, 255, 0.32)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div>
+              <div
+                className="text-[10px] uppercase tracking-[0.22em] font-mono mb-1"
+                style={{ color: "rgba(189, 158, 255, 0.85)" }}
+              >
+                // join circle
+              </div>
+              <p
+                className="text-[12.5px] leading-relaxed"
+                style={{ color: "rgba(236, 236, 241, 0.72)" }}
+              >
+                Enter the 8-character join code someone shared with
+                you. Circles never expire — join once and you're in
+                until you leave.
+              </p>
+            </div>
+            <input
+              ref={inputRef}
+              value={code}
+              onChange={(e) => setCode(e.target.value.toUpperCase())}
+              disabled={busy}
+              maxLength={12}
+              spellCheck={false}
+              autoCapitalize="characters"
+              autoComplete="off"
+              placeholder="ABCD2345"
+              className="w-full bg-white/[0.02] border rounded-md px-3 py-2 text-[18px] font-mono text-center tracking-[0.32em] text-white placeholder:text-white/25 focus:outline-none focus:border-[#bd9eff]/50 disabled:opacity-50"
+              style={{ borderColor: "rgba(255, 255, 255, 0.12)" }}
+            />
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={onCancel}
+                disabled={busy}
+                className="text-[11.5px] uppercase tracking-[0.16em] font-mono px-3 py-1.5 rounded-md"
+                style={{
+                  background: "rgba(255, 255, 255, 0.04)",
+                  color: "rgba(236, 236, 241, 0.75)",
+                  border: "1px solid rgba(255, 255, 255, 0.1)",
+                }}
+              >
+                cancel
+              </button>
+              <button
+                type="submit"
+                disabled={busy || !code.trim()}
+                className="text-[11.5px] uppercase tracking-[0.16em] font-mono px-4 py-1.5 rounded-md disabled:opacity-40"
+                style={{
+                  background: "rgba(189, 158, 255, 0.16)",
+                  color: "rgb(189, 158, 255)",
+                  border: "1px solid rgba(189, 158, 255, 0.45)",
+                }}
+              >
+                {busy ? "joining…" : "join"}
               </button>
             </div>
           </motion.form>
