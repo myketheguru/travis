@@ -1557,43 +1557,12 @@ function MapControls({
   );
 }
 
-function PathSourceBadge({ source }: { source: "cloud" | "llm" | "straight" | "loading" | "none" }) {
-  if (source === "none") return null;
-  const config = {
-    cloud:    { color: "rgb(140, 230, 175)", label: "real path" },
-    llm:      { color: "rgb(255, 210, 130)", label: "llm path"  },
-    straight: { color: "rgb(255, 155, 155)", label: "straight"  },
-    loading:  { color: "rgba(236, 236, 241, 0.65)", label: "fetching…" },
-  }[source];
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 4,
-        padding: "1px 6px",
-        borderRadius: 4,
-        border: `1px solid ${config.color}80`,
-        background: `${config.color}22`,
-        color: config.color,
-        fontSize: 8.5,
-        letterSpacing: "0.14em",
-      }}
-      title={`Route geometry source: ${config.label}`}
-    >
-      <span
-        style={{
-          width: 5,
-          height: 5,
-          borderRadius: "50%",
-          background: config.color,
-          boxShadow: `0 0 6px ${config.color}`,
-        }}
-      />
-      {config.label}
-    </span>
-  );
-}
+// v0.28.47 — PathSourceBadge deleted. The overlay-chip stack (added in
+// v0.28.44) now surfaces route geometry source as a chip at the top of
+// the map canvas, so this legacy inline badge is redundant. Removing
+// it unblocks the TS "declared but never read" error that has been
+// silently failing every Release CI since v0.28.44 → no installers
+// have been published between v0.28.43 and this fix.
 
 function BrandMarkerStyles() {
   return (

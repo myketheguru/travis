@@ -1,5 +1,25 @@
 # Travis Changelog
 
+## v0.28.47 — Unblock the CI pipeline (2026-07-14)
+
+**None of v0.28.44 / v0.28.45 / v0.28.46 actually shipped to users.**
+The Release CI has been silently failing on the same TypeScript
+error since v0.28.44 was tagged — the `PathSourceBadge` component
+was orphaned when its usage moved into the top-of-map overlay chip
+stack (v0.28.44), but the function stayed in `MapCanvas.tsx`.
+`tsc --noEmit` failed on TS6133 ("declared but never read"), which
+runs both in the Lightweight CI workflow and inside the Release
+workflow's `npm run build` step (`tsc && vite build`), so all
+three platform installers refused to build for three consecutive
+releases. Last shipped installer is v0.28.43.
+
+Fix: delete the dead `PathSourceBadge` function. Verified locally
+with `npx tsc --noEmit` before pushing this time.
+
+Once this build passes, users receive **the accumulated changes
+from v0.28.44 + v0.28.45 + v0.28.46 + this fix**, all at once.
+
+
 ## v0.28.46 — QR / deep-link pair (beyond-LAN Travis discovery) (2026-07-14)
 
 Pair with another Travis over any channel, not just the LAN. First
