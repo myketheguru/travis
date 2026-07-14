@@ -29,6 +29,9 @@ jobs:
             libxcb1-dev \
             libxrandr-dev \
             libxcb-randr0-dev \
+            libpipewire-0.3-dev \
+            libclang-dev \
+            clang \
             patchelf
 
       - name: Set up Node

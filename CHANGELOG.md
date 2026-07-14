@@ -1,5 +1,14 @@
 # Travis Changelog
 
+## v0.28.54 — Hotfix: PipeWire deps for xcap 0.9 on Linux CI (2026-07-14)
+
+v0.28.53 shipped with xcap 0.9 which transitively pulls PipeWire on
+Linux for Wayland screen capture. CI ran into `libspa-sys` failing
+at `pkg-config --libs --cflags libpipewire-0.3`. Both workflows now
+install `libpipewire-0.3-dev` + `libclang-dev` + `clang` alongside
+the existing deps so the build reaches the Rust toolchain unblocked.
+No product changes vs. v0.28.53.
+
 ## v0.28.53 — Sentry cloud sync + T2T secure file transfer (2026-07-14)
 
 Two things ship together:
