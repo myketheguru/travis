@@ -97,6 +97,9 @@ jobs:
             librsvg2-dev \
             libasound2-dev \
             libdbus-1-dev \
+            libxcb1-dev \
+            libxrandr-dev \
+            libxcb-randr0-dev \
             patchelf
 
       - name: Set up Node

@@ -1,5 +1,50 @@
 # Travis Changelog
 
+## v0.28.52 — Sentry screenshots (local rolling window) (2026-07-14)
+
+Sentry graduates from window-metadata-only to actual visual context.
+Every ~5 minutes while enabled, Travis captures a JPEG of the primary
+monitor, resizes to 1600px long-side, and drops it in the app data
+directory. Rolling window of 20 keeps the on-disk footprint bounded.
+Nothing leaves the machine in this release — cloud upload is a
+separate opt-in shipping in v0.28.5x.
+
+### Rust
+
+- New deps `xcap = "0.0.14"` + `image = "0.25"` (JPEG feature only) —
+  cross-platform monitor capture (GDI on Windows, CoreGraphics on
+  macOS, xcb on Linux X11) plus a slim JPEG encoder.
+- `sentry::capture_and_prune(dir)` grabs the primary monitor, resizes
+  proportionally to fit within 1600×1600, encodes JPEG @ quality 80,
+  writes `sentry-YYYYMMDD-HHMMSS.jpg`, then prunes older files back
+  to the 20-most-recent budget.
+- Sample loop tracks a screenshot counter and fires `capture_and_prune`
+  every 10 ticks (`5 min` at the existing 30s cadence). Capture runs
+  inside `tokio::task::spawn_blocking` so xcap's synchronous OS calls
+  never stall the window-sampling driver.
+- `SentryState::new` now takes a `snapshot_dir` — resolved at startup
+  to `<app_data>/sentry-snapshots/`, auto-created on first capture.
+- New commands: `sentry_list_snapshots(limit)` returns the newest N
+  files as `{ path, filename, captured_at, bytes }`, and
+  `sentry_capture_now()` fires a synchronous capture (respects the
+  local enabled flag so it can't be used to bypass consent).
+- `sentry_status` now returns `snapshot_count` + `snapshot_bytes` so
+  the Settings UI can show live storage usage.
+
+### Frontend
+
+- `SentrySection` gains a live snapshot readout (count + total bytes),
+  a 3-column gallery of the last 6 thumbnails (asset-protocol paths
+  via `convertFileSrc`), and a "capture now" button. Thumbnails link
+  out to the full file in the OS default viewer. Storage stats
+  refresh every 15s while Settings is open.
+- `SentryConsentModal` bumped to `SENTRY_CONSENT_VERSION = 2` — the
+  scope changed from "app names only" to "app names + local
+  screenshots", so every existing user re-consents before the next
+  capture starts. Copy updated: screenshots are described as they
+  actually behave (local-only, rolling window of 20, upload requires
+  future re-consent).
+
 ## v0.28.51 — Real BLE central-role scan via btleplug (2026-07-14)
 
 Cutting the scaffold. Central-role Bluetooth LE scan is now live —

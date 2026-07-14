@@ -20,7 +20,11 @@
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 
-export const SENTRY_CONSENT_VERSION = 1;
+// v0.28.52 — bumped from 1 to 2 because the capture scope now
+// actually includes local screenshots (v1 promised them as "coming
+// soon"). Existing users see the consent modal again before
+// screenshots start.
+export const SENTRY_CONSENT_VERSION = 2;
 
 /// Persist the accepted consent version in localStorage so we can
 /// re-prompt when the scope expands (bump the constant above).
@@ -155,12 +159,10 @@ export function SentryConsentModal({
                     30 seconds, in the background.
                   </Bullet>
                   <Bullet>
-                    <strong>Coming soon:</strong> occasional screen
-                    snapshots (~every few minutes) so Travis can
-                    actually see the layout of what you're working on.
-                    Stored locally first; a rolling window is uploaded
-                    to your account so Travis's cloud-side reasoning
-                    can help too.
+                    A resized JPEG screenshot of your primary monitor
+                    every five minutes. Long side capped at 1600px so
+                    a full-workday rolling window is a few dozen
+                    megabytes, not gigabytes.
                   </Bullet>
                   <Bullet>
                     Focus + interaction rhythm — how long you stay in
@@ -188,16 +190,23 @@ export function SentryConsentModal({
               <Block title="Where it lives">
                 <ul className="mt-1.5 flex flex-col gap-1.5">
                   <Bullet>
-                    <strong>On your device:</strong> everything, always,
-                    first. Snapshots + timeline sit in Travis's local
-                    SQLite + files directory.
+                    <strong>Screenshots stay entirely on your device</strong>
+                    {" "}for now — saved as JPEGs in Travis's local
+                    app-data directory, rolling window of the most
+                    recent 20 files. Nothing about the images leaves
+                    your machine.
                   </Bullet>
                   <Bullet>
-                    <strong>In your Travis Cloud account:</strong> a
-                    small rolling window of recent snapshots + the
-                    activity timeline. Encrypted in transit, scoped to
-                    your account, never shared with anyone else, never
-                    used to train external models.
+                    <strong>Window titles + app names</strong> are
+                    batched to your Travis Cloud account so cloud-side
+                    reasoning can help. Encrypted in transit, scoped
+                    to your account, never shared with anyone else,
+                    never used to train external models.
+                  </Bullet>
+                  <Bullet>
+                    Cloud upload of a rolling window of screenshots is
+                    coming next, and will require its own re-consent
+                    before starting.
                   </Bullet>
                   <Bullet>
                     You can purge everything (local + cloud) any time

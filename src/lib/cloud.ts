@@ -660,10 +660,27 @@ export function discoveryPeers(): Promise<DiscoveredPeer[]> {
 export interface SentryStatus {
   enabled: boolean;
   buffered: number;
+  snapshot_count: number;
+  snapshot_bytes: number;
+}
+
+export interface SentrySnapshotInfo {
+  path: string;
+  filename: string;
+  captured_at: string;
+  bytes: number;
 }
 
 export function sentryStatus(): Promise<SentryStatus> {
   return invoke<SentryStatus>("sentry_status");
+}
+
+export function sentryListSnapshots(limit?: number): Promise<SentrySnapshotInfo[]> {
+  return invoke<SentrySnapshotInfo[]>("sentry_list_snapshots", { limit });
+}
+
+export function sentryCaptureNow(): Promise<SentrySnapshotInfo> {
+  return invoke<SentrySnapshotInfo>("sentry_capture_now");
 }
 
 export function sentrySetEnabled(enabled: boolean): Promise<void> {

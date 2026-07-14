@@ -1,6 +1,6 @@
 [package]
 name = "travis"
-version = "0.28.51"
+version = "0.28.52"
 description = "Travis — local-first AI operations assistant"
 authors = ["myketheguru"]
 edition = "2021"
@@ -113,3 +113,9 @@ uuid = { version = "1", features = ["v4"] }
 # libdbus-1-dev; macOS bundle needs NSBluetoothAlwaysUsageDescription;
 # Windows uses WinRT and needs no extra manifest.
 btleplug = "0.11"
+# v0.28.52 — Sentry Phase 3. Cross-platform screenshot capture via
+# xcap (Windows: GDI, macOS: CoreGraphics, Linux X11: xcb, Linux
+# Wayland: falls back gracefully). `image` handles JPEG encoding
+# + resizing so we don't ship 4K PNGs to R2.
+xcap = "0.0.14"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }

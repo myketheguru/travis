@@ -949,6 +949,8 @@ pub fn run() {
             discovery::cmd::discovery_start,
             sentry::cmd::sentry_status,
             sentry::cmd::sentry_set_enabled,
+            sentry::cmd::sentry_list_snapshots,
+            sentry::cmd::sentry_capture_now,
             commands::inbox_recent,
             commands::inbox_scan_now,
             commands::inbox_mark_handled,
