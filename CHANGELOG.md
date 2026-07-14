@@ -1,5 +1,72 @@
 # Travis Changelog
 
+## v0.28.49 — Radar-driven contacts + BLE scaffold (2026-07-14)
+
+Full redesign of the Contacts overlay so the network reads as one
+coherent surface instead of a button-per-thing menu. Plus scaffolding
+for Bluetooth LE + secure file transfer that lands next release.
+
+### The overlay is now four tabs, not five buttons + five modals
+
+- **Discover** — animated radar screen. Concentric brand-purple
+  rings, rotating sweep line (3.2s/rev), gradient center orb for
+  "you". Every discovered peer sits at a hashed angle at a radius
+  derived from signal strength (BLE) or a stable id hash (mDNS).
+  Hover a blip → tooltip with name + relationship state. Click →
+  invite. A plain list below the radar mirrors the blips so peers
+  stay accessible without hunting the dots.
+- **Circles** — inline "create" (brand purple) + "join" (teal)
+  cards at the top of the tab replace the old modal chrome. Circle
+  rows below with expand-for-members + copy-code + leave/delete.
+- **Contacts** — invite-by-email form inline at the top; three
+  buckets (Waiting for you / Connected / Sent invites) below.
+  Connected rows gain a "send file" affordance (see BLE scaffold).
+- **Pair** — QR + 8-char code on the left, redemption input on
+  the right. Deep link `travis://pair?tok=…` auto-switches to this
+  tab and auto-redeems. Issue a new code on demand.
+
+Tab bar uses a `layoutId` motion pill so switching cross-fades
+smoothly and the selection feels physical, not clicky.
+
+### Unified peer feed across discovery sources
+
+New `UnifiedPeer` shape merges mDNS (`discovery_peers`) and BLE
+(`ble_scan_peers`) into a single feed. Every peer carries its
+`source` + `rssi` + `relationship` state so the radar can pick a
+sensible radius (closer = higher signal), color connections in
+brand-green instead of purple, and label the "connected · click to
+send file" state instead of "invite".
+
+### BLE + file-transfer scaffold (real impl in v0.28.50)
+
+New Rust module `src-tauri/src/ble/` declares the Travis GATT
+service the frontend will hit once `btleplug` is added in the next
+release:
+
+- Service UUID: `550e8400-e29b-41d4-a716-446655440073`
+- Identity characteristic (read): JSON `{ user_id, display_name,
+  public_key }` — Curve25519 identity
+- Handshake characteristic (write + notify): raw X25519 ephemeral
+  keys either direction → HKDF → ChaCha20-Poly1305 session key
+- File chunk characteristic (write + notify): framed
+  `{ seq, len, ciphertext, tag }` — same framing used by the T2T
+  cloud-relayed transfer path so a Travis can send a file to
+  another Travis regardless of which transport is available
+
+Tauri commands `ble_scan_peers` / `ble_start_advertise` /
+`ble_send_file` are wired end-to-end today; scan returns `[]`,
+advertise no-ops, `send_file` returns the friendly "coming in
+v0.28.50" message that the UI toasts as a flash. Adding btleplug +
+the real GATT impl in v0.28.50 will not require another
+architectural pass on the module or the UI.
+
+### Verified locally with `npx tsc --noEmit` before push
+
+The CI-blindness episode that ate v0.28.44 through v0.28.46 taught
+me to actually run the check that the failing pipeline was running.
+Doing that now every release.
+
+
 ## v0.28.48 — Circles: named groups for beyond-LAN discovery (2026-07-14)
 
 Everyone in the same circle is auto-discoverable to each other — no

@@ -46,6 +46,7 @@ mod maps;
 mod memory;
 mod memory_cmd;
 mod discovery;
+mod ble;
 mod mcp;
 mod python_runtime;
 mod ambient;
@@ -936,6 +937,9 @@ pub fn run() {
             cloud::circles_cmd::circles_members,
             cloud::circles_cmd::circles_contacts,
             cloud::circles_cmd::circles_delete,
+            ble::cmd::ble_scan_peers,
+            ble::cmd::ble_start_advertise,
+            ble::cmd::ble_send_file,
             mcp::cmd::mcp_list_servers,
             mcp::cmd::mcp_add_server,
             mcp::cmd::mcp_delete_server,

@@ -521,6 +521,39 @@ export function circlesDelete(id: string): Promise<void> {
   return invoke<void>("circles_delete", { id });
 }
 
+// v0.28.49 — BLE scaffold. scan/advertise/send-file return the empty
+// v0.28.49 placeholder shape today; v0.28.50 wires the real btleplug
+// impl behind these same signatures.
+
+export interface BlePeer {
+  instance_id: string;
+  display_name: string | null;
+  user_id: string | null;
+  public_key: string | null;
+  rssi: number | null;
+  last_seen: number;
+}
+
+export function bleScanPeers(): Promise<BlePeer[]> {
+  return invoke<BlePeer[]>("ble_scan_peers");
+}
+
+export function bleStartAdvertise(
+  displayName: string,
+  userId?: string,
+  publicKey?: string,
+): Promise<void> {
+  return invoke<void>("ble_start_advertise", {
+    displayName,
+    userId: userId ?? null,
+    publicKey: publicKey ?? null,
+  });
+}
+
+export function bleSendFile(peerInstanceId: string, path: string): Promise<string> {
+  return invoke<string>("ble_send_file", { peerInstanceId, path });
+}
+
 export function t2tSendQuery(
   toUserId: string,
   question: string,
