@@ -1,7 +1,7 @@
 {
   "name": "travis",
   "private": true,
-  "version": "0.28.54",
+  "version": "0.28.55",
   "type": "module",
   "scripts": {
     "dev": "vite",

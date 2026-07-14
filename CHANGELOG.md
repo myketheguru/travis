@@ -1,5 +1,14 @@
 # Travis Changelog
 
+## v0.28.55 — Hotfix: Linux runner → ubuntu-24.04 (2026-07-14)
+
+v0.28.54 installed libpipewire-0.3-dev but ubuntu-22.04 ships
+PipeWire 0.3.48 which is older than what `libspa-sys 0.9.2`
+expects — `spa_video_info_raw.flags` doesn't exist on the older
+struct, so xcap fails to build. Both workflows now use
+ubuntu-24.04 (PipeWire 1.0.5, everything else already available).
+No product changes vs. v0.28.54.
+
 ## v0.28.54 — Hotfix: PipeWire deps for xcap 0.9 on Linux CI (2026-07-14)
 
 v0.28.53 shipped with xcap 0.9 which transitively pulls PipeWire on
