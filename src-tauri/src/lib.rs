@@ -47,6 +47,8 @@ mod memory;
 mod memory_cmd;
 mod discovery;
 mod ble;
+mod crypto;
+mod t2t_transfer;
 mod mcp;
 mod python_runtime;
 mod ambient;
@@ -940,6 +942,10 @@ pub fn run() {
             ble::cmd::ble_scan_peers,
             ble::cmd::ble_start_advertise,
             ble::cmd::ble_send_file,
+            t2t_transfer::cmd::t2t_publish_pubkey,
+            t2t_transfer::cmd::t2t_send_file,
+            t2t_transfer::cmd::t2t_poll_inbox,
+            t2t_transfer::cmd::t2t_receive_file,
             mcp::cmd::mcp_list_servers,
             mcp::cmd::mcp_add_server,
             mcp::cmd::mcp_delete_server,

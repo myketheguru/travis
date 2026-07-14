@@ -107,13 +107,29 @@ impl SentryState {
                 if ticks_since_shot >= SCREENSHOT_EVERY_TICKS {
                     ticks_since_shot = 0;
                     let dir = snapshot_dir.clone();
+                    let http_up = http.clone();
                     // Capture off the sampling loop so a slow OS call
                     // (macOS TCC dialog, X11 stall) doesn't block the
                     // next window sample. spawn_blocking keeps xcap's
-                    // synchronous API off the tokio driver.
-                    task::spawn_blocking(move || {
-                        if let Err(e) = capture_and_prune(&dir) {
-                            tracing::warn!("sentry: screenshot failed: {e}");
+                    // synchronous API off the tokio driver; after it
+                    // succeeds we hand off to spawn (async) for the
+                    // cloud upload.
+                    task::spawn(async move {
+                        let dir_upload = dir.clone();
+                        let saved =
+                            task::spawn_blocking(move || capture_and_prune(&dir)).await;
+                        match saved {
+                            Ok(Ok(_)) => {
+                                if let Err(e) = try_upload_latest(&http_up, &dir_upload).await {
+                                    tracing::warn!("sentry: upload path errored: {e}");
+                                }
+                            }
+                            Ok(Err(e)) => {
+                                tracing::warn!("sentry: screenshot failed: {e}");
+                            }
+                            Err(e) => {
+                                tracing::warn!("sentry: capture task join failed: {e}");
+                            }
                         }
                     });
                 }
@@ -319,6 +335,75 @@ pub struct SentrySnapshotInfo {
     pub filename: String,
     pub captured_at: String,
     pub bytes: u64,
+}
+
+/// v0.28.53 — grant or revoke the two Sentry-related consent kinds
+/// server-side so /me/telemetry/{ingest,snapshot} accept our writes.
+/// Fires from `sentry_set_enabled` — best-effort, since a failure
+/// here just means server-side consent stays out of sync and the
+/// endpoints will refuse to write anything (which is safe).
+pub async fn set_cloud_consent(http: &reqwest::Client, granted: bool) {
+    let Some(jwt) = read_jwt() else {
+        return;
+    };
+    let url = format!("{}/me/telemetry", CLOUD_BASE);
+    for kind in ["app_window", "screen"] {
+        let body = serde_json::json!({
+            "kind": kind,
+            "granted": granted,
+            "retentionDays": 90,
+        });
+        let res = http
+            .post(&url)
+            .bearer_auth(&jwt)
+            .json(&body)
+            .send()
+            .await;
+        if let Err(e) = res {
+            tracing::warn!("sentry: set_cloud_consent({kind}, {granted}) failed: {e}");
+        }
+    }
+}
+
+/// v0.28.53 — upload the newest local snapshot to the cloud rolling
+/// window so the orbit admin view can see it. Best-effort: any
+/// failure is logged and the local copy stays untouched. Called
+/// from the sample loop after a successful `capture_and_prune`.
+async fn try_upload_latest(http: &reqwest::Client, dir: &std::path::Path) -> Result<()> {
+    let jwt = match read_jwt() {
+        Some(t) => t,
+        None => return Ok(()), // not signed in; skip quietly
+    };
+    let mut snapshots = list_snapshots(dir, 1);
+    let Some(latest) = snapshots.pop() else {
+        return Ok(());
+    };
+    // captured_at falls out of the filename, which is UTC by construction.
+    let bytes = std::fs::read(&latest.path)?;
+    let url = format!(
+        "{}/me/telemetry/snapshot?captured_at={}",
+        CLOUD_BASE,
+        urlencoding::encode(&latest.captured_at)
+    );
+    let resp = http
+        .post(&url)
+        .bearer_auth(jwt)
+        .header("content-type", "image/jpeg")
+        .body(bytes)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        // 403 = user revoked "screen" consent server-side; that's fine
+        // and we don't want to spam the log with warnings for it.
+        if resp.status().as_u16() != 403 {
+            tracing::warn!(
+                "sentry: cloud upload {}: {}",
+                resp.status(),
+                resp.text().await.unwrap_or_default()
+            );
+        }
+    }
+    Ok(())
 }
 
 async fn flush_batch(http: &reqwest::Client, batch: &[AppWindowEvent]) -> Result<()> {

@@ -49,13 +49,18 @@ import {
   t2tListRelationships,
   t2tPairCreateToken,
   t2tPairRedeem,
+  t2tPollInbox,
+  t2tPublishPubkey,
+  t2tReceiveFile,
   t2tRevoke,
+  t2tSendFile,
   type BlePeer,
   type Circle,
   type CircleContact,
   type CircleMember,
   type DiscoveredPeer,
   type PairToken,
+  type T2tInboxFile,
   type T2tRelationship,
 } from "../../lib/cloud";
 
@@ -173,6 +178,58 @@ function ContactsBody({ open }: { open: boolean }) {
       setError(String(e));
     }
   }, []);
+
+  // v0.28.53 — incoming file inbox. Every 4s pull pending encrypted
+  // files; decrypt them the moment they land so users see the toast
+  // without lifting a finger.
+  const [inbox, setInbox] = useState<T2tInboxFile[]>([]);
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const items = await t2tPollInbox();
+        if (cancelled) return;
+        setInbox(items);
+        // Auto-decrypt in-place so recipients don't need to click.
+        for (const f of items) {
+          try {
+            const dest = await t2tReceiveFile(f.id);
+            if (!cancelled) {
+              const short = dest.split(/[\\/]/).pop() ?? f.filename;
+              setFlash(
+                `Received "${short}" from ${
+                  f.from_name ?? f.from_email ?? f.from_user_id
+                }`,
+              );
+            }
+          } catch (e) {
+            if (!cancelled) {
+              setError(
+                `Couldn't decrypt "${f.filename}": ${String(e).replace(/^Error:\s*/, "")}`,
+              );
+            }
+          }
+        }
+      } catch {
+        /* transient */
+      }
+    };
+    void tick();
+    const id = window.setInterval(tick, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [open]);
+
+  // v0.28.53 — publish our static X25519 pubkey once per overlay open.
+  // Idempotent on the server. If it fails silently senders will see a
+  // 404 when they try to encrypt to us, and the error surfaces there.
+  useEffect(() => {
+    if (!open) return;
+    void t2tPublishPubkey().catch(() => {});
+  }, [open]);
 
   // Discovery poll (mDNS + BLE placeholder).
   useEffect(() => {
@@ -396,15 +453,63 @@ function ContactsBody({ open }: { open: boolean }) {
     },
     [refreshAll, setPendingPairToken],
   );
-  const sendFile = async (identifier: string) => {
-    try {
-      const msg = await bleSendFile(identifier, "");
-      setFlash(msg);
-    } catch (e) {
-      // The v0.28.49 scaffold returns a friendly error. Treat as flash.
-      setFlash(String(e).replace(/^Error:\s*/, ""));
-    }
-  };
+  // v0.28.53 — real T2T secure file send. Opens the OS file picker,
+  // fetches the peer's static X25519 pubkey, encrypts locally with
+  // ChaCha20-Poly1305 (session key from ECDH + HKDF), uploads
+  // ciphertext to the cloud relay. Cloud never sees plaintext.
+  //
+  // Falls back to the older bleSendFile stub only when the peer has
+  // no known userId (e.g. an mDNS discovery record for someone we
+  // haven't paired with yet).
+  const sendFileToPeer = useCallback(
+    async (peer: UnifiedPeer) => {
+      if (!peer.userId) {
+        // Discovery-only peer — no relationship yet.
+        setFlash(
+          `Invite ${peer.displayName} first so you can send them files.`,
+        );
+        return;
+      }
+      try {
+        const { open } = await import("@tauri-apps/plugin-dialog");
+        const picked = await open({ multiple: false, directory: false });
+        if (!picked || typeof picked !== "string") return;
+        setFlash(`Encrypting + sending to ${peer.displayName}…`);
+        const transferId = await t2tSendFile(peer.userId, picked);
+        setFlash(`Sent to ${peer.displayName} (${transferId.slice(0, 8)}…)`);
+      } catch (e) {
+        setError(String(e).replace(/^Error:\s*/, ""));
+      }
+    },
+    [],
+  );
+  const sendFileToRel = useCallback(
+    async (rel: T2tRelationship) => {
+      if (!currentUserId) return;
+      const peerId =
+        rel.from_user_id === currentUserId ? rel.to_user_id : rel.from_user_id;
+      const label = rel.other_name ?? rel.other_email ?? peerId;
+      try {
+        const { open } = await import("@tauri-apps/plugin-dialog");
+        const picked = await open({ multiple: false, directory: false });
+        if (!picked || typeof picked !== "string") return;
+        setFlash(`Encrypting + sending to ${label}…`);
+        const transferId = await t2tSendFile(peerId, picked);
+        setFlash(`Sent to ${label} (${transferId.slice(0, 8)}…)`);
+      } catch (e) {
+        setError(String(e).replace(/^Error:\s*/, ""));
+      }
+    },
+    [currentUserId],
+  );
+  // Keep the `inbox` reference alive for the linter — its useState is
+  // read implicitly via the polling effect above; without this the
+  // TS unused-var rule flags it.
+  void inbox;
+  // v0.28.49 BLE stub — reserved for a future BLE-native transfer
+  // path when peripheral advertise ships per-OS. Held for reference
+  // so we don't lose the import.
+  void bleSendFile;
 
   const nearbyCount = unifiedPeers.length;
   const totalContacts =
@@ -436,7 +541,7 @@ function ContactsBody({ open }: { open: boolean }) {
               <DiscoverPane
                 peers={unifiedPeers}
                 onPair={invitePeer}
-                onSendFile={(p) => sendFile(p.id)}
+                onSendFile={(p) => sendFileToPeer(p)}
               />
             )}
             {tab === "circles" && (
@@ -459,7 +564,7 @@ function ContactsBody({ open }: { open: boolean }) {
                 onAccept={accept}
                 onRevoke={revoke}
                 onInvite={inviteByEmail}
-                onSendFile={(r) => sendFile(r.other_email ?? r.other_name ?? r.id)}
+                onSendFile={(r) => sendFileToRel(r)}
               />
             )}
             {tab === "pair" && (

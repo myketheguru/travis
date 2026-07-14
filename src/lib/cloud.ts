@@ -683,6 +683,39 @@ export function sentryCaptureNow(): Promise<SentrySnapshotInfo> {
   return invoke<SentrySnapshotInfo>("sentry_capture_now");
 }
 
+// ─── T2T secure file transfer (v0.28.53) ─────────────────────────
+
+export interface T2tInboxFile {
+  id: string;
+  from_user_id: string;
+  from_email?: string;
+  from_name?: string;
+  filename: string;
+  content_type?: string;
+  ciphertext_bytes: number;
+  sender_ephem_pub: string;
+  created_at: string;
+}
+
+export function t2tPublishPubkey(): Promise<void> {
+  return invoke<void>("t2t_publish_pubkey");
+}
+
+export function t2tSendFile(
+  peerId: string,
+  filePath: string,
+): Promise<string> {
+  return invoke<string>("t2t_send_file", { peerId, filePath });
+}
+
+export function t2tPollInbox(): Promise<T2tInboxFile[]> {
+  return invoke<T2tInboxFile[]>("t2t_poll_inbox");
+}
+
+export function t2tReceiveFile(transferId: string): Promise<string> {
+  return invoke<string>("t2t_receive_file", { transferId });
+}
+
 export function sentrySetEnabled(enabled: boolean): Promise<void> {
   return invoke<void>("sentry_set_enabled", { enabled });
 }

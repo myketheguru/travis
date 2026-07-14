@@ -1,5 +1,109 @@
 # Travis Changelog
 
+## v0.28.53 — Sentry cloud sync + T2T secure file transfer (2026-07-14)
+
+Two things ship together:
+
+**1. Sentry snapshots reach the cloud.** The v0.28.52 local rolling
+window now uploads each fresh JPEG to `POST /me/telemetry/snapshot`.
+Server writes ciphertext (well, plain JPEG — encryption of user's own
+data-at-rest lives in R2's server-side crypto) to R2 at
+`sentry/<userId>/<snapId>.jpg`, tracks it in the new `sentry_snapshot`
+D1 table, and prunes each user's rolling window to 20 on every upload.
+Orbit gains a per-user gallery card (`OrbitUserDetail` →
+`UserSentrySnapshots`) so the founder can see what a consented
+pre-commercialization beta user is actually working on — the whole
+reason Sentry exists.
+
+**2. Travis-to-Travis file transfer, end-to-end encrypted.** Every
+desktop mints a persistent X25519 identity keypair (private half in
+the OS keyring, public half published to `POST /t2t/me/keys/x25519`).
+When you send a file to a paired peer:
+
+- We fetch their static pubkey (only permitted if there's an active
+  relationship), mint a fresh ephemeral X25519 keypair, ECDH, derive
+  a session key via HKDF-SHA256 with the transfer id as salt,
+  ChaCha20-Poly1305 the whole file, upload the ciphertext + our
+  ephemeral pubkey. The Worker never sees the plaintext or the key.
+- Recipient polls `GET /t2t/files/inbox`, downloads the ciphertext,
+  mirrors the ECDH with their static privkey + the sender's ephemeral
+  pubkey, decrypts. On success they POST `/t2t/files/:id/ack` and the
+  Worker deletes the R2 blob.
+- 25 MB per transfer, 7-day server-side TTL, tamper detection via
+  the Poly1305 tag.
+
+### New Rust crates
+
+- `xcap` bumped to `0.9` — 0.0.14 had a type-inference error
+  (E0282) on aarch64-apple-darwin that killed the v0.28.52 macOS
+  build. 0.9 also has the current maintained API.
+- `x25519-dalek` (with `static_secrets`), `hkdf`, `chacha20poly1305`,
+  `rand_core`, `zeroize`, `hex` — production AEAD primitives.
+
+### Rust
+
+- `crypto::` — X25519 keypair generation + keyring persistence,
+  static-ephemeral ECDH, HKDF-SHA256 session-key derivation, a
+  ChaCha20-Poly1305 seal/open pair keyed by the transfer id. Two
+  unit tests cover a full roundtrip and tamper detection.
+- `t2t_transfer::` — thin async layer over the crypto module +
+  cloud endpoints: `publish_my_pubkey`, `send_file`, `poll_inbox`,
+  `download_and_decrypt`. Downloaded plaintext lands in
+  `<app_data>/t2t-inbox/`.
+- `sentry::try_upload_latest` — after each `capture_and_prune` the
+  newest local JPEG is best-effort uploaded to
+  `/me/telemetry/snapshot`. 403 (consent revoked server-side) is
+  quiet; other failures log a warning.
+- `sentry::set_cloud_consent` — turning Sentry on now also grants
+  `app_window` + `screen` consents server-side so the ingest
+  endpoints accept our writes. Turning it off revokes both.
+
+### Cloud (travis-cloud)
+
+- Migration `0058_sentry_snapshot.sql` — id, user_id, r2_key,
+  captured_at, uploaded_at, bytes, width, height.
+- `POST /me/telemetry/snapshot?captured_at&width&height` — accepts
+  a raw JPEG body up to 3 MB, requires an active `screen` consent,
+  writes R2 + D1, then prunes the user's rolling window to 20.
+- `POST /me/telemetry/delete-all` also purges `sentry_snapshot`
+  rows + R2 blobs so the existing user-facing purge button covers
+  the new surface without a second button.
+- Migration `0059_t2t_file_transfer.sql` — `t2t_file_transfer` +
+  `user_pubkey_x25519` tables.
+- `POST /t2t/me/keys/x25519` — upsert the sender's static pubkey.
+- `GET /t2t/users/:id/pubkey/x25519` — relationship-gated read of a
+  peer's pubkey.
+- `POST /t2t/files/send` — enqueue a ciphertext transfer with the
+  sender's ephemeral pubkey attached. Relationship-gated.
+- `GET /t2t/files/inbox`, `GET /t2t/files/:id/download` (streams
+  ciphertext with `x-travis-ephem-pub` header), `POST
+  /t2t/files/:id/ack` (marks delivered + deletes the R2 blob).
+- `GET /admin/users/:id/sentry-snapshots` + `GET
+  /admin/sentry-snapshot/:sid` — orbit-side inspection endpoints
+  (admin-role gated).
+
+### Frontend
+
+- `ContactsOverlay` — Send-file buttons now open the OS file
+  picker + call the real T2T encrypted transfer, showing progress
+  in the flash strip. A background inbox poll (4s cadence) picks
+  up incoming files, decrypts them, and toasts the recipient.
+- `orbit-api.ts` gains `fetchUserSentrySnapshots` (returns
+  same-origin URLs pointing at the admin JPEG streamer).
+- New `UserSentrySnapshots` orbit card — three-column gallery of
+  the target user's recent screenshots.
+
+### On BLE peripheral advertise
+
+btleplug 0.11 is central-role only across all three OSes. True
+peripheral needs per-platform work (`objc2-core-bluetooth` on macOS,
+`windows` crate GATT publisher on Windows, `bluer` on Linux) —
+each is its own multi-day implementation. Rather than ship a
+half-working per-OS stub, this release commits fully to the T2T
+cloud transport (encrypted end-to-end, works today, cross-platform
+by construction). BLE peripheral becomes a dedicated future
+release once each OS's server-role crate is wired.
+
 ## v0.28.52 — Sentry screenshots (local rolling window) (2026-07-14)
 
 Sentry graduates from window-metadata-only to actual visual context.

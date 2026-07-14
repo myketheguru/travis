@@ -79,6 +79,19 @@ pub async fn sentry_set_enabled(
 ) -> Result<(), String> {
     write_local_enabled(&state, enabled).await?;
     let sentry = get_or_init(&state, &app).await;
+    let http = {
+        let s = sentry.lock().await;
+        // Clone the shared http client from state so the consent grant
+        // runs after we drop the lock — it's a network call that we
+        // don't want holding the singleton.
+        state.http.clone()
+    };
+    // Fire-and-forget the cloud consent sync so the local toggle isn't
+    // blocked on network. Failures here just mean the server rejects
+    // ingest until the next successful sync — which is safe by design.
+    tauri::async_runtime::spawn(async move {
+        sentry::set_cloud_consent(&http, enabled).await;
+    });
     let mut s = sentry.lock().await;
     if enabled {
         s.start();
