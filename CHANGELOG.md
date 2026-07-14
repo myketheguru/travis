@@ -1,5 +1,37 @@
 # Travis Changelog
 
+## v0.28.50 — Fix radar glitching (2026-07-14)
+
+The v0.28.49 radar was glitching because of two `% 1` modulo wraps
+that produced visible discontinuities every ~3s. Rewriting both
+loops without the wrap.
+
+**Rings.** The old loop had 4 fixed rings that "pulsed" using
+`(t*0.35 + i*0.25) % 1`. Every 2.86s each ring's radius popped 4%
+smaller and its alpha popped up by ~0.06. Replaced with 5
+expanding-wave rings, staggered in phase, that grow from center to
+edge over 4.2s. Fade-in ramp (0→1 over the first 6% of a ring's
+life) + fade-out ramp (1→0 over the remainder) keeps both endpoints
+at alpha 0 — the modulo wrap is no longer visible because there's
+nothing to see when a wave restarts. HSL lightness now grows from
+65% (near center) to 92% (near edge), so outer rings read as softer
+echoes as they fan out.
+
+**Peer blips.** The old afterglow was `rel < 0.5 ? 1 - rel/0.5 : 0`
+— a hard cliff at 0.5 rad past the sweep. Every peer went from lit
+to dark instantly. Replaced with `exp(-sinceSweep * 1.8)`, a smooth
+exponential decay that lets peers glow brighter as the sweep
+passes and fade continuously through the rest of the rotation. No
+cliff, no pop.
+
+**BLE (task #379) held for v0.28.51.** btleplug integration
+(cross-platform advertise + scan) needs its own focused session
+with libdbus-1-dev added to the CI workflow, macOS
+NSBluetoothAlwaysUsageDescription in tauri.conf.json, and
+Windows peripheral-role research. Not landing it half-baked given
+the CI-blindness that ate v0.28.44 through v0.28.46.
+
+
 ## v0.28.49 — Radar-driven contacts + BLE scaffold (2026-07-14)
 
 Full redesign of the Contacts overlay so the network reads as one

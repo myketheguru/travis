@@ -746,16 +746,28 @@ function RadarScene({
       ctx.arc(cx, cy, maxR * 1.4, 0, Math.PI * 2);
       ctx.fill();
 
-      // Concentric rings
-      const ringCount = 4;
-      for (let i = 1; i <= ringCount; i++) {
-        const frac = i / ringCount;
-        // Pulse a little — every ring drifts slowly outward and fades.
-        const pulse = ((t * 0.35 + i * 0.25) % 1);
-        const r = maxR * frac * (0.98 + pulse * 0.04);
+      // Expanding-wave rings — continuous, no visible wrap. Each
+      // slot spawns a ring from center that grows to maxR over
+      // `waveDuration` seconds, fading out as it approaches the
+      // edge. Ring color lightens as it fans out (65% → 92% HSL
+      // lightness) so the outer rings read as softer echoes.
+      const waveCount = 5;
+      const waveDuration = 4.2;
+      for (let i = 0; i < waveCount; i++) {
+        const phase = ((t / waveDuration + i / waveCount) % 1 + 1) % 1;
+        const r = maxR * phase;
+        // fadeIn ramps 0→1 over the first 6% of the ring's life so
+        // the ring doesn't pop into existence, then fadeOut ramps
+        // 1→0 over the rest. Both endpoints hit alpha 0 → no
+        // discontinuity at the modulo wrap.
+        const fadeIn = Math.min(phase / 0.06, 1);
+        const fadeOut = 1 - phase;
+        const alpha = 0.32 * fadeIn * fadeOut;
+        if (alpha < 0.002) continue;
+        const lightness = 65 + 27 * phase;
         ctx.beginPath();
         ctx.arc(cx, cy, r, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(189, 158, 255, ${0.14 + 0.06 * (1 - pulse)})`;
+        ctx.strokeStyle = `hsla(268, 78%, ${lightness}%, ${alpha})`;
         ctx.lineWidth = 1;
         ctx.stroke();
       }
@@ -826,10 +838,13 @@ function RadarScene({
         const px = cx + Math.cos(angle) * r;
         const py = cy + Math.sin(angle) * r;
 
-        // Detect if the sweep is currently over this blip (within
-        // 0.35 rad behind the leading edge). Boost brightness if so.
-        const rel = (sweepAngle - item.angle + Math.PI * 4) % (Math.PI * 2);
-        const litness = rel < 0.5 ? 1 - rel / 0.5 : 0;
+        // Sweep afterglow — smooth exponential decay so the blip
+        // brightens as the sweep passes and fades continuously
+        // through the rest of the rotation. No cliff, no pop.
+        let sinceSweep =
+          (sweepAngle - item.angle) % (Math.PI * 2);
+        if (sinceSweep < 0) sinceSweep += Math.PI * 2;
+        const litness = Math.exp(-sinceSweep * 1.8);
 
         const isHovered = hovered === item.peer.id;
         const isActive = item.peer.relationship === "active";
