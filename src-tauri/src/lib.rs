@@ -1068,6 +1068,7 @@ pub fn run() {
             voice::cmd::voice_wake_enabled,
             voice::cmd::voice_set_wake_paused,
             voice::cmd::voice_finalize_transcript,
+            voice::cmd::voice_prewarm_transcript,
             voice::cmd::voice_utterance_link,
             voice::cmd::voice_utterance_for_message,
             voice::cmd::piper_speak,

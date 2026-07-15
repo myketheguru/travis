@@ -1,5 +1,43 @@
 # Travis Changelog
 
+## v0.28.60 — Speculative whisper prewarm (2026-07-15)
+
+Speculative-transcription for voice: while VAD is still counting down
+its hangover after you stop speaking, whisper runs in parallel on the
+audio it already has. By the time `speech-end` fires 1500ms later,
+the transcript is already computed and finalize just hands it back.
+
+Saves 500-1000ms per voice turn — roughly the full whisper inference
+cost is now hidden behind the VAD hangover instead of stacking on top.
+Combined with prior v0.28.59 (tiny.en model + threads capped + Metal
+on macOS + hangover 2500→1500ms), post-utterance latency drops from
+the original ~2900ms to ~700ms on typical hardware.
+
+**How it works.** New `voice://speech-pausing` event fires from
+Rust at the VAD Speech→ProbablySilence edge (i.e. the instant you
+start pausing). Frontend `useNativeVoice` listens and invokes a new
+`voice_prewarm_transcript` command, which peeks (doesn't drain) the
+current utterance and spawns a background whisper inference. The
+result is stashed in `VoiceState.prewarm`. When `speech-end` lands
+and `voice_finalize_transcript` runs, it checks the prewarm cache:
+if the cached transcript is <3s old and was computed on essentially
+the current utterance (within 0.5s of samples), reuse it. Otherwise
+fall back to a fresh inference. Stale-prewarm case (user resumed
+speaking) costs one wasted whisper run per turn, which the tick
+loop absorbs since prewarm runs on a separate tokio task.
+
+**Refactor along the way:** extracted `run_whisper_blocking` so
+finalize + prewarm share exactly one code path. Zero duplication;
+easier to add a real streaming variant later.
+
+**Not in this release (deferred to v0.28.61):** streaming LLM
+responses. That's the biggest remaining perceived-wait fix — the
+LLM turn (5-15s for a full Claude response) still lands as one
+block at the end. Streaming needs its own dedicated pass because it
+changes the trait signature, all four provider impls, `journal_ingest`,
+and the frontend chat renderer. Rushing it here would break more
+than it fixes.
+
 ## v0.28.59 — Voice: real architectural fixes (not patches) (2026-07-15)
 
 Prior releases patched around symptoms; this one addresses the

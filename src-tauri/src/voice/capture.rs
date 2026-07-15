@@ -65,6 +65,12 @@ enum Cmd {
     /// want to tear down the worker for a 30-second LLM turn.
     SetWakePaused(bool),
     TakeUtterance(Sender<Vec<f32>>),
+    /// v0.28.60 — non-draining peek. Returns a clone of the current
+    /// utterance buffer without emptying it. Used by the speculative
+    /// prewarm: we run whisper on the buffered audio at the
+    /// Speech→ProbablySilence VAD edge so the transcript is ready
+    /// (or nearly ready) by the time speech-end lands 1500ms later.
+    PeekUtterance(Sender<Vec<f32>>),
 }
 
 /// Send-safe handle stashed in Tauri state. Only holds a Sender + a
@@ -80,6 +86,13 @@ impl VoiceHandle {
     pub fn take_utterance(&self) -> Vec<f32> {
         let (tx, rx) = channel::<Vec<f32>>();
         if self.tx.send(Cmd::TakeUtterance(tx)).is_err() {
+            return Vec::new();
+        }
+        rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default()
+    }
+    pub fn peek_utterance(&self) -> Vec<f32> {
+        let (tx, rx) = channel::<Vec<f32>>();
+        if self.tx.send(Cmd::PeekUtterance(tx)).is_err() {
             return Vec::new();
         }
         rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default()
@@ -398,6 +411,13 @@ fn tick_loop(app: AppHandle, audio: Arc<Mutex<AudioBuf>>, rx: Receiver<Cmd>, inp
                     let taken = std::mem::take(&mut utterance);
                     let _ = reply.send(taken);
                 }
+                Cmd::PeekUtterance(reply) => {
+                    // v0.28.60 — non-draining clone. Utterance keeps
+                    // accumulating; PeekUtterance is fire-and-forget
+                    // from the speculative-prewarm path.
+                    let peek = utterance.clone();
+                    let _ = reply.send(peek);
+                }
             }
         }
 
@@ -572,6 +592,15 @@ fn step_vad(
             if rms < VAD_SILENCE_RMS {
                 *state = VadState::ProbablySilence;
                 *edge_at = Some(now);
+                // v0.28.60 — emit an early "pausing" signal at the
+                // Speech→ProbablySilence edge. Frontend uses this to
+                // start whisper speculatively in parallel with the
+                // remaining ~1500ms VAD hangover; by the time
+                // speech-end lands, the transcript is already
+                // computed. Saves 500-1000ms per voice turn.
+                if armed_for_submit {
+                    let _ = app.emit("voice://speech-pausing", ());
+                }
             }
         }
         VadState::ProbablySilence => {

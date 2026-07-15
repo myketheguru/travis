@@ -136,6 +136,23 @@ export function useNativeVoice({ enabled }: Options) {
           window.dispatchEvent(new CustomEvent("travis:piper-stop"));
         }),
       );
+      // v0.28.60 — speculative whisper prewarm. Rust emits this at
+      // the VAD Speech→ProbablySilence edge (i.e. the moment the
+      // user starts pausing). Kicking off transcription NOW means
+      // whisper runs in parallel with the ~1500ms VAD hangover;
+      // by the time speech-end fires, finalize can reuse the
+      // prewarmed transcript instead of paying the 500-1000ms
+      // inference cost after the fact. Only useful during an intent
+      // capture (Rust only emits when armed).
+      unlisteners.push(
+        await onVoiceEvent<null>("voice://speech-pausing", () => {
+          if (!intentArmedRef.current) return;
+          if (finalizingRef.current) return;
+          void nativeVoice.prewarmTranscript().catch((err) => {
+            console.warn("[voice] prewarm dispatch failed:", err);
+          });
+        }),
+      );
       // v0.28.58 — openWakeWord fires here when "Hey Jarvis" is
       // detected. Wake is the second of the two allowed voice entry
       // points (mic click is the first); it dispatches the same

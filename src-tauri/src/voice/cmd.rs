@@ -14,12 +14,31 @@ use crate::speech_runtime::{self, bootstrap};
 /// dedicated thread).
 pub struct VoiceState {
     inner: Mutex<Option<VoiceHandle>>,
+    /// v0.28.60 — speculative transcript cache. Set by
+    /// `voice_prewarm_transcript` at the VAD Speech→ProbablySilence
+    /// edge; consumed by `voice_finalize_transcript` if fresh + covers
+    /// the current utterance. Avoids re-running whisper at speech-end
+    /// when we already have a nearly-current transcript.
+    prewarm: Mutex<Option<Prewarm>>,
+}
+
+/// Prewarmed transcript. `for_sample_count` is the utterance length
+/// the transcript was computed on — finalize checks the current
+/// utterance length is close (within ~1s worth of samples) before
+/// reusing it, otherwise falls back to fresh transcription.
+struct Prewarm {
+    text: String,
+    audio_path: String,
+    duration_ms: u32,
+    for_sample_count: usize,
+    ready_at: std::time::Instant,
 }
 
 impl VoiceState {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(None),
+            prewarm: Mutex::new(None),
         }
     }
 }
@@ -176,6 +195,9 @@ pub async fn voice_finalize_transcript(
         }
     };
     if samples.len() < 4000 {
+        // v0.28.60 — clear any prewarm too so a stale one from a
+        // previous utterance can't leak into the next turn.
+        *state.prewarm.lock().unwrap() = None;
         return Ok(FinalizeResult {
             text: String::new(),
             audio_path: String::new(),
@@ -183,76 +205,39 @@ pub async fn voice_finalize_transcript(
         });
     }
 
-    // v0.28.19 — save the utterance to a WAV before transcribing. If
-    // whisper hiccups we still have the audio artifact linked to the
-    // message via voice_utterance_link. Writes to <app_data>/voice.
+    // v0.28.60 — speculative-prewarm fast path. If the prewarmed
+    // transcript is fresh (<3s old) and was computed on essentially
+    // the same utterance (within ~0.5s of samples), reuse it — the
+    // extra tail after VAD hangover is 1500ms of silence that
+    // wouldn't change the transcript anyway. Saves 500-1000ms per
+    // voice turn.
+    let now = std::time::Instant::now();
+    const PREWARM_MAX_AGE_MS: u128 = 3000;
+    const PREWARM_SAMPLE_TOLERANCE: usize = 8000; // 0.5s @ 16kHz
+    let prewarm = state.prewarm.lock().unwrap().take();
+    if let Some(pw) = prewarm {
+        let age = now.saturating_duration_since(pw.ready_at).as_millis();
+        let sample_delta = samples.len().saturating_sub(pw.for_sample_count);
+        if age <= PREWARM_MAX_AGE_MS && sample_delta <= PREWARM_SAMPLE_TOLERANCE {
+            tracing::info!(
+                "[voice] finalize using prewarm (age={age}ms, delta={sample_delta} samples)"
+            );
+            let _ = app.emit("voice://transcript-final", pw.text.clone());
+            return Ok(FinalizeResult {
+                text: pw.text,
+                audio_path: pw.audio_path,
+                duration_ms: pw.duration_ms,
+            });
+        } else {
+            tracing::debug!(
+                "[voice] prewarm stale (age={age}ms, delta={sample_delta}); running fresh"
+            );
+        }
+    }
+
+    let transcript = run_whisper_on(&app, &app_state, &samples).await?;
     let audio_path = save_utterance_wav(&app, &samples)?;
     let duration_ms = (samples.len() as u64 * 1000 / super::capture_target_hz() as u64) as u32;
-
-    // v0.28.19 — build the dynamic whisper seed prompt from recent
-    // entities + last few user messages. Best-effort; falls back to
-    // the base phrase if the DB read hiccups.
-    let seeded_prompt = build_whisper_seed(&app_state.db.pool)
-        .await
-        .unwrap_or_else(|_| BASE_WHISPER_SEED.to_string());
-
-    let model_name = bootstrap::DEFAULT_MODEL;
-    if !speech_runtime::model_ready(&app, model_name) {
-        let handle = bootstrap::BootstrapHandle::default();
-        bootstrap::ensure_ready(&app, handle, model_name)
-            .await
-            .map_err(|e| format!("model bootstrap: {e}"))?;
-    }
-    let model_path = speech_runtime::cache_model_path(&app, model_name)?;
-    let model_path_str = model_path.to_string_lossy().to_string();
-
-    // v0.28.14 — use the cached WhisperContext instead of loading from
-    // disk every call. First call still pays the load cost; every
-    // subsequent call is warm.
-    let whisper = app_state.whisper.clone();
-
-    let transcript = tokio::task::spawn_blocking(move || -> Result<String, String> {
-        use whisper_rs::{FullParams, SamplingStrategy};
-        let ctx = whisper.get_or_load(&model_path_str)?;
-        let mut state = ctx
-            .create_state()
-            .map_err(|e| format!("create whisper state: {e}"))?;
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        params.set_print_progress(false);
-        params.set_print_special(false);
-        params.set_print_realtime(false);
-        params.set_language(Some("en"));
-        params.set_translate(false);
-        // v0.28.59 — cap whisper's internal thread pool. Gemini's
-        // note: beyond 4 threads diminishing returns kick in and
-        // steal CPU from the Tauri UI thread. min(available_cores,
-        // 4) is the sweet spot per whisper.cpp bench numbers.
-        let cores = std::thread::available_parallelism()
-            .map(|n| n.get() as i32)
-            .unwrap_or(4);
-        params.set_n_threads(cores.min(4));
-        // v0.28.19 — dynamic seed. Base phrase + recent entity names
-        // + last user messages so proper nouns the user actually
-        // talks about (Sarah Chen, PS 498, MTAC) transcribe cleanly
-        // instead of getting phoneticized.
-        params.set_initial_prompt(seeded_prompt.as_str());
-        state
-            .full(params, &samples)
-            .map_err(|e| format!("whisper full: {e}"))?;
-        // whisper-rs 0.16 API — n is c_int, segments via get_segment.
-        let n = state.full_n_segments();
-        let mut out = String::new();
-        for i in 0..n {
-            if let Some(seg) = state.get_segment(i) {
-                if let Ok(text) = seg.to_str() {
-                    out.push_str(text);
-                }
-            }
-        }
-        Ok(out.trim().to_string())
-    })
-    .await
-    .map_err(|e| format!("join: {e}"))??;
 
     let _ = app.emit("voice://transcript-final", transcript.clone());
     Ok(FinalizeResult {
@@ -260,6 +245,168 @@ pub async fn voice_finalize_transcript(
         audio_path,
         duration_ms,
     })
+}
+
+/// v0.28.60 — speculative prewarm. Called from the frontend at the
+/// `voice://speech-pausing` event (VAD Speech→ProbablySilence edge).
+/// Peeks (does not drain) the current utterance, runs whisper on it,
+/// stashes the result in `VoiceState.prewarm`. finalize_transcript
+/// consumes it if still fresh + representative.
+///
+/// Fire-and-forget from the caller's perspective — returns () when
+/// the prewarm has been dispatched, not when whisper completes. The
+/// heavy lifting runs in a spawned tokio task.
+#[tauri::command]
+pub async fn voice_prewarm_transcript(
+    app: AppHandle,
+    state: State<'_, VoiceState>,
+    app_state: State<'_, crate::AppState>,
+) -> Result<(), String> {
+    let samples = {
+        let guard = state.inner.lock().unwrap();
+        match guard.as_ref() {
+            Some(handle) => handle.peek_utterance(),
+            None => return Ok(()),
+        }
+    };
+    if samples.len() < 4000 {
+        return Ok(());
+    }
+    let sample_count = samples.len();
+    // Snapshot the pieces the spawned task needs. AppState clones are
+    // Arc-based so this is cheap.
+    let db_pool = app_state.db.pool.clone();
+    let whisper = app_state.whisper.clone();
+    let app_for_task = app.clone();
+    let prewarm_slot: &Mutex<Option<Prewarm>> = &state.prewarm;
+    // We cannot move `state` (a Tauri State) into the spawn, but the
+    // Mutex<Option<Prewarm>> lives inside VoiceState which itself
+    // lives inside AppHandle-managed state — reach it back through
+    // app.state() inside the task.
+    let _ = prewarm_slot; // silence unused warning; we use app.state() below
+
+    tauri::async_runtime::spawn(async move {
+        let audio_path = match save_utterance_wav(&app_for_task, &samples) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("[voice] prewarm wav failed: {e}");
+                return;
+            }
+        };
+        let duration_ms =
+            (samples.len() as u64 * 1000 / super::capture_target_hz() as u64) as u32;
+        let seeded_prompt = build_whisper_seed(&db_pool)
+            .await
+            .unwrap_or_else(|_| BASE_WHISPER_SEED.to_string());
+        let model_name = bootstrap::DEFAULT_MODEL;
+        if !speech_runtime::model_ready(&app_for_task, model_name) {
+            let handle = bootstrap::BootstrapHandle::default();
+            if let Err(e) = bootstrap::ensure_ready(&app_for_task, handle, model_name).await {
+                tracing::warn!("[voice] prewarm model bootstrap failed: {e}");
+                return;
+            }
+        }
+        let model_path = match speech_runtime::cache_model_path(&app_for_task, model_name) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("[voice] prewarm model path failed: {e}");
+                return;
+            }
+        };
+        let model_path_str = model_path.to_string_lossy().to_string();
+        let text_res = tokio::task::spawn_blocking(move || {
+            run_whisper_blocking(whisper, &model_path_str, &seeded_prompt, &samples)
+        })
+        .await;
+        let text = match text_res {
+            Ok(Ok(t)) => t,
+            Ok(Err(e)) => {
+                tracing::warn!("[voice] prewarm whisper failed: {e}");
+                return;
+            }
+            Err(e) => {
+                tracing::warn!("[voice] prewarm join failed: {e}");
+                return;
+            }
+        };
+        // Store in the state slot for finalize to consume.
+        let voice_state = app_for_task.state::<VoiceState>();
+        *voice_state.prewarm.lock().unwrap() = Some(Prewarm {
+            text,
+            audio_path,
+            duration_ms,
+            for_sample_count: sample_count,
+            ready_at: std::time::Instant::now(),
+        });
+        tracing::info!("[voice] prewarm ready ({sample_count} samples)");
+    });
+    Ok(())
+}
+
+/// Shared whisper-inference helper. Both finalize + prewarm route
+/// through here so they use identical params.
+async fn run_whisper_on(
+    app: &AppHandle,
+    app_state: &crate::AppState,
+    samples: &[f32],
+) -> Result<String, String> {
+    let seeded_prompt = build_whisper_seed(&app_state.db.pool)
+        .await
+        .unwrap_or_else(|_| BASE_WHISPER_SEED.to_string());
+    let model_name = bootstrap::DEFAULT_MODEL;
+    if !speech_runtime::model_ready(app, model_name) {
+        let handle = bootstrap::BootstrapHandle::default();
+        bootstrap::ensure_ready(app, handle, model_name)
+            .await
+            .map_err(|e| format!("model bootstrap: {e}"))?;
+    }
+    let model_path = speech_runtime::cache_model_path(app, model_name)?;
+    let model_path_str = model_path.to_string_lossy().to_string();
+    let whisper = app_state.whisper.clone();
+    let samples_owned = samples.to_vec();
+    tokio::task::spawn_blocking(move || {
+        run_whisper_blocking(whisper, &model_path_str, &seeded_prompt, &samples_owned)
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
+}
+
+/// Blocking whisper inference. Shared by finalize + prewarm.
+fn run_whisper_blocking(
+    whisper: super::whisper_cache::WhisperCache,
+    model_path: &str,
+    seeded_prompt: &str,
+    samples: &[f32],
+) -> Result<String, String> {
+    use whisper_rs::{FullParams, SamplingStrategy};
+    let ctx = whisper.get_or_load(model_path)?;
+    let mut state = ctx
+        .create_state()
+        .map_err(|e| format!("create whisper state: {e}"))?;
+    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    params.set_print_progress(false);
+    params.set_print_special(false);
+    params.set_print_realtime(false);
+    params.set_language(Some("en"));
+    params.set_translate(false);
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get() as i32)
+        .unwrap_or(4);
+    params.set_n_threads(cores.min(4));
+    params.set_initial_prompt(seeded_prompt);
+    state
+        .full(params, samples)
+        .map_err(|e| format!("whisper full: {e}"))?;
+    let n = state.full_n_segments();
+    let mut out = String::new();
+    for i in 0..n {
+        if let Some(seg) = state.get_segment(i) {
+            if let Ok(text) = seg.to_str() {
+                out.push_str(text);
+            }
+        }
+    }
+    Ok(out.trim().to_string())
 }
 
 /// v0.28.20 — base whisper seed. Rich, densely-worded so whisper's

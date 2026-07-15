@@ -37,6 +37,11 @@ export const nativeVoice = {
   setWakePaused: (paused: boolean) =>
     invoke<void>("voice_set_wake_paused", { paused }),
   finalizeTranscript: () => invoke<FinalizeResult>("voice_finalize_transcript"),
+  // v0.28.60 — speculative prewarm. Dispatched at speech-pausing
+  // (VAD Speech→ProbablySilence edge). Fire-and-forget; the actual
+  // whisper inference runs in a background tokio task and stashes
+  // the result in VoiceState.prewarm for finalize to pick up.
+  prewarmTranscript: () => invoke<void>("voice_prewarm_transcript"),
   linkUtterance: (args: {
     messageId: number;
     audioPath: string;
@@ -51,6 +56,7 @@ export type VoiceEvent =
   | "voice://amplitude"
   | "voice://speech-start"
   | "voice://speech-end"
+  | "voice://speech-pausing"
   | "voice://barge-in"
   | "voice://transcript-final"
   | "voice://wake-detected";
