@@ -302,6 +302,11 @@ function AppInner() {
     let unlisten: (() => void) | null = null;
     listen<null>("travis://wake", () => {
       window.dispatchEvent(new CustomEvent("travis:wake"));
+      // v0.28.57 — wake shortcut = "explicit intent to talk". Arm
+      // the mic immediately alongside surfacing the window so the
+      // user can start speaking without a second click. Voice-only-
+      // via-mic-click-or-wake is the new contract.
+      window.dispatchEvent(new CustomEvent("travis:arm-voice"));
     })
       .then((fn) => {
         unlisten = fn;

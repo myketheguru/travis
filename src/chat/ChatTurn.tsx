@@ -95,17 +95,12 @@ export function ChatTurn({
     const alwaysSpeak = readVoiceState().enabled;
     if (!speakNext && !alwaysSpeak) return;
     if (speakNext) useAppStore.getState().setSpeakNextResponse(false);
-    void import("../lib/voice").then((mod) =>
-      mod.speak(spoken).then(() => {
-        // v0.28.25 — after Travis finishes speaking a voice-initiated
-        // exchange, ask the mic to auto-re-arm briefly for the user's
-        // next turn. useNativeVoice listens for this and opens a ~6s
-        // window; if silent, the floor closes.
-        if (speakNext) {
-          window.dispatchEvent(new CustomEvent("travis:auto-arm-mic"));
-        }
-      }),
-    );
+    // v0.28.57 — the post-TTS auto-arm-mic dispatch is removed. Voice
+    // capture now only starts from an explicit mic click or the wake
+    // shortcut / (future) audio wake word. Ambient captures used to
+    // hijack the next turn with background noise; explicit-only is
+    // the new contract.
+    void import("../lib/voice").then((mod) => mod.speak(spoken));
   }, [isAssistant, message.content]);
 
   // Extract structured fields from payload_json if present

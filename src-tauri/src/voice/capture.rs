@@ -18,13 +18,16 @@ use tauri::{AppHandle, Emitter};
 
 const TARGET_HZ: u32 = 16_000;
 const AMPLITUDE_EMIT_MS: u64 = 60;
-// v0.28.1 — thresholds lowered after real-device testing revealed the
-// v0.28.0 values (0.018 / 0.010) never triggered on typical laptop
-// mics at desk distance. Values here calibrated to trigger reliably
-// on quiet speech ~40cm from a built-in mic while staying above
-// keyboard clatter (~0.003) and fan noise (~0.001).
-const VAD_SPEECH_RMS: f32 = 0.008;
-const VAD_SILENCE_RMS: f32 = 0.004;
+// v0.28.57 — bumped from 0.008/0.004 to 0.014/0.007 after users
+// reported the auto-arm window picking up "background noise" as
+// speech. 0.008 was tuned to catch quiet whisper-level speech at
+// arm's length, but that band overlaps typical office ambient (open
+// window, HVAC start-up, another person talking in the next room).
+// 0.014 still triggers on normal desk-distance speech (~0.03-0.08
+// RMS in testing) while skipping the ambient band. If quiet mumbling
+// stops triggering, lower this in 0.002 increments.
+const VAD_SPEECH_RMS: f32 = 0.014;
+const VAD_SILENCE_RMS: f32 = 0.007;
 const VAD_ONSET_MS: u64 = 100;
 // v0.28.18 — bumped from 700ms to 2500ms. 700ms was tripping on
 // natural mid-sentence pauses; 2500ms lets people finish sentences

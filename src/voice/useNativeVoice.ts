@@ -20,7 +20,7 @@
  * Every side-effect is best-effort. Never throws.
  */
 import { useEffect, useRef } from "react";
-import type { UnlistenFn } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { nativeVoice, onVoiceEvent } from "../lib/nativeVoice";
 import { useAppStore } from "../stores/app";
 import { playCue } from "./cues";
@@ -36,13 +36,7 @@ export function useNativeVoice({ enabled }: Options) {
     (s) => s.setPendingComposerSubmit,
   );
   const activity = useAppStore((s) => s.activity);
-  const ambientListening = useAppStore((s) => s.ambientListening);
-  const appendAmbientTranscript = useAppStore(
-    (s) => s.appendAmbientTranscript,
-  );
   const finalizingRef = useRef(false);
-  const ambientRef = useRef(ambientListening);
-  ambientRef.current = ambientListening;
   // v0.28.19 — track whether the current arm state is user-initiated
   // (intent) vs ambient-driven. Fixes the 'spheroid appears when
   // music/loud voice plays in the background': previously any VAD
@@ -84,29 +78,24 @@ export function useNativeVoice({ enabled }: Options) {
       unlisteners.push(
         await onVoiceEvent<null>("voice://speech-end", async () => {
           if (finalizingRef.current) return;
+          // v0.28.57 — INTENT-ONLY. speech-end only ever does work if
+          // the user actively opened the mic (mic button or wake
+          // shortcut). Ambient/passive captures were removed — Rust
+          // stays disarmed between explicit sessions, so bg noise
+          // cannot produce a transcript, cannot enter the composer,
+          // and cannot start a turn.
           const wasIntent = useAppStore.getState().activity === "listening";
-          // v0.28.18 — VAD hangover is now 2500ms (up from 700ms) so
-          // mid-sentence pauses don't trigger speech-end. That means
-          // when speech-end DOES fire, the user is legitimately done —
-          // finalize + submit like the pre-v0.28.13 behavior. Manual
-          // finalize on mic-tap (v0.28.12) still works as an escape
-          // hatch if VAD ever misses.
-          const isAmbient = ambientRef.current;
-          if (!wasIntent && !isAmbient) return;
+          if (!wasIntent) return;
           finalizingRef.current = true;
-          if (wasIntent) {
-            playCue("heard");
-            setActivity("thinking");
-            useAppStore.getState().setVoiceTranscribing(true);
-          }
+          playCue("heard");
+          setActivity("thinking");
+          useAppStore.getState().setVoiceTranscribing(true);
           try {
             const result = await nativeVoice.finalizeTranscript();
             const trimmed = result.text.trim();
             if (trimmed.length === 0) {
-              if (wasIntent) setActivity("idle");
-            } else if (wasIntent) {
-              // Stash audio metadata so AskTab can link it to the
-              // message after journal_ingest returns the row id.
+              setActivity("idle");
+            } else {
               if (result.audioPath) {
                 useAppStore.getState().setPendingVoiceAudio({
                   audioPath: result.audioPath,
@@ -114,9 +103,6 @@ export function useNativeVoice({ enabled }: Options) {
                   transcript: trimmed,
                 });
               }
-              // v0.28.25 — modality-matched TTS. Mark this turn as spoken
-              // so ChatTurn narrates the assistant reply. Text turns
-              // leave it false, keeping typed exchanges silent.
               useAppStore.getState().setSpeakNextResponse(true);
               setPendingComposerSubmit(trimmed);
               intentArmedRef.current = false;
@@ -125,32 +111,10 @@ export function useNativeVoice({ enabled }: Options) {
               } catch {
                 /* best effort */
               }
-            } else if (isAmbient) {
-              // Wake-word check: 'hey travis' during ambient promotes
-              // to an armed intent capture.
-              const normalized = trimmed
-                .toLowerCase()
-                .replace(/[^a-z0-9 ]/g, " ");
-              if (
-                normalized.includes("hey travis") ||
-                normalized.includes("hi travis") ||
-                normalized.includes("okay travis") ||
-                normalized.includes("ok travis")
-              ) {
-                window.dispatchEvent(new CustomEvent("travis:arm-voice"));
-              } else {
-                appendAmbientTranscript(trimmed);
-                try {
-                  const { invoke } = await import("@tauri-apps/api/core");
-                  await invoke("ambient_transcript_save", { text: trimmed });
-                } catch (err) {
-                  console.warn("[voice] ambient_transcript_save failed:", err);
-                }
-              }
             }
           } catch (err) {
             console.warn("[voice] finalizeTranscript failed:", err);
-            if (wasIntent) setActivity("idle");
+            setActivity("idle");
           } finally {
             finalizingRef.current = false;
             useAppStore.getState().setVoiceTranscribing(false);
@@ -160,6 +124,39 @@ export function useNativeVoice({ enabled }: Options) {
       unlisteners.push(
         await onVoiceEvent<null>("voice://barge-in", () => {
           window.dispatchEvent(new CustomEvent("travis:piper-stop"));
+        }),
+      );
+
+      // v0.28.57 — journal_ingest emits this the moment the user
+      // message row lands in the DB, before the (slow) LLM turn
+      // begins. Flip the active conversation + link any pending voice
+      // audio right away so the canvas shows a real convo + playable
+      // audio card while the assistant reply is still being generated.
+      unlisteners.push(
+        await listen<{
+          conversationId: number;
+          userMessageId: number;
+          content: string;
+        }>("journal://user-inserted", (evt) => {
+          const { conversationId, userMessageId } = evt.payload;
+          const store = useAppStore.getState();
+          if (store.activeConversationId !== conversationId) {
+            store.setActiveConversationId(conversationId);
+          }
+          const voiceAudio = store.pendingVoiceAudio;
+          if (voiceAudio) {
+            store.setPendingVoiceAudio(null);
+            void nativeVoice
+              .linkUtterance({
+                messageId: userMessageId,
+                audioPath: voiceAudio.audioPath,
+                durationMs: voiceAudio.durationMs,
+                transcript: voiceAudio.transcript,
+              })
+              .catch((err) => {
+                console.warn("[voice] eager link failed:", err);
+              });
+          }
         }),
       );
     })();
@@ -226,63 +223,18 @@ export function useNativeVoice({ enabled }: Options) {
     window.addEventListener("travis:arm-voice", onArm);
     window.addEventListener("travis:disarm-voice", onDisarm);
 
-    // v0.28.25 — auto re-arm after Travis speaks a voice-initiated
-    // reply. ChatTurn dispatches `travis:auto-arm-mic` when the TTS
-    // promise resolves; we open a ~6 second window. If the user says
-    // anything, useNativeVoice's normal listening path picks it up as
-    // the next turn (with speakNextResponse=true). If silent, we
-    // disarm quietly. Guard: never override an already-armed state.
-    let autoArmTimeoutId: number | null = null;
-    const onAutoArm = () => {
-      if (intentArmedRef.current) return;
-      if (finalizingRef.current) return;
-      playCue("wake");
-      intentArmedRef.current = true;
-      setActivity("listening");
-      // Mark the next captured utterance as voice-modality so the
-      // conversation stays voice-first without the user re-saying
-      // "hey travis" every turn.
-      useAppStore.getState().setSpeakNextResponse(true);
-      void nativeVoice.setArmed(true).catch(() => {});
-      if (autoArmTimeoutId != null) window.clearTimeout(autoArmTimeoutId);
-      autoArmTimeoutId = window.setTimeout(() => {
-        // Only auto-disarm if we're still armed AND still listening
-        // (not mid-finalize). If user spoke, activity moved to
-        // "thinking" and this branch skips.
-        if (
-          intentArmedRef.current &&
-          useAppStore.getState().activity === "listening"
-        ) {
-          intentArmedRef.current = false;
-          useAppStore.getState().setSpeakNextResponse(false);
-          void nativeVoice.setArmed(false).catch(() => {});
-          setActivity("idle");
-        }
-        autoArmTimeoutId = null;
-      }, 6000);
-    };
-    window.addEventListener("travis:auto-arm-mic", onAutoArm);
-
-    // Ambient listening: when the user has flipped ambient mode on,
-    // we ALSO tell Rust to accumulate every VAD-bounded utterance so
-    // we can grab transcripts even without an explicit arm. The
-    // distinction is: ambient captures go to the transcript store
-    // (for later reference) instead of the composer submit path.
-    // Rust-side "armed" is a superset here — ambient toggling on
-    // sets armed=true so the utterance buffer accumulates; individual
-    // transcripts get routed to ambient vs submit based on whether
-    // the user explicitly requested attention (via the button).
-    const setAmbientArm = (on: boolean) => {
-      void nativeVoice.setArmed(on).catch(() => {});
-    };
-    if (ambientListening) setAmbientArm(true);
+    // v0.28.57 — removed: `travis:auto-arm-mic` listener + the
+    // ambient-listening arms-Rust effect. New contract: voice
+    // capture only starts on explicit user intent — mic button click
+    // or the wake shortcut (Ctrl+Alt+Space). Nothing else opens the
+    // pipeline. Ambient listening as a passive-transcription mode
+    // was removed because it processed every VAD-bounded utterance,
+    // which meant background conversation showed up as user input.
 
     return () => {
       cancelled = true;
       window.removeEventListener("travis:arm-voice", onArm);
       window.removeEventListener("travis:disarm-voice", onDisarm);
-      window.removeEventListener("travis:auto-arm-mic", onAutoArm);
-      if (autoArmTimeoutId != null) window.clearTimeout(autoArmTimeoutId);
       unlisteners.forEach((u) => u());
       void nativeVoice.stop().catch(() => {});
       setSpeechAmplitude(0);

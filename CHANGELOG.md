@@ -1,5 +1,52 @@
 # Travis Changelog
 
+## v0.28.57 — Voice: explicit-only capture + instant convo/audio (2026-07-15)
+
+Reported: after voice submit, users waited "many seconds" before the
+conversation and audio card appeared, and the mic was capturing
+background sounds when the user hadn't asked it to.
+
+New contract: **voice capture ONLY starts on explicit user intent** —
+mic button click OR the wake shortcut (Ctrl+Alt+Space). Nothing else
+opens the pipeline. Ambient continuous transcription and the
+post-TTS auto-arm window are both removed — those were the sources
+of "spheroid appears when nobody's talking" behaviour, because they
+kept Rust armed and whisper'd every VAD-bounded utterance.
+
+**1. Explicit-only capture.**
+- `speech-end` handler is intent-only. If the user didn't press the
+  mic (or hit the wake shortcut), the utterance is not saved, not
+  transcribed, not submitted. Same guarantee applies to the wake
+  shortcut path — it fires an `travis:arm-voice` alongside surfacing
+  the window so the mic actually opens.
+- `travis:auto-arm-mic` (the 3-6s "reply within a beat" window after
+  Travis speaks) is removed entirely. `ChatTurn` no longer dispatches
+  it; the useNativeVoice listener is gone.
+- Ambient-listening-arms-Rust effect is removed. The `ambientListening`
+  toggle stays as store state (other consumers still read it), but it
+  no longer streams every VAD segment through whisper. A follow-up
+  release will layer a real audio wake-word engine (openWakeWord) so
+  "Hey Travis" works without continuous transcription.
+
+**2. Instant convo + audio card after submit.** `journal_ingest`
+already inserts the user's row before the (slow) LLM turn begins —
+we just weren't telling the frontend until the LLM finished. New
+`journal://user-inserted` Tauri event fires the moment the user
+row lands (`{ conversationId, userMessageId, content }`). The voice
+hook picks it up and immediately: sets `activeConversationId` (so
+the canvas mounts, history switcher updates), and calls
+`voice_utterance_link` with the real message id (so the audio card
+renders on the user bubble). Assistant reply still streams in when
+the LLM completes; the user just doesn't stare at an empty screen
+in the meantime.
+
+**3. VAD threshold raised.** `VAD_SPEECH_RMS` 0.008 → 0.014,
+`VAD_SILENCE_RMS` 0.004 → 0.007. Even inside an intent capture the
+old floor overlapped the office-ambient band (HVAC startup,
+next-room conversation) and was tripping speech-start on non-speech.
+Desk-distance speech tests at 0.03-0.08 RMS, well above the new
+threshold.
+
 ## v0.28.56 — Hotfix: libgbm-dev for Linux linker (2026-07-14)
 
 v0.28.55 got past PipeWire's struct mismatch by moving to

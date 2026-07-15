@@ -1774,6 +1774,22 @@ pub async fn journal_ingest(
     )
     .await;
 
+    // v0.28.57 — fire an early event so the frontend can flip the
+    // active conversation + link voice audio immediately, without
+    // waiting for the whole LLM turn to complete. The user_msg is
+    // already in the DB; the LLM turn below produces the assistant
+    // reply which streams / lands later.
+    if let Some(mid) = user_msg_id {
+        let _ = app.emit(
+            "journal://user-inserted",
+            serde_json::json!({
+                "conversationId": conv_id,
+                "userMessageId": mid,
+                "content": raw,
+            }),
+        );
+    }
+
     let profile = state
         .db
         .user_profile()
