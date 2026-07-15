@@ -34,6 +34,7 @@ pub struct VoiceStartResult {
 pub async fn voice_start(
     app: AppHandle,
     state: State<'_, VoiceState>,
+    app_state: State<'_, crate::AppState>,
 ) -> Result<VoiceStartResult, String> {
     {
         let guard = state.inner.lock().unwrap();
@@ -42,6 +43,13 @@ pub async fn voice_start(
         }
     }
     let handle = spawn_capture(app)?;
+    // v0.28.58 — restore the persisted wake-enabled state so users
+    // who opted in don't have to re-toggle after every launch.
+    if let Ok(Some(v)) = app_state.db.meta("voice.wake.enabled").await {
+        if v == "1" {
+            handle.set_wake_enabled(true);
+        }
+    }
     *state.inner.lock().unwrap() = Some(handle);
     Ok(VoiceStartResult { started: true })
 }
@@ -79,6 +87,43 @@ pub async fn voice_set_armed(
         handle.set_armed(on);
     }
     Ok(())
+}
+
+/// v0.28.58 — toggle openWakeWord ("Hey Jarvis") detection. When on,
+/// the capture thread loads the ONNX model chain and runs it on
+/// every 80ms of decimated audio. Firing emits `voice://wake-detected`
+/// which the frontend converts into `travis:arm-voice`. Also
+/// persists the preference so it survives restarts.
+#[tauri::command]
+pub async fn voice_set_wake_enabled(
+    on: bool,
+    state: State<'_, VoiceState>,
+    app_state: State<'_, crate::AppState>,
+) -> Result<(), String> {
+    app_state
+        .db
+        .set_meta("voice.wake.enabled", if on { "1" } else { "0" })
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(handle) = state.inner.lock().unwrap().as_ref() {
+        handle.set_wake_enabled(on);
+    }
+    Ok(())
+}
+
+/// v0.28.58 — read the persisted wake-enabled flag. Called on
+/// startup to restore state + by the Settings toggle to reflect
+/// the current value.
+#[tauri::command]
+pub async fn voice_wake_enabled(
+    app_state: State<'_, crate::AppState>,
+) -> Result<bool, String> {
+    let v = app_state
+        .db
+        .meta("voice.wake.enabled")
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(v.as_deref() == Some("1"))
 }
 
 /// v0.28.19 — voice_finalize_transcript now returns the audio path

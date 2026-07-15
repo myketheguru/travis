@@ -37,6 +37,8 @@ export function useCanvasMode(): CanvasMode {
   const activity = useAppStore((s) => s.activity);
   const isFirstMoment = useAppStore((s) => s.isFirstMoment);
   const mapExpanded = useAppStore((s) => s.mapExpanded);
+  const chatBusy = useAppStore((s) => s.chatBusy);
+  const voiceTranscribing = useAppStore((s) => s.voiceTranscribing);
   const { focal } = useFocalContent();
   const inactive = useInactivityTick();
 
@@ -44,8 +46,13 @@ export function useCanvasMode(): CanvasMode {
 
   if (focal && mapExpanded && focalHasMap(focal.content)) return "map";
 
+  // v0.28.58 — never transition to idle while a turn is in flight.
+  // Users reported the inactivity clock firing "whilst the thinking
+  // is still going on" — the splash was popping over a live spinner.
+  // Idle is only correct when there's genuinely nothing happening.
+  const busy = chatBusy || activity === "thinking" || voiceTranscribing;
   const noMessages = focal === null;
-  if (inactive || (noMessages && isFirstMoment)) return "idle";
+  if (!busy && (inactive || (noMessages && isFirstMoment))) return "idle";
 
   return "chat";
 }
@@ -89,6 +96,11 @@ export function useMapAutoExpand(): void {
 function useInactivityTick(): boolean {
   const [tick, setTick] = useState(0);
   const lastActiveRef = useRef<number>(Date.now());
+  // v0.28.58 — non-keyboard activity paths (history-item click,
+  // resume chip, mic press) update the store's activityBeat rather
+  // than firing a keydown, so subscribe to that too. Any beat change
+  // resets the local ref exactly the same way `keydown` does.
+  const activityBeat = useAppStore((s) => s.activityBeat);
 
   useEffect(() => {
     const markActive = () => {
@@ -96,18 +108,26 @@ function useInactivityTick(): boolean {
       // Force re-eval so mode transitions out of idle immediately.
       setTick((n) => n + 1);
     };
-    // v0.28.44 — keyboard only. Mouse motion no longer counts as
-    // engagement — user reported the idle orb dismisses just from
-    // moving the cursor across the app, which contradicts the
-    // splash-only-fades-on-real-input spec at WorkspaceV2:144-147.
-    // Wake-word paths (voice engagement) call noteUserActivity()
-    // directly, so they still dismiss idle without needing a
-    // pointer listener here.
+    // v0.28.44 — keyboard only for the DOM listener. Mouse motion no
+    // longer counts as engagement — user reported the idle orb
+    // dismisses just from moving the cursor across the app, which
+    // contradicts the splash-only-fades-on-real-input spec at
+    // WorkspaceV2:144-147. Non-keyboard activity paths land through
+    // the activityBeat subscription below.
     window.addEventListener("keydown", markActive);
     return () => {
       window.removeEventListener("keydown", markActive);
     };
   }, []);
+
+  // v0.28.58 — mirror store bumps into the local ref. First render
+  // (activityBeat == 0) skips the reset so we don't clobber the
+  // initial Date.now() ref during mount.
+  useEffect(() => {
+    if (activityBeat === 0) return;
+    lastActiveRef.current = Date.now();
+    setTick((n) => n + 1);
+  }, [activityBeat]);
 
   useEffect(() => {
     const id = window.setInterval(

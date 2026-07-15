@@ -25,6 +25,11 @@ export const nativeVoice = {
   stop: () => invoke<void>("voice_stop"),
   setBargeIn: (on: boolean) => invoke<void>("voice_set_barge_in", { on }),
   setArmed: (on: boolean) => invoke<void>("voice_set_armed", { on }),
+  // v0.28.58 — openWakeWord toggle. Persists to the local meta store
+  // so it survives restarts; ships as opt-in (off by default).
+  setWakeEnabled: (on: boolean) =>
+    invoke<void>("voice_set_wake_enabled", { on }),
+  wakeEnabled: () => invoke<boolean>("voice_wake_enabled"),
   finalizeTranscript: () => invoke<FinalizeResult>("voice_finalize_transcript"),
   linkUtterance: (args: {
     messageId: number;
@@ -41,7 +46,8 @@ export type VoiceEvent =
   | "voice://speech-start"
   | "voice://speech-end"
   | "voice://barge-in"
-  | "voice://transcript-final";
+  | "voice://transcript-final"
+  | "voice://wake-detected";
 
 export function onVoiceEvent<T = unknown>(
   event: VoiceEvent,

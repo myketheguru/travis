@@ -1064,6 +1064,8 @@ pub fn run() {
             voice::cmd::voice_stop,
             voice::cmd::voice_set_barge_in,
             voice::cmd::voice_set_armed,
+            voice::cmd::voice_set_wake_enabled,
+            voice::cmd::voice_wake_enabled,
             voice::cmd::voice_finalize_transcript,
             voice::cmd::voice_utterance_link,
             voice::cmd::voice_utterance_for_message,

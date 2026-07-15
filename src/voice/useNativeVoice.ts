@@ -105,17 +105,27 @@ export function useNativeVoice({ enabled }: Options) {
               }
               useAppStore.getState().setSpeakNextResponse(true);
               setPendingComposerSubmit(trimmed);
-              intentArmedRef.current = false;
-              try {
-                await nativeVoice.setArmed(false);
-              } catch {
-                /* best effort */
-              }
             }
           } catch (err) {
             console.warn("[voice] finalizeTranscript failed:", err);
             setActivity("idle");
           } finally {
+            // v0.28.58 — ALWAYS reset the intent-arm state at the end
+            // of a capture cycle, no matter what path we took. The
+            // previous code only reset on the "non-empty transcript"
+            // success path, so an empty/failed transcription left
+            // both intentArmedRef=true AND Rust armed. Next VAD
+            // trigger (any noise) then fired speech-start with
+            // armed=true, which flipped activity="listening" and
+            // popped the spheroid without the user having done
+            // anything — the exact random-listening symptom users
+            // reported after previously clicking the mic.
+            intentArmedRef.current = false;
+            try {
+              await nativeVoice.setArmed(false);
+            } catch {
+              /* best effort */
+            }
             finalizingRef.current = false;
             useAppStore.getState().setVoiceTranscribing(false);
           }
@@ -124,6 +134,17 @@ export function useNativeVoice({ enabled }: Options) {
       unlisteners.push(
         await onVoiceEvent<null>("voice://barge-in", () => {
           window.dispatchEvent(new CustomEvent("travis:piper-stop"));
+        }),
+      );
+      // v0.28.58 — openWakeWord fires here when "Hey Jarvis" is
+      // detected. Wake is the second of the two allowed voice entry
+      // points (mic click is the first); it dispatches the same
+      // `travis:arm-voice` event the mic button uses, so the whole
+      // downstream flow is identical.
+      unlisteners.push(
+        await onVoiceEvent<number>("voice://wake-detected", () => {
+          if (intentArmedRef.current || finalizingRef.current) return;
+          window.dispatchEvent(new CustomEvent("travis:arm-voice"));
         }),
       );
 

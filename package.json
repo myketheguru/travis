@@ -1,18 +1,19 @@
 {
   "name": "travis",
   "private": true,
-  "version": "0.28.57",
+  "version": "0.28.58",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "predev": "node scripts/fetch-python.mjs && node scripts/fetch-whisper.mjs && node scripts/fetch-piper.mjs",
-    "prebuild": "node scripts/fetch-python.mjs && node scripts/fetch-whisper.mjs && node scripts/fetch-piper.mjs",
+    "predev": "node scripts/fetch-python.mjs && node scripts/fetch-whisper.mjs && node scripts/fetch-piper.mjs && node scripts/fetch-openwakeword.mjs",
+    "prebuild": "node scripts/fetch-python.mjs && node scripts/fetch-whisper.mjs && node scripts/fetch-piper.mjs && node scripts/fetch-openwakeword.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "fetch:python": "node scripts/fetch-python.mjs",
     "fetch:whisper": "node scripts/fetch-whisper.mjs",
     "fetch:piper": "node scripts/fetch-piper.mjs",
+    "fetch:wake": "node scripts/fetch-openwakeword.mjs",
     "release:manifest": "node scripts/build-update-manifest.mjs"
   },
   "dependencies": {

@@ -1,5 +1,134 @@
 # Travis Changelog
 
+## v0.28.58 — Wake word + 3 voice-flow bugs + history-splash-dismiss (2026-07-15)
+
+Three specific voice bugs the user hit, plus the openWakeWord shipment
+that was already in flight. All in one release because they all touch
+the same pipeline and shipping them separately would just churn CI.
+
+### Voice-flow bugs (root-cause fixes)
+
+**1. Spheroid pops randomly after a previous mic click.** The
+speech-end handler in `useNativeVoice` only reset `intentArmedRef`
+and called `nativeVoice.setArmed(false)` on the "non-empty transcript
+succeeded" branch. Empty transcript or whisper failure left Rust
+armed AND `intentArmedRef=true` — so any later VAD spike (someone
+coughs, HVAC starts) fired `voice://speech-start` with
+armed_for_submit=true, which flipped `activity="listening"` and
+popped the spheroid. Fix: disarm on every exit path via `finally`.
+
+**2. Splash appears whilst the LLM turn is still running.** The
+inactivity clock in `useCanvasMode` didn't check whether a turn was
+in flight — after ~5 min it just decided the user was idle and
+promoted the mode to `idle`, painting the greeting splash over the
+live spinner. Fix: `busy = chatBusy || activity==="thinking" ||
+voiceTranscribing` blocks the idle transition.
+
+**3. TTS plays into another app when you alt-tab.** ChatTurn called
+`mod.speak()` unconditionally when `speakNextResponse` was set.
+User alt-tabbed during a slow turn; Travis then read the reply out
+loud into whatever they'd switched to. Fix: `document.hasFocus()`
+short-circuits the speak path — the reply still renders + the audio
+card affordance means it's replayable on return if wanted.
+
+### Wake word ("Hey Jarvis") via openWakeWord
+
+Closes the wake-word gap the v0.28.57 explicit-only policy created.
+Say **"Hey Jarvis"** and the mic opens — same downstream flow as a
+mic click. Off by default (Settings → Wake word). CPU cost is ~1%
+running the ONNX chain continuously vs the ~10-15% ambient-whisper
+path we killed in v0.28.57. "Hey Jarvis" is the placeholder wake
+phrase because openWakeWord doesn't ship a pre-trained "Hey Travis"
+model; a custom-trained one is task #384 and swaps in as a single
+`.onnx` file with no other code changes.
+
+- `voice::wake` — three-stage pipeline via tract-onnx (pure Rust,
+  no native ORT binary):
+    raw f32 mono 16kHz → `melspectrogram.onnx` → mel features
+    → `embedding_model.onnx` → 96-d embeddings
+    → `hey_jarvis_v0.1.onnx` → confidence
+  Rolling buffers keep the last 10 mel chunks + 16 embeddings; a
+  12-slot smoothed detection buffer + 2s refractory prevents a
+  single utterance from retriggering.
+- Ported the pipeline from the MIT-licensed `oww-rs` crate — we
+  couldn't drop-in `oww-rs` because it owns its own cpal stream and
+  our `voice::capture` already does.
+- New deps: `tract-onnx 0.21`, `circular-buffer 1`.
+- `capture::tick_loop` feeds the wake detector 1280-sample (80ms)
+  chunks alongside VAD/amplitude. Wake runs independently of the
+  intent-arm state.
+- New commands: `voice_set_wake_enabled(on)` (persists to meta),
+  `voice_wake_enabled()`. `voice_start` restores the persisted
+  wake state on launch.
+- Frontend: `useNativeVoice` listens for `voice://wake-detected`
+  and dispatches `travis:arm-voice` — same event the mic button
+  fires. New `WakeWordSection` in Settings (opt-in toggle).
+- `scripts/fetch-openwakeword.mjs` downloads the three ONNX files
+  from openWakeWord v0.5.1 GitHub Releases (~3.7 MB total) into
+  `src-tauri/resources/wake/` on `predev` + `prebuild`.
+
+### Splash dismisses on history-item click
+
+`useInactivityTick`'s local `lastActiveRef` only reset on `keydown`.
+Non-keyboard activity paths — history-item click, resume chip, mic
+press — called the store's `noteUserActivity()` but that never
+propagated to the hook. Added an `activityBeat: number` counter to
+the store, bumped on every `noteUserActivity()`; the hook subscribes
+to it and mirrors any bump into the local ref. Splash now dismisses
+on every real activity path.
+
+## v0.28.57 — Voice: explicit-only capture + instant convo/audio (2026-07-15)
+
+Closes the wake-word gap the v0.28.57 explicit-only policy created.
+Say **"Hey Jarvis"** and the mic opens — same downstream flow as a
+mic click. Off by default (Settings → Wake word). CPU cost is ~1%
+running the ONNX chain continuously vs the ~10-15% ambient-whisper
+path we killed in v0.28.57.
+
+Wake phrase is "Hey Jarvis" as a placeholder — openWakeWord doesn't
+ship a pre-trained "Hey Travis" model. Custom-training one needs
+a real dataset + training run and belongs in a future release; the
+runtime here is identical, only the wake ONNX file swaps.
+
+### Rust
+
+- `voice::wake` — three-stage openWakeWord pipeline via tract-onnx
+  (pure Rust, no native ORT bundle):
+    raw f32 mono 16kHz → `melspectrogram.onnx` → mel frames
+    → `embedding_model.onnx` → 96-d embeddings
+    → `hey_jarvis_v0.1.onnx` → confidence
+  Rolling buffers keep the last 10 mel chunks + 16 embeddings; a
+  12-slot smoothed detection buffer + 2s refractory prevents a
+  single utterance from retriggering.
+- Ported the pipeline from the MIT-licensed `oww-rs` crate — we
+  couldn't drop-in `oww-rs` because it owns its own cpal stream and
+  Travis's `voice::capture` already owns the mic.
+- New deps: `tract-onnx 0.21` (pure-Rust ONNX runtime),
+  `circular-buffer 1`.
+- `capture::tick_loop` now feeds the wake detector 1280-sample
+  (80ms) chunks alongside the existing VAD/amplitude pipeline. Wake
+  runs independently of the intent-arm state so the user can wake
+  the mic even between armed captures.
+- New commands: `voice_set_wake_enabled(on)` (persists to
+  `meta['voice.wake.enabled']`), `voice_wake_enabled()`.
+  `voice_start` restores the persisted wake state on launch.
+
+### Frontend
+
+- `useNativeVoice` listens for `voice://wake-detected` and
+  dispatches `travis:arm-voice` — the exact same event the mic
+  button fires. Downstream flow is identical: no separate wake
+  code path.
+- New `WakeWordSection` in Settings (opt-in toggle, clear phrase
+  copy). Explains the CPU cost + the "Hey Jarvis" placeholder.
+
+### Build
+
+- `scripts/fetch-openwakeword.mjs` downloads the three ONNX files
+  from openWakeWord v0.5.1 GitHub Releases into
+  `src-tauri/resources/wake/` on `predev` + `prebuild`. Total ~3.7 MB
+  bundled per installer. Skipped if already present.
+
 ## v0.28.57 — Voice: explicit-only capture + instant convo/audio (2026-07-15)
 
 Reported: after voice submit, users waited "many seconds" before the

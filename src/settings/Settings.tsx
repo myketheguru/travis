@@ -39,6 +39,7 @@ import { useAppStore } from "../stores/app";
 // ⌘⇧C or the dock's Contacts icon). Import stays via the overlay.
 import { McpSection } from "./McpSection";
 import { SentrySection } from "./SentrySection";
+import { WakeWordSection } from "./WakeWordSection";
 import { InterfaceSection } from "./InterfaceSection";
 import { Switch } from "../ui/Switch";
 import {
@@ -464,6 +465,10 @@ export default function Settings({ onClose }: { onClose: () => void }) {
 
         <Section title="Sentry mode">
           <SentrySection />
+        </Section>
+
+        <Section title="Wake word">
+          <WakeWordSection />
         </Section>
 
         <Section title="Identity">

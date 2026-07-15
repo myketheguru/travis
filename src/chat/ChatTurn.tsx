@@ -95,6 +95,12 @@ export function ChatTurn({
     const alwaysSpeak = readVoiceState().enabled;
     if (!speakNext && !alwaysSpeak) return;
     if (speakNext) useAppStore.getState().setSpeakNextResponse(false);
+    // v0.28.58 — don't play TTS if the window is unfocused. User
+    // reported alt-tabbing during a long LLM turn and then Travis
+    // read the answer aloud into their other app. The reply still
+    // renders + the audio-card affordance means they can replay
+    // manually if they come back and want it out loud.
+    if (typeof document !== "undefined" && !document.hasFocus()) return;
     // v0.28.57 — the post-TTS auto-arm-mic dispatch is removed. Voice
     // capture now only starts from an explicit mic click or the wake
     // shortcut / (future) audio wake word. Ambient captures used to

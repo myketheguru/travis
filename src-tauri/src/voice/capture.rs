@@ -47,6 +47,12 @@ enum Cmd {
     /// discarded on end-of-speech so no wasted whisper cycles + no
     /// unintended submissions.
     SetArmed(bool),
+    /// v0.28.58 — arm/disarm the openWakeWord detector. Independent
+    /// of `SetArmed`: wake stays on whenever the user has toggled
+    /// wake-word capture in Settings, regardless of whether an
+    /// intent capture is in flight. When it fires, the frontend
+    /// dispatches `travis:arm-voice`, which flips SetArmed(true).
+    SetWakeEnabled(bool),
     TakeUtterance(Sender<Vec<f32>>),
 }
 
@@ -72,6 +78,9 @@ impl VoiceHandle {
     }
     pub fn set_armed(&self, on: bool) {
         let _ = self.tx.send(Cmd::SetArmed(on));
+    }
+    pub fn set_wake_enabled(&self, on: bool) {
+        let _ = self.tx.send(Cmd::SetWakeEnabled(on));
     }
     pub fn stop(&self) {
         let _ = self.tx.send(Cmd::Stop);
@@ -228,6 +237,15 @@ fn tick_loop(app: AppHandle, audio: Arc<Mutex<AudioBuf>>, rx: Receiver<Cmd>, inp
     let mut last_diag = Instant::now();
     let mut last_rms_seen: f32 = 0.0;
 
+    // v0.28.58 — wake detector state. `wake_detector` is only Some
+    // once wake has been enabled from Settings; loading the ONNX
+    // chain is deferred until then so users who never turn wake on
+    // don't pay the ~4MB memory + startup cost.
+    let mut wake_enabled = false;
+    let mut wake_detector: Option<super::wake::WakeDetector> = None;
+    let mut wake_buffer: Vec<f32> =
+        Vec::with_capacity(super::wake::CHUNK_SAMPLES * 2);
+
     loop {
         // Drain any pending control commands.
         while let Ok(cmd) = rx.try_recv() {
@@ -242,6 +260,27 @@ fn tick_loop(app: AppHandle, audio: Arc<Mutex<AudioBuf>>, rx: Receiver<Cmd>, inp
                         tracing::info!("[voice] ARMED — capturing next utterance");
                     } else {
                         tracing::info!("[voice] disarmed");
+                    }
+                }
+                Cmd::SetWakeEnabled(on) => {
+                    wake_enabled = on;
+                    if on && wake_detector.is_none() {
+                        match super::wake::WakeDetector::load_from_resources(
+                            &app,
+                            super::wake::DEFAULT_THRESHOLD,
+                        ) {
+                            Ok(d) => {
+                                wake_detector = Some(d);
+                                tracing::info!("[voice] wake detector loaded (Hey Jarvis)");
+                            }
+                            Err(e) => {
+                                tracing::warn!("[voice] wake init failed: {e}");
+                                wake_enabled = false;
+                            }
+                        }
+                    }
+                    if !on {
+                        wake_buffer.clear();
                     }
                 }
                 Cmd::TakeUtterance(reply) => {
@@ -283,6 +322,44 @@ fn tick_loop(app: AppHandle, audio: Arc<Mutex<AudioBuf>>, rx: Receiver<Cmd>, inp
             if utterance.len() > MAX_UTTERANCE_SAMPLES {
                 let drop = utterance.len() - MAX_UTTERANCE_SAMPLES;
                 utterance.drain(..drop);
+            }
+        }
+
+        // v0.28.58 — feed the wake detector in exactly 1280-sample
+        // (80ms) chunks. Runs regardless of whether an intent capture
+        // is in flight — wake is the "start a new turn" path, so it
+        // needs to fire independently of the submit-armed state.
+        if wake_enabled {
+            if let Some(det) = wake_detector.as_mut() {
+                wake_buffer.extend_from_slice(&decimated);
+                while wake_buffer.len() >= super::wake::CHUNK_SAMPLES {
+                    let chunk: Vec<f32> = wake_buffer
+                        .drain(..super::wake::CHUNK_SAMPLES)
+                        .collect();
+                    match det.feed_chunk(&chunk) {
+                        Ok((prob, true)) => {
+                            tracing::info!("[voice] WAKE detected prob={prob:.3}");
+                            super::wake::emit_wake(&app, prob);
+                        }
+                        Ok((prob, false)) => {
+                            if prob > 0.1 {
+                                tracing::debug!(
+                                    "[voice] wake avg prob={prob:.3}"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("[voice] wake inference err: {e}");
+                        }
+                    }
+                }
+                // Cap the buffer at ~2 chunks so we don't accumulate
+                // if inference stalls.
+                let cap = super::wake::CHUNK_SAMPLES * 2;
+                if wake_buffer.len() > cap {
+                    let drop = wake_buffer.len() - cap;
+                    wake_buffer.drain(..drop);
+                }
             }
         }
         // VAD still runs when disarmed — it drives amplitude events

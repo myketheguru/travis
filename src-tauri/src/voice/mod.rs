@@ -31,6 +31,12 @@ pub mod whisper_cache;
 /// voice model live under `resources/piper/`; runtime falls back to
 /// speechSynthesis if either is missing.
 pub mod piper;
+/// v0.28.58 — openWakeWord audio wake detector ("Hey Jarvis").
+/// Runs a three-stage ONNX model chain (mel → embed → wake) on the
+/// same cpal stream the capture pipeline owns; emits
+/// `voice://wake-detected` when the smoothed confidence crosses the
+/// threshold. Opt-in via Settings.
+pub mod wake;
 
 /// Target sample rate for whisper (16kHz). Exposed so the WAV writer
 /// in cmd.rs uses the same value the capture pipeline decimates to.

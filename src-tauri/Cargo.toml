@@ -1,6 +1,6 @@
 [package]
 name = "travis"
-version = "0.28.57"
+version = "0.28.58"
 description = "Travis — local-first AI operations assistant"
 authors = ["myketheguru"]
 edition = "2021"
@@ -119,6 +119,15 @@ btleplug = "0.11"
 # + resizing so we don't ship 4K PNGs to R2.
 xcap = "0.9"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
+# v0.28.58 — pure-Rust ONNX runtime for the openWakeWord model chain
+# (melspec → embedding → hey_jarvis). We use tract instead of the
+# `ort` crate specifically because tract is pure Rust — no native
+# onnxruntime binary to bundle per-OS, no CI dep chain to babysit,
+# and the wake models are small enough that inference speed is not
+# the bottleneck. Runs a hair slower than ORT; on a wake-word chain
+# that's ~1ms every 80ms, well below audible latency.
+tract-onnx = { version = "0.21", default-features = false }
+circular-buffer = "1"
 # v0.28.53 — T2T secure file transfer. X25519 for ECDH, HKDF-SHA256 for
 # session-key derivation, ChaCha20-Poly1305 as the AEAD, zeroize to
 # scrub secrets on drop. All pure-Rust, no OS deps.

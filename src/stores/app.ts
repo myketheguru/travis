@@ -66,6 +66,13 @@ type AppState = {
   /// opening greeting. Computed at mount from lastActivityAt: true on
   /// cold boot OR when idle >= 24h. Fades to false on first keystroke.
   isFirstMoment: boolean;
+  /// v0.28.58 — monotonic counter bumped on every `noteUserActivity()`
+  /// call. Non-keyboard activity paths (history-item click, resume
+  /// chip, mic press) can't drive the local `lastActiveRef` inside
+  /// `useInactivityTick` on their own — subscribing to this counter
+  /// closes that gap so those activity paths also dismiss the idle
+  /// splash. Never read for its value, only for its change.
+  activityBeat: number;
   /// v0.26 (v2 Shell 11b) — instantaneous speech energy (0..1), used by
   /// the speech-scene spheroid to scale + intensify. Written by
   /// VoiceInputButton during STT capture (RMS of current samples) and
@@ -430,8 +437,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
   isFirstMoment: computeInitialFirstMoment(),
+  activityBeat: 0,
   noteUserActivity: () => {
     stampActivityNow();
+    // Bump the beat so `useInactivityTick` can observe it via a
+    // store subscription. Every activity path (history-item click,
+    // resume chip, mic press) goes through here — this is the only
+    // place we increment, so consumers can trust it.
+    set((prev) => ({ activityBeat: prev.activityBeat + 1 }));
     // Only clear isFirstMoment if it was true — avoid pointless re-renders.
     if (get().isFirstMoment) set({ isFirstMoment: false });
   },
