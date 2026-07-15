@@ -141,9 +141,22 @@ export function useNativeVoice({ enabled }: Options) {
       // points (mic click is the first); it dispatches the same
       // `travis:arm-voice` event the mic button uses, so the whole
       // downstream flow is identical.
+      // v0.28.59 — also gated on chatBusy / thinking / speaking so
+      // ambient TV/phone-video false positives during a live turn
+      // can't fire arm. (Rust also pauses wake in these states —
+      // this is the second gate.)
       unlisteners.push(
         await onVoiceEvent<number>("voice://wake-detected", () => {
-          if (intentArmedRef.current || finalizingRef.current) return;
+          const s = useAppStore.getState();
+          if (
+            intentArmedRef.current ||
+            finalizingRef.current ||
+            s.chatBusy ||
+            s.activity === "thinking" ||
+            s.activity === "speaking"
+          ) {
+            return;
+          }
           window.dispatchEvent(new CustomEvent("travis:arm-voice"));
         }),
       );
@@ -185,11 +198,26 @@ export function useNativeVoice({ enabled }: Options) {
     // Arm/disarm surface via window events so buttons / shortcuts
     // don't need direct access to nativeVoice.
     const onArm = () => {
+      // v0.28.59 — hard guard: reject arm attempts while a turn is
+      // in flight. This blocks (1) accidental double-arms from a
+      // second mic click, (2) wake-word false positives that fired
+      // during thinking, and (3) any programmatic arm dispatched
+      // during TTS. Users reported "conversation starts while
+      // another is loading" — this is the root of that class of
+      // race, and the frontend guard is the last line of defence
+      // even though we also pause wake in Rust.
+      const s = useAppStore.getState();
+      if (
+        s.chatBusy ||
+        s.activity === "thinking" ||
+        s.activity === "speaking" ||
+        finalizingRef.current
+      ) {
+        return;
+      }
       playCue("wake");
       intentArmedRef.current = true;
       setActivity("listening");
-      // v0.28.27 — mic arm counts as user engagement, so the splash
-      // dismisses when Travis wakes for the user's first utterance.
       useAppStore.getState().noteUserActivity();
       void nativeVoice.setArmed(true).catch(() => {});
     };
@@ -267,6 +295,31 @@ export function useNativeVoice({ enabled }: Options) {
     if (!enabled) return;
     void nativeVoice.setBargeIn(activity === "speaking").catch(() => {});
   }, [enabled, activity]);
+
+  // v0.28.59 — pause the wake worker in Rust while a turn is in
+  // flight. Belt-and-braces with the frontend guards above: even if
+  // wake somehow fires, the Rust side skips the inference entirely
+  // when paused, so no `voice://wake-detected` event is emitted.
+  const chatBusy = useAppStore((s) => s.chatBusy);
+  useEffect(() => {
+    if (!enabled) return;
+    const busy =
+      chatBusy || activity === "thinking" || activity === "speaking";
+    void nativeVoice.setWakePaused(busy).catch(() => {});
+  }, [enabled, chatBusy, activity]);
+
+  // v0.28.59 — a completing turn should dismiss the splash. If a
+  // user's been away and their reply arrives (or their previously-
+  // fired mic press returns), we need the chat visible, not the
+  // idle overlay. Bump activityBeat on chatBusy true→false so the
+  // canvas mode derivation exits idle.
+  const chatBusyRef = useRef(chatBusy);
+  useEffect(() => {
+    if (chatBusyRef.current === true && chatBusy === false) {
+      useAppStore.getState().noteUserActivity();
+    }
+    chatBusyRef.current = chatBusy;
+  }, [chatBusy]);
 
   // v0.28.2 — cue on the transition from speaking -> idle so the user
   // hears a soft "over to you" bell when Travis finishes talking.

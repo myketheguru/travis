@@ -30,6 +30,12 @@ export const nativeVoice = {
   setWakeEnabled: (on: boolean) =>
     invoke<void>("voice_set_wake_enabled", { on }),
   wakeEnabled: () => invoke<boolean>("voice_wake_enabled"),
+  // v0.28.59 — external wake pause. Called from useNativeVoice when
+  // chatBusy / activity==="thinking" / activity==="speaking" so a
+  // false positive on ambient audio can't hijack an in-flight turn.
+  // The worker stays loaded; resume is <1ms.
+  setWakePaused: (paused: boolean) =>
+    invoke<void>("voice_set_wake_paused", { paused }),
   finalizeTranscript: () => invoke<FinalizeResult>("voice_finalize_transcript"),
   linkUtterance: (args: {
     messageId: number;

@@ -15,9 +15,16 @@ use tokio::io::AsyncWriteExt;
 
 use crate::speech_runtime::cache_model_path;
 
-/// Default model — English-only base variant, ~74 MB, good balance of
-/// quality and download size for command-level utterances.
-pub const DEFAULT_MODEL: &str = "ggml-base.en.bin";
+/// v0.28.59 — default model switched from `base.en` (74 MB) to
+/// `tiny.en` (39 MB) on Gemini's recommendation and after profiling
+/// showed base was the dominant cost of the post-utterance wait.
+/// tiny.en runs ~2-3x faster on CPU (well under 500ms for a typical
+/// 5-second command) and its accuracy on short command-style
+/// utterances is within a rounding error of base for our domain.
+/// If a specific user's speech patterns hit tiny's floor, we can
+/// expose a Settings-level "prefer accuracy over speed" toggle in a
+/// follow-up.
+pub const DEFAULT_MODEL: &str = "ggml-tiny.en.bin";
 
 /// Where the whisper.cpp release models live. HuggingFace mirror is
 /// the canonical source used by the whisper.cpp project itself.

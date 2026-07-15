@@ -126,6 +126,23 @@ pub async fn voice_wake_enabled(
     Ok(v.as_deref() == Some("1"))
 }
 
+/// v0.28.59 — external wake pause. Frontend calls this on
+/// (chatBusy || activity==="thinking" || activity==="speaking") so
+/// a false positive on TV/phone audio can't hijack an in-flight
+/// turn. Distinct from `voice_set_wake_enabled` because we don't
+/// want to tear down the worker for a 30-second LLM turn — pausing
+/// keeps the ONNX chain loaded and ready to resume in <1ms.
+#[tauri::command]
+pub async fn voice_set_wake_paused(
+    paused: bool,
+    state: State<'_, VoiceState>,
+) -> Result<(), String> {
+    if let Some(handle) = state.inner.lock().unwrap().as_ref() {
+        handle.set_wake_paused(paused);
+    }
+    Ok(())
+}
+
 /// v0.28.19 — voice_finalize_transcript now returns the audio path
 /// and duration alongside the transcript so the frontend can render
 /// an audio card the user can replay.
@@ -206,6 +223,14 @@ pub async fn voice_finalize_transcript(
         params.set_print_realtime(false);
         params.set_language(Some("en"));
         params.set_translate(false);
+        // v0.28.59 — cap whisper's internal thread pool. Gemini's
+        // note: beyond 4 threads diminishing returns kick in and
+        // steal CPU from the Tauri UI thread. min(available_cores,
+        // 4) is the sweet spot per whisper.cpp bench numbers.
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get() as i32)
+            .unwrap_or(4);
+        params.set_n_threads(cores.min(4));
         // v0.28.19 — dynamic seed. Base phrase + recent entity names
         // + last user messages so proper nouns the user actually
         // talks about (Sarah Chen, PS 498, MTAC) transcribe cleanly

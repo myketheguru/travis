@@ -8,7 +8,7 @@
 //! app. The channel Sender is Send + Sync.
 
 use std::sync::{
-    mpsc::{channel, Receiver, Sender},
+    mpsc::{channel, sync_channel, Receiver, Sender, SyncSender, TrySendError},
     Arc, Mutex,
 };
 use std::time::{Duration, Instant};
@@ -29,10 +29,14 @@ const AMPLITUDE_EMIT_MS: u64 = 60;
 const VAD_SPEECH_RMS: f32 = 0.014;
 const VAD_SILENCE_RMS: f32 = 0.007;
 const VAD_ONSET_MS: u64 = 100;
-// v0.28.18 — bumped from 700ms to 2500ms. 700ms was tripping on
-// natural mid-sentence pauses; 2500ms lets people finish sentences
-// but still auto-ends within a few seconds of them being done.
-const VAD_HANGOVER_MS: u64 = 2500;
+// v0.28.59 — reduced from 2500ms to 1500ms. Users reported the
+// post-utterance wait feeling glacial ("no time to wait"). 1500ms
+// still covers a natural end-of-sentence beat (data: median
+// end-of-utterance pause is ~800ms in typical dictation) while
+// shaving a whole second off every voice turn. If false-triggers
+// on mid-sentence pauses re-appear we can bump back to 2000ms
+// as a compromise.
+const VAD_HANGOVER_MS: u64 = 1500;
 
 /// Control commands sent from the Tauri command layer to the worker
 /// thread that owns the cpal Stream. Each variant that needs a reply
@@ -53,6 +57,13 @@ enum Cmd {
     /// intent capture is in flight. When it fires, the frontend
     /// dispatches `travis:arm-voice`, which flips SetArmed(true).
     SetWakeEnabled(bool),
+    /// v0.28.59 — temporary wake pause. Wake stays "enabled" (worker
+    /// alive, samples flowing) but the worker skips inference while
+    /// paused. Used to freeze wake during an in-flight turn so a
+    /// false positive on TV/phone-video audio can't hijack the
+    /// conversation. Distinct from SetWakeEnabled because we don't
+    /// want to tear down the worker for a 30-second LLM turn.
+    SetWakePaused(bool),
     TakeUtterance(Sender<Vec<f32>>),
 }
 
@@ -81,6 +92,9 @@ impl VoiceHandle {
     }
     pub fn set_wake_enabled(&self, on: bool) {
         let _ = self.tx.send(Cmd::SetWakeEnabled(on));
+    }
+    pub fn set_wake_paused(&self, paused: bool) {
+        let _ = self.tx.send(Cmd::SetWakePaused(paused));
     }
     pub fn stop(&self) {
         let _ = self.tx.send(Cmd::Stop);
@@ -227,6 +241,83 @@ fn pick_input_device(host: &cpal::Host) -> Result<cpal::Device, String> {
     Ok(default)
 }
 
+/// v0.28.59 — dedicated wake-word worker thread.
+///
+/// PREVIOUSLY: wake inference (three ONNX passes per 80ms) ran inline
+/// inside the tick loop. On any machine where those three inferences
+/// took longer than the 30ms tick sleep, the loop stalled. cpal kept
+/// filling the shared buffer, then either the utterance buffer
+/// overflowed and got drained (dropping actual user speech) or the
+/// wake buffer capped and dropped audio out from under the detector.
+/// Either way, enabling wake broke normal mic capture — which is
+/// exactly what users reported ("Hey Jarvis on = voice stops
+/// working"). Fix: give wake its own thread + bounded channel; if
+/// wake stalls, only wake stalls.
+enum WakeCmd {
+    Feed(Vec<f32>),
+    SetPaused(bool),
+    Stop,
+}
+
+fn spawn_wake_worker(app: AppHandle, threshold: f32) -> Option<SyncSender<WakeCmd>> {
+    let mut detector = match super::wake::WakeDetector::load_from_resources(&app, threshold) {
+        Ok(d) => {
+            tracing::info!("[voice] wake detector loaded (Hey Jarvis)");
+            d
+        }
+        Err(e) => {
+            tracing::warn!("[voice] wake init failed: {e}");
+            return None;
+        }
+    };
+    // Bounded capacity so a slow inference loop drops the oldest
+    // frame rather than growing memory forever. 32 frames = ~2.5s of
+    // slack — plenty for the inference to catch up on any transient
+    // GC/thermal-throttle stall.
+    let (tx, rx) = sync_channel::<WakeCmd>(32);
+    std::thread::Builder::new()
+        .name("travis-wake".into())
+        .spawn(move || {
+            let mut paused = false;
+            for cmd in rx.iter() {
+                match cmd {
+                    WakeCmd::Stop => return,
+                    WakeCmd::SetPaused(p) => paused = p,
+                    WakeCmd::Feed(chunk) => {
+                        if paused {
+                            continue;
+                        }
+                        if chunk.len() != super::wake::CHUNK_SAMPLES {
+                            continue;
+                        }
+                        match detector.feed_chunk(&chunk) {
+                            Ok((prob, true)) => {
+                                tracing::info!(
+                                    "[voice] WAKE detected prob={prob:.3}"
+                                );
+                                super::wake::emit_wake(&app, prob);
+                            }
+                            Ok((prob, false)) => {
+                                if prob > 0.1 {
+                                    tracing::debug!(
+                                        "[voice] wake avg prob={prob:.3}"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "[voice] wake inference err: {e}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        })
+        .ok()?;
+    Some(tx)
+}
+
 fn tick_loop(app: AppHandle, audio: Arc<Mutex<AudioBuf>>, rx: Receiver<Cmd>, input_hz: u32) {
     let mut utterance: Vec<f32> = Vec::with_capacity(TARGET_HZ as usize * 10);
     let mut barge_in_arm = false;
@@ -237,12 +328,14 @@ fn tick_loop(app: AppHandle, audio: Arc<Mutex<AudioBuf>>, rx: Receiver<Cmd>, inp
     let mut last_diag = Instant::now();
     let mut last_rms_seen: f32 = 0.0;
 
-    // v0.28.58 — wake detector state. `wake_detector` is only Some
-    // once wake has been enabled from Settings; loading the ONNX
-    // chain is deferred until then so users who never turn wake on
-    // don't pay the ~4MB memory + startup cost.
+    // v0.28.59 — wake state lives outside the tick loop. `wake_tx`
+    // is Some once the worker thread is up; the tick loop's only
+    // wake work is: batch decimated samples into 80ms chunks and
+    // best-effort push them into the wake channel. If wake stalls,
+    // we silently drop the oldest queued frame — same policy as
+    // before but WITHOUT slowing down VAD/utterance capture.
     let mut wake_enabled = false;
-    let mut wake_detector: Option<super::wake::WakeDetector> = None;
+    let mut wake_tx: Option<SyncSender<WakeCmd>> = None;
     let mut wake_buffer: Vec<f32> =
         Vec::with_capacity(super::wake::CHUNK_SAMPLES * 2);
 
@@ -250,37 +343,55 @@ fn tick_loop(app: AppHandle, audio: Arc<Mutex<AudioBuf>>, rx: Receiver<Cmd>, inp
         // Drain any pending control commands.
         while let Ok(cmd) = rx.try_recv() {
             match cmd {
-                Cmd::Stop => return,
+                Cmd::Stop => {
+                    if let Some(tx) = &wake_tx {
+                        let _ = tx.send(WakeCmd::Stop);
+                    }
+                    return;
+                }
                 Cmd::SetBargeIn(on) => barge_in_arm = on,
                 Cmd::SetArmed(on) => {
                     armed_for_submit = on;
                     if on {
                         // Fresh arm starts a clean utterance buffer.
                         utterance.clear();
+                        // v0.28.59 — while an intent capture is in
+                        // flight, pause the wake worker so the wake
+                        // model can't false-positive on the user's
+                        // own utterance and re-arm mid-turn.
+                        if let Some(tx) = &wake_tx {
+                            let _ = tx.try_send(WakeCmd::SetPaused(true));
+                        }
                         tracing::info!("[voice] ARMED — capturing next utterance");
                     } else {
+                        if let Some(tx) = &wake_tx {
+                            let _ = tx.try_send(WakeCmd::SetPaused(false));
+                        }
                         tracing::info!("[voice] disarmed");
                     }
                 }
                 Cmd::SetWakeEnabled(on) => {
                     wake_enabled = on;
-                    if on && wake_detector.is_none() {
-                        match super::wake::WakeDetector::load_from_resources(
-                            &app,
+                    if on && wake_tx.is_none() {
+                        // Spawn the dedicated worker on first enable.
+                        wake_tx = spawn_wake_worker(
+                            app.clone(),
                             super::wake::DEFAULT_THRESHOLD,
-                        ) {
-                            Ok(d) => {
-                                wake_detector = Some(d);
-                                tracing::info!("[voice] wake detector loaded (Hey Jarvis)");
-                            }
-                            Err(e) => {
-                                tracing::warn!("[voice] wake init failed: {e}");
-                                wake_enabled = false;
-                            }
+                        );
+                        if wake_tx.is_none() {
+                            wake_enabled = false;
                         }
                     }
                     if !on {
                         wake_buffer.clear();
+                    }
+                }
+                Cmd::SetWakePaused(paused) => {
+                    // v0.28.59 — external pause (e.g. chatBusy). The
+                    // worker checks this flag before each feed; queued
+                    // frames while paused are dropped on the floor.
+                    if let Some(tx) = &wake_tx {
+                        let _ = tx.try_send(WakeCmd::SetPaused(paused));
                     }
                 }
                 Cmd::TakeUtterance(reply) => {
@@ -325,41 +436,52 @@ fn tick_loop(app: AppHandle, audio: Arc<Mutex<AudioBuf>>, rx: Receiver<Cmd>, inp
             }
         }
 
-        // v0.28.58 — feed the wake detector in exactly 1280-sample
-        // (80ms) chunks. Runs regardless of whether an intent capture
-        // is in flight — wake is the "start a new turn" path, so it
-        // needs to fire independently of the submit-armed state.
-        if wake_enabled {
-            if let Some(det) = wake_detector.as_mut() {
-                wake_buffer.extend_from_slice(&decimated);
-                while wake_buffer.len() >= super::wake::CHUNK_SAMPLES {
-                    let chunk: Vec<f32> = wake_buffer
-                        .drain(..super::wake::CHUNK_SAMPLES)
-                        .collect();
-                    match det.feed_chunk(&chunk) {
-                        Ok((prob, true)) => {
-                            tracing::info!("[voice] WAKE detected prob={prob:.3}");
-                            super::wake::emit_wake(&app, prob);
+        // v0.28.59 — hand 80ms audio chunks to the wake worker over a
+        // bounded channel. Tick loop does NO inference; if the wake
+        // worker stalls, `try_send` returns Full and we drop the
+        // oldest queued frame — never blocking the tick loop, never
+        // stealing time from VAD/utterance capture.
+        if wake_enabled && wake_tx.is_some() {
+            wake_buffer.extend_from_slice(&decimated);
+            let mut disconnected = false;
+            while wake_buffer.len() >= super::wake::CHUNK_SAMPLES {
+                let chunk: Vec<f32> = wake_buffer
+                    .drain(..super::wake::CHUNK_SAMPLES)
+                    .collect();
+                // Borrow the sender only inside this scope so the outer
+                // reassignment on Disconnected doesn't collide with the
+                // if-let borrow (borrow-checker doesn't reason about
+                // early-out flags across the scope boundary).
+                let send_err = wake_tx
+                    .as_ref()
+                    .and_then(|tx| tx.try_send(WakeCmd::Feed(chunk)).err());
+                if let Some(err) = send_err {
+                    match err {
+                        TrySendError::Full(_) => {
+                            // Worker is behind — silently drop this
+                            // frame. Not a bug; not worth logging
+                            // every 80ms.
                         }
-                        Ok((prob, false)) => {
-                            if prob > 0.1 {
-                                tracing::debug!(
-                                    "[voice] wake avg prob={prob:.3}"
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("[voice] wake inference err: {e}");
+                        TrySendError::Disconnected(_) => {
+                            tracing::warn!(
+                                "[voice] wake worker disconnected; disabling"
+                            );
+                            disconnected = true;
+                            break;
                         }
                     }
                 }
-                // Cap the buffer at ~2 chunks so we don't accumulate
-                // if inference stalls.
-                let cap = super::wake::CHUNK_SAMPLES * 2;
-                if wake_buffer.len() > cap {
-                    let drop = wake_buffer.len() - cap;
-                    wake_buffer.drain(..drop);
-                }
+            }
+            if disconnected {
+                wake_enabled = false;
+                wake_tx = None;
+            }
+            // Cap the source buffer at ~2 chunks so we don't
+            // accumulate if inference stalls repeatedly.
+            let cap = super::wake::CHUNK_SAMPLES * 2;
+            if wake_buffer.len() > cap {
+                let drop = wake_buffer.len() - cap;
+                wake_buffer.drain(..drop);
             }
         }
         // VAD still runs when disarmed — it drives amplitude events

@@ -29,13 +29,13 @@ const resourcesRoot = join(repoRoot, "src-tauri", "resources");
 const whisperRoot = join(resourcesRoot, "whisper");
 
 // Match speech_runtime::bootstrap::DEFAULT_MODEL exactly.
-const MODEL_NAME = "ggml-base.en.bin";
+const MODEL_NAME = "ggml-tiny.en.bin";
 const MODEL_URL = `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_NAME}`;
 
-// Approx 74 MB. If the file on disk is smaller than this floor, treat
-// it as a partial download and re-fetch. Guards against interrupted
-// builds leaving a bad file on disk.
-const MIN_SIZE_BYTES = 60 * 1024 * 1024;
+// tiny.en is ~39 MB. If the file on disk is smaller than this floor,
+// treat it as a partial download and re-fetch. Guards against
+// interrupted builds leaving a bad file on disk.
+const MIN_SIZE_BYTES = 30 * 1024 * 1024;
 
 const target = join(whisperRoot, MODEL_NAME);
 

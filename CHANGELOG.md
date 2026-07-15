@@ -1,5 +1,68 @@
 # Travis Changelog
 
+## v0.28.59 — Voice: real architectural fixes (not patches) (2026-07-15)
+
+Prior releases patched around symptoms; this one addresses the
+actual structural issues driving the "glitchy voice" report. Users
+described (a) enabling "Hey Jarvis" broke normal mic capture, (b)
+ambient TV/phone-video audio kept hijacking in-flight turns, (c) TTS
+played over the splash while the user couldn't see the conversation.
+Each maps to a real architecture problem that patches couldn't fix:
+
+**Wake inference moved off the tick loop.** Previously the openWakeWord
+three-stage ONNX chain ran inline in the same 30ms tick that owned
+VAD + amplitude + utterance capture. Every 80ms of audio triggered
+three inferences; on slower machines those ate the tick budget, cpal
+kept filling the buffer, and our "wake buffer cap" started dropping
+user audio to prevent unbounded growth — which is exactly why "Hey
+Jarvis on = voice stops working". New architecture: dedicated
+`travis-wake` worker thread with a bounded 32-frame channel. Tick
+loop does NO inference. If the worker stalls it drops queued frames
+silently; VAD + utterance capture stay real-time.
+
+**Wake pauses during in-flight turns, not just gated on the
+frontend.** Previously we only skipped the frontend `arm-voice`
+dispatch when chatBusy — but the Rust wake worker still ran
+inference on every ambient frame, spending CPU + being one race
+away from false-positive interference. New: a `SetWakePaused` cmd
+freezes the worker while `chatBusy || activity==="thinking" ||
+activity==="speaking"`. Wake worker stays loaded (resume is <1ms),
+just skips inference. Frontend wake listener + `onArm` also both
+hard-reject in busy states as belt-and-braces.
+
+**Fresh reply dismisses the splash.** Splash was showing over
+newly-arrived assistant replies when the inactivity clock had ticked
+past 5 min during the LLM turn. Fix: `useNativeVoice` bumps
+`activityBeat` on `chatBusy` true→false transitions — any completing
+turn (voice or text) exits idle mode so the user actually sees what
+Travis said.
+
+**Whisper optimizations (per Gemini's suggestions):**
+- Default model switched from `ggml-base.en.bin` (74 MB) to
+  `ggml-tiny.en.bin` (39 MB). Whisper is not the bottleneck of the
+  overall wait — the LLM turn is — but 2-3x faster STT still shaves
+  ~500-1000ms off every voice submit. For command-length utterances
+  tiny.en is within a rounding error of base.
+- `set_n_threads(min(cores, 4))` — beyond 4 threads whisper hits
+  diminishing returns and starts stealing CPU from the UI thread.
+- Metal backend enabled on macOS via a target-conditional feature
+  merge on `whisper-rs`. Windows/Linux stay CPU-only for now
+  (CUDA/Vulkan need toolkits our CI doesn't have).
+
+**VAD hangover 2500ms → 1500ms.** Post-utterance dead time was
+"glacial." 1500ms still covers a natural end-of-sentence beat
+(median end-of-utterance pause ~800ms in dictation studies) while
+shaving a whole second off every voice turn. Combined with tiny.en
++ threads: time from "user stops speaking" to "LLM turn starts"
+drops from ~2900ms to ~1700ms.
+
+**Not in this release (dedicated follow-up, task #385):** streaming
+whisper (transcript builds during speech, final flush ~100ms) and
+streaming LLM responses (progressive token render as the model
+generates). Together those two are the biggest remaining perceived-
+wait fixes — they need their own careful pass because both change
+fundamental Rust↔frontend event contracts.
+
 ## v0.28.58 — Wake word + 3 voice-flow bugs + history-splash-dismiss (2026-07-15)
 
 Three specific voice bugs the user hit, plus the openWakeWord shipment

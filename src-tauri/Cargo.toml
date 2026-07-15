@@ -1,6 +1,6 @@
 [package]
 name = "travis"
-version = "0.28.58"
+version = "0.28.59"
 description = "Travis — local-first AI operations assistant"
 authors = ["myketheguru"]
 edition = "2021"
@@ -128,6 +128,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg"] }
 # that's ~1ms every 80ms, well below audible latency.
 tract-onnx = { version = "0.21", default-features = false }
 circular-buffer = "1"
+
 # v0.28.53 — T2T secure file transfer. X25519 for ECDH, HKDF-SHA256 for
 # session-key derivation, ChaCha20-Poly1305 as the AEAD, zeroize to
 # scrub secrets on drop. All pure-Rust, no OS deps.
@@ -137,3 +138,15 @@ chacha20poly1305 = "0.10"
 rand_core = { version = "0.6", features = ["getrandom"] }
 zeroize = "1"
 hex = "0.4"
+
+# v0.28.59 — enable Metal on Apple Silicon (per Gemini). Cargo merges
+# features across the base dep + this target-conditional block, so on
+# macOS we get whisper.cpp's Metal backend and elsewhere stay CPU-only.
+# CUDA/Vulkan are deliberately off — CI would need the toolkits and we
+# haven't provisioned that yet.
+#
+# KEEP THIS AT THE END OF THE FILE. `[target.…]` is its own top-level
+# table; anything after this line lives in that target table too, not
+# in `[dependencies]`, which silently loses the deps on non-macOS.
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.16", default-features = false, features = ["metal"] }
