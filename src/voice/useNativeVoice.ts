@@ -86,6 +86,21 @@ export function useNativeVoice({ enabled }: Options) {
           // and cannot start a turn.
           const wasIntent = useAppStore.getState().activity === "listening";
           if (!wasIntent) return;
+          // v0.28.61 — disarm IMMEDIATELY, before we await whisper.
+          // Prior version put this in `finally`, which meant Rust
+          // stayed armed for ~700ms during finalize. If ambient
+          // noise triggered VAD in that window, Rust emitted
+          // speech-start with armed=true, the frontend handler saw
+          // intentArmedRef=true, and setActivity("listening") popped
+          // the spheroid mid-thinking. Disarming first (setArmed
+          // doesn't drain the utterance — that's TakeUtterance's job)
+          // closes the window entirely.
+          intentArmedRef.current = false;
+          try {
+            await nativeVoice.setArmed(false);
+          } catch {
+            /* best effort */
+          }
           finalizingRef.current = true;
           playCue("heard");
           setActivity("thinking");
@@ -110,22 +125,6 @@ export function useNativeVoice({ enabled }: Options) {
             console.warn("[voice] finalizeTranscript failed:", err);
             setActivity("idle");
           } finally {
-            // v0.28.58 — ALWAYS reset the intent-arm state at the end
-            // of a capture cycle, no matter what path we took. The
-            // previous code only reset on the "non-empty transcript"
-            // success path, so an empty/failed transcription left
-            // both intentArmedRef=true AND Rust armed. Next VAD
-            // trigger (any noise) then fired speech-start with
-            // armed=true, which flipped activity="listening" and
-            // popped the spheroid without the user having done
-            // anything — the exact random-listening symptom users
-            // reported after previously clicking the mic.
-            intentArmedRef.current = false;
-            try {
-              await nativeVoice.setArmed(false);
-            } catch {
-              /* best effort */
-            }
             finalizingRef.current = false;
             useAppStore.getState().setVoiceTranscribing(false);
           }

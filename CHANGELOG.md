@@ -1,5 +1,50 @@
 # Travis Changelog
 
+## v0.28.61 — Voice UX honesty (2026-07-16)
+
+Three user-reported bugs, each with a real root cause that patches from
+v0.28.57–.60 had missed. Not incremental polish — actual state-machine
+mistakes.
+
+### 1. Spheroid popping mid-thinking / audio recording again mid-flight
+
+Root cause: `setArmed(false)` and `intentArmedRef=false` sat in the
+speech-end handler's `finally` block, which only fires AFTER whisper
+finalize awaits. That kept Rust armed and the intent-flag true for
+~700ms during transcription. Any ambient noise in that window tripped
+VAD, Rust emitted `speech-start` with `armed=true`, the frontend
+handler saw `intentArmedRef=true`, and flipped `activity="listening"`
+— which is exactly the "spheroid randomly pops mid-thinking" symptom
+users kept reporting.
+
+Fix: disarm IMMEDIATELY at the top of the speech-end handler, before
+we await whisper. `setArmed(false)` doesn't drain the utterance
+buffer (that's `TakeUtterance`'s job), so it's safe to disarm first
+and then finalize. Race window closes to zero.
+
+### 2. Audio card doesn't appear until the LLM finishes
+
+Root cause: the optimistic user bubble in ChatCanvas rendered
+text-only. The audio player only appeared when the real message row
+came back from `journalIngest`, which meant users waited the full
+5–15s LLM turn before seeing the audio bubble.
+
+Fix: `useOptimisticSubmit` now snapshots `pendingVoiceAudio` the
+moment the composer submit fires and keeps that snapshot until the
+real message replaces the bubble. A new `InlineVoiceBubble` component
+renders the same play button + waveform + duration + transcript as
+`VoiceMessageCard`, but takes props directly (no DB fetch). Result:
+audio player appears the instant recording ends, transcript renders
+inline, both persist until the DB round-trip completes.
+
+### 3. The "..." thinking bubble
+
+Removed. Users called it out as a permanent eyesore — the composer
+already has its own thinking-state indicator (glow border + spinner,
+shipped in v0.28.44), so the assistant-side dots were redundant.
+When streaming lands (v0.28.62), tokens will fill the assistant
+bubble progressively, so there's no "waiting" state to visualize.
+
 ## v0.28.60 — Speculative whisper prewarm (2026-07-15)
 
 Speculative-transcription for voice: while VAD is still counting down

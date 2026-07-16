@@ -10,8 +10,9 @@
  * feels alive. The optimistic bubble is replaced by the real DB row
  * on the next poll.
  */
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { useAppStore } from "../../../stores/app";
 import { useFocalContent } from "../useFocalContent";
 import { parseRichResponse } from "../../../lib/richResponse";
@@ -20,27 +21,37 @@ import { MarkdownBody } from "../../../chat/MarkdownBody";
 import { VoiceMessageCard } from "./VoiceMessageCard";
 import type { ConversationMessage } from "../../../lib/conversation";
 
+interface InlineAudio {
+  audioPath: string;
+  durationMs: number;
+  transcript: string;
+}
+
 interface RenderMessage {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
   pending?: boolean;
   optimistic?: boolean;
+  audio?: InlineAudio;
 }
 
 export function ChatCanvas() {
   const activity = useAppStore((s) => s.activity);
-  const chatBusy = useAppStore((s) => s.chatBusy);
   const voiceTranscribing = useAppStore((s) => s.voiceTranscribing);
   const pendingComposerSubmit = useAppStore((s) => s.pendingComposerSubmit);
+  const pendingVoiceAudio = useAppStore((s) => s.pendingVoiceAudio);
   const { allMessages } = useFocalContent();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const lastPendingRef = useRef<string | null>(null);
+  const audioSnapshotRef = useRef<InlineAudio | null>(null);
 
   const optimistic = useOptimisticSubmit(
     pendingComposerSubmit,
+    pendingVoiceAudio,
     allMessages,
     lastPendingRef,
+    audioSnapshotRef,
   );
 
   const rendered: RenderMessage[] = useMemo(() => {
@@ -52,29 +63,28 @@ export function ChatCanvas() {
         content: m.content,
       }));
     if (optimistic) base.push(optimistic);
-    // v0.28.17 — voice-transcribing user bubble. Fires between the
-    // user tapping the mic to end and whisper returning the transcript.
-    // Skip if the optimistic composer submit already replaced it.
+    // v0.28.61 — voice-transcribing user bubble now carries the audio
+    // metadata inline (if capture already emitted it) so the audio
+    // player appears the moment recording ends, not after whisper +
+    // journal round-trip. Skip if the optimistic composer submit
+    // already replaced it.
     if (voiceTranscribing && !optimistic) {
       base.push({
         id: "__voice_transcribing__",
         role: "user",
-        content: "…",
+        content: pendingVoiceAudio?.transcript ?? "",
         optimistic: true,
+        audio: pendingVoiceAudio ?? undefined,
       });
     }
-    // v0.28.25 — key off chatBusy too so the pending bubble doesn't
-    // vanish mid-submit when the voice pipeline flips activity.
-    if (chatBusy || activity === "thinking") {
-      base.push({
-        id: "__pending_assistant__",
-        role: "assistant",
-        content: "",
-        pending: true,
-      });
-    }
+    // v0.28.61 — killed the "..." pending-assistant bubble. Users
+    // reported it as a permanent eyesore during the 5-15s LLM turn.
+    // The composer's own thinking-state indicator (glow border +
+    // spinner, shipped in v0.28.44) already signals that Travis is
+    // working. When streaming lands, tokens fill the assistant bubble
+    // progressively instead of being preceded by dots.
     return base;
-  }, [allMessages, optimistic, activity, chatBusy, voiceTranscribing]);
+  }, [allMessages, optimistic, voiceTranscribing, pendingVoiceAudio]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -113,10 +123,19 @@ export function ChatCanvas() {
  */
 function useOptimisticSubmit(
   pending: string | null,
+  pendingAudio: InlineAudio | null,
   allMessages: ConversationMessage[],
   lastRef: React.MutableRefObject<string | null>,
+  audioRef: React.MutableRefObject<InlineAudio | null>,
 ): RenderMessage | null {
-  if (pending) lastRef.current = pending;
+  if (pending) {
+    lastRef.current = pending;
+    // Snapshot the audio the moment the composer fires — the store's
+    // pendingVoiceAudio gets cleared by the journal://user-inserted
+    // listener before the real message flows in, so we can't read it
+    // live for the whole optimistic window.
+    if (pendingAudio) audioRef.current = pendingAudio;
+  }
   const seen = lastRef.current;
   if (!seen) return null;
   const alreadyThere = allMessages
@@ -124,6 +143,7 @@ function useOptimisticSubmit(
     .some((m) => m.role === "user" && m.content.trim() === seen.trim());
   if (alreadyThere) {
     lastRef.current = null;
+    audioRef.current = null;
     return null;
   }
   return {
@@ -131,6 +151,7 @@ function useOptimisticSubmit(
     role: "user",
     content: seen,
     optimistic: true,
+    audio: audioRef.current ?? undefined,
   };
 }
 
@@ -188,6 +209,8 @@ function MessageBlock({
                 messageId={Number(message.id)}
                 transcriptFallback={message.content}
               />
+            ) : message.audio ? (
+              <InlineVoiceBubble audio={message.audio} />
             ) : (
               message.content
             )}
@@ -200,28 +223,8 @@ function MessageBlock({
             style={{ color: `rgba(236, 236, 241, ${0.35 * focusLevel})` }}
           >
             Travis
-            {message.pending && (
-              <span className="ml-2 opacity-70">· thinking…</span>
-            )}
           </div>
-          {message.pending ? (
-            <div className="flex gap-1.5 mt-1" aria-label="Travis is thinking">
-              {[0, 1, 2].map((i) => (
-                <motion.span
-                  key={i}
-                  className="w-1.5 h-1.5 rounded-full"
-                  style={{ background: "rgba(189, 158, 255, 0.7)" }}
-                  animate={{ opacity: [0.3, 1, 0.3] }}
-                  transition={{
-                    duration: 1.1,
-                    repeat: Infinity,
-                    delay: i * 0.15,
-                    ease: [0.42, 0, 0.58, 1],
-                  }}
-                />
-              ))}
-            </div>
-          ) : (
+          {(
             <div
               style={{
                 fontSize: 14 + focusLevel * 3,
@@ -239,6 +242,101 @@ function MessageBlock({
         </div>
       )}
     </motion.div>
+  );
+}
+
+/**
+ * Compact audio player rendered inside the optimistic user bubble.
+ * v0.28.61 — decoupled from VoiceMessageCard so we can render the
+ * moment the recording ends (no DB round-trip required — the audio
+ * path is already local on disk and the transcript comes back from
+ * whisper before we even fire the composer submit).
+ */
+function InlineVoiceBubble({ audio }: { audio: InlineAudio }) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [pos, setPos] = useState(0);
+  const src = convertFileSrc(audio.audioPath);
+  const durationSec = Math.max(0, audio.durationMs / 1000);
+  const seconds = Math.floor(durationSec);
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  const durationLabel = `${mins}:${String(secs).padStart(2, "0")}`;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div
+        className="rounded-2xl px-3 py-2 flex items-center gap-3"
+        style={{
+          background:
+            "linear-gradient(180deg, rgba(189, 158, 255, 0.10), rgba(124, 92, 255, 0.06))",
+          border: "1px solid rgba(189, 158, 255, 0.30)",
+        }}
+      >
+        <button
+          onClick={() => {
+            const el = audioRef.current;
+            if (!el) return;
+            if (el.paused) void el.play();
+            else el.pause();
+          }}
+          className="shrink-0 h-9 w-9 rounded-full flex items-center justify-center transition-transform"
+          style={{ background: "rgb(189, 158, 255)", color: "rgb(20, 18, 30)" }}
+          aria-label={playing ? "Pause" : "Play"}
+        >
+          {playing ? (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+              <rect x="6" y="5" width="4" height="14" rx="1" />
+              <rect x="14" y="5" width="4" height="14" rx="1" />
+            </svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+              <path d="M7 5v14l12-7z" />
+            </svg>
+          )}
+        </button>
+        <div className="flex-1 min-w-0">
+          <div
+            className="h-1.5 rounded-full overflow-hidden"
+            style={{ background: "rgba(189, 158, 255, 0.15)" }}
+          >
+            <div
+              className="h-full rounded-full transition-[width] duration-150"
+              style={{
+                width: `${durationSec === 0 ? 0 : Math.min(100, (pos / durationSec) * 100)}%`,
+                background: "rgb(189, 158, 255)",
+              }}
+            />
+          </div>
+        </div>
+        <span
+          className="text-[11px] font-mono tabular-nums"
+          style={{ color: "rgba(236, 236, 241, 0.7)" }}
+        >
+          {durationLabel}
+        </span>
+        <audio
+          ref={audioRef}
+          src={src}
+          preload="metadata"
+          onPlay={() => setPlaying(true)}
+          onPause={() => setPlaying(false)}
+          onEnded={() => {
+            setPlaying(false);
+            setPos(0);
+          }}
+          onTimeUpdate={(e) => setPos((e.target as HTMLAudioElement).currentTime)}
+        />
+      </div>
+      {audio.transcript && (
+        <div
+          className="text-[13.5px] leading-relaxed"
+          style={{ color: "rgba(236, 236, 241, 0.92)" }}
+        >
+          {audio.transcript}
+        </div>
+      )}
+    </div>
   );
 }
 
