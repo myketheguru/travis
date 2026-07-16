@@ -130,6 +130,15 @@ type AppState = {
   /// so the audio_path can be linked to the newly-inserted user
   /// message via voice_utterance_link.
   pendingVoiceAudio: { audioPath: string; durationMs: number; transcript: string } | null;
+  /// v0.28.63 — id of the DB user message the pendingVoiceAudio has
+  /// been linked to (via linkUtterance). Set by useNativeVoice when
+  /// journal://user-inserted fires. Consumers (ChatCanvas /
+  /// PersistentVoiceCard) clear pendingVoiceAudio once they observe
+  /// this id in the current thread — that's the moment VoiceMessageCard
+  /// takes over rendering from the persistent in-flight card, so we
+  /// don't flash between the two.
+  voiceAudioLinkedMessageId: number | null;
+  setVoiceAudioLinkedMessageId: (id: number | null) => void;
   /// v0.28.25 — modality-matched TTS. Voice submit paths set this
   /// true; text submit sets false. ChatTurn reads it before speaking
   /// the assistant response so typed turns stay silent. The Settings
@@ -326,6 +335,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setVoiceTranscribing: (v) => set({ voiceTranscribing: v }),
   pendingVoiceAudio: null,
   setPendingVoiceAudio: (v) => set({ pendingVoiceAudio: v }),
+  voiceAudioLinkedMessageId: null,
+  setVoiceAudioLinkedMessageId: (id) => set({ voiceAudioLinkedMessageId: id }),
   speakNextResponse: false,
   setSpeakNextResponse: (v) => set({ speakNextResponse: v }),
   chatBusy: false,

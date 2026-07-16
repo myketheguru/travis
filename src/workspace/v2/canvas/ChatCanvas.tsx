@@ -41,18 +41,39 @@ export function ChatCanvas() {
   const voiceTranscribing = useAppStore((s) => s.voiceTranscribing);
   const pendingComposerSubmit = useAppStore((s) => s.pendingComposerSubmit);
   const pendingVoiceAudio = useAppStore((s) => s.pendingVoiceAudio);
+  const voiceAudioLinkedMessageId = useAppStore((s) => s.voiceAudioLinkedMessageId);
+  const setPendingVoiceAudio = useAppStore((s) => s.setPendingVoiceAudio);
+  const setVoiceAudioLinkedMessageId = useAppStore((s) => s.setVoiceAudioLinkedMessageId);
   const { allMessages } = useFocalContent();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const lastPendingRef = useRef<string | null>(null);
-  const audioSnapshotRef = useRef<InlineAudio | null>(null);
 
   const optimistic = useOptimisticSubmit(
     pendingComposerSubmit,
     pendingVoiceAudio,
     allMessages,
     lastPendingRef,
-    audioSnapshotRef,
   );
+
+  // v0.28.63 — once the DB user message that the audio was linked to
+  // is present in the current thread, VoiceMessageCard will render
+  // for it via its numeric id. Clear the persistent pending state so
+  // the in-flight card and the real card don't double up.
+  useEffect(() => {
+    if (voiceAudioLinkedMessageId === null) return;
+    const found = allMessages.some(
+      (m) => m.id === voiceAudioLinkedMessageId,
+    );
+    if (found) {
+      setPendingVoiceAudio(null);
+      setVoiceAudioLinkedMessageId(null);
+    }
+  }, [
+    voiceAudioLinkedMessageId,
+    allMessages,
+    setPendingVoiceAudio,
+    setVoiceAudioLinkedMessageId,
+  ]);
 
   const rendered: RenderMessage[] = useMemo(() => {
     const base: RenderMessage[] = allMessages
@@ -126,16 +147,8 @@ function useOptimisticSubmit(
   pendingAudio: InlineAudio | null,
   allMessages: ConversationMessage[],
   lastRef: React.MutableRefObject<string | null>,
-  audioRef: React.MutableRefObject<InlineAudio | null>,
 ): RenderMessage | null {
-  if (pending) {
-    lastRef.current = pending;
-    // Snapshot the audio the moment the composer fires — the store's
-    // pendingVoiceAudio gets cleared by the journal://user-inserted
-    // listener before the real message flows in, so we can't read it
-    // live for the whole optimistic window.
-    if (pendingAudio) audioRef.current = pendingAudio;
-  }
+  if (pending) lastRef.current = pending;
   const seen = lastRef.current;
   if (!seen) return null;
   const alreadyThere = allMessages
@@ -143,7 +156,6 @@ function useOptimisticSubmit(
     .some((m) => m.role === "user" && m.content.trim() === seen.trim());
   if (alreadyThere) {
     lastRef.current = null;
-    audioRef.current = null;
     return null;
   }
   return {
@@ -151,7 +163,14 @@ function useOptimisticSubmit(
     role: "user",
     content: seen,
     optimistic: true,
-    audio: audioRef.current ?? undefined,
+    // v0.28.63 — read audio live from store. In v0.28.61 we snapshotted
+    // into a useRef so we wouldn't lose it when the journal://user-inserted
+    // listener cleared pendingVoiceAudio, but that broke the voice→chat
+    // canvas-mode transition: ChatCanvas mounts fresh and the ref starts
+    // null. Now pendingVoiceAudio stays in the store until the real
+    // linked message appears in the thread (see the useEffect above),
+    // so a fresh mount reads the current live value.
+    audio: pendingAudio ?? undefined,
   };
 }
 

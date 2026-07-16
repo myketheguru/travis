@@ -1,5 +1,34 @@
 # Travis Changelog
 
+## v0.28.63 — Persistent voice audio card (2026-07-17)
+
+The v0.28.61 InlineVoiceBubble fix was structurally correct code but
+never got mounted for the case it was written for: when the user
+speaks into VoiceCanvas, speech-end sets `activity="thinking"` which
+flips `useCanvasMode` from voice → chat, which unmounts VoiceCanvas
+and mounts a **fresh** ChatCanvas. The fresh mount's useRef audio
+snapshot starts null; by then `pendingVoiceAudio` had already been
+cleared by the `journal://user-inserted` listener. Result: no audio
+card, exactly what the user kept reporting.
+
+Fix: stop relying on a component-local ref. Keep `pendingVoiceAudio`
+alive in the store until the real DB message it was linked to shows
+up in the current thread, then clear both. Any fresh ChatCanvas
+mount just reads the live store value.
+
+Also added: `voiceAudioLinkedMessageId` store field, set by
+`useNativeVoice` when the journal user-insert event carries the DB
+row id. ChatCanvas watches for that id in `allMessages` and clears
+the persistent state at the handoff — the real message's
+VoiceMessageCard takes over rendering from the in-flight card so
+they don't double-render.
+
+**Not fixed here:** the "several minutes" wait for the assistant
+reply. That's the LLM turn itself, and the real fix is streaming +
+split-emit — where the user message emits as its own event
+immediately, then assistant tokens stream in progressively. Coming
+in v0.28.64.
+
 ## v0.28.62 — Windows 11 MSVCP140.dll hotfix (2026-07-17)
 
 Reported by a Windows 11 user: on fresh Windows 11 installs, launching

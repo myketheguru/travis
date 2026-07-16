@@ -195,7 +195,17 @@ export function useNativeVoice({ enabled }: Options) {
           }
           const voiceAudio = store.pendingVoiceAudio;
           if (voiceAudio) {
-            store.setPendingVoiceAudio(null);
+            // v0.28.63 — DON'T clear pendingVoiceAudio here. In
+            // v0.28.61 we cleared eagerly and lost the audio card
+            // during the canvas-mount race (voice→chat transition
+            // remounts ChatCanvas after this event fires, so the
+            // useRef snapshot never captures the audio). Keep the
+            // store value alive; a persistent overlay in
+            // WorkspaceV2 renders it live, and it clears itself
+            // when the real message with linked audio appears in
+            // the thread. Also stash the target message id so the
+            // overlay can detect the handoff.
+            store.setVoiceAudioLinkedMessageId(userMessageId);
             void nativeVoice
               .linkUtterance({
                 messageId: userMessageId,
