@@ -132,6 +132,21 @@ jobs:
       - name: Install npm deps
         run: npm ci
 
+      - name: Force static CRT for Windows C++ deps
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        # v0.28.62 — pairs with src-tauri/.cargo/config.toml crt-static.
+        # Rust's flag statically links the CRT for Rust code; these
+        # env vars propagate the same choice into whisper.cpp's cmake
+        # build so no dependency dynamically links MSVCP140.dll /
+        # VCRUNTIME140.dll. Without a consistent choice across both
+        # sides, users on fresh Windows 11 installs hit "MSVCP140.dll
+        # was not found" on first launch.
+        run: |
+          "CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CFLAGS=/MT" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CXXFLAGS=/MT" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Build & sign (no release upload from this repo)
         uses: tauri-apps/tauri-action@v0
         env:

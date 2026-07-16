@@ -1,5 +1,30 @@
 # Travis Changelog
 
+## v0.28.62 — Windows 11 MSVCP140.dll hotfix (2026-07-17)
+
+Reported by a Windows 11 user: on fresh Windows 11 installs, launching
+Travis threw "The code execution cannot proceed because MSVCP140.dll
+was not found." Root cause: the shipped binary linked the Visual C++
+2015-2022 runtime dynamically, and Windows 11 doesn't ship those DLLs
+out of the box.
+
+Fix: statically link the C runtime into the binary so no external
+DLL is needed. Two coordinated pieces:
+
+1. `src-tauri/.cargo/config.toml` sets `rustflags = ["-C",
+   "target-feature=+crt-static"]` for all `*-pc-windows-msvc`
+   targets. This links the Rust half of the CRT statically.
+
+2. Release CI sets `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded` +
+   `CFLAGS=/MT` + `CXXFLAGS=/MT` on Windows runs only, so
+   whisper.cpp's cmake build (the biggest C++ dep) links the CRT
+   statically too. Both halves must agree — a mixed build fails to
+   link.
+
+Net effect: users on any Windows 10/11 install can run the .exe
+without installing VC++ redistributable first. Binary is slightly
+larger (~1MB) but no admin prompt, no separate download.
+
 ## v0.28.61 — Voice UX honesty (2026-07-16)
 
 Three user-reported bugs, each with a real root cause that patches from
