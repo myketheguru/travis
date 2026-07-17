@@ -2633,7 +2633,59 @@ pub async fn journal_ingest(
                 tool_choice: Some(choice),
                 thinking_budget: Some(thinking),
             };
-            let turn_res = provider.chat_with_tools(current_messages.clone(), opts).await;
+            // v0.28.66 — streaming call. The callback fires per
+            // Anthropic SSE text_delta / thinking_delta and emits
+            // Tauri events the frontend accumulates into the live
+            // assistant bubble. Providers without native streaming
+            // (OpenAI, Ollama) fall through the default trait impl
+            // and emit one big TextDelta at the end — same event
+            // shape either way, so the renderer doesn't branch.
+            let stream_app = app.clone();
+            let stream_conv_id = conv_id;
+            let stream_iter = iter;
+            let on_event: crate::llm::StreamCallback = std::sync::Arc::new(move |ev| {
+                use tauri::Emitter;
+                match ev {
+                    crate::llm::StreamEvent::TextDelta(delta) => {
+                        let _ = stream_app.emit(
+                            "journal://assistant-chunk",
+                            serde_json::json!({
+                                "conversationId": stream_conv_id,
+                                "iter": stream_iter,
+                                "delta": delta,
+                            }),
+                        );
+                    }
+                    crate::llm::StreamEvent::ReasoningDelta(delta) => {
+                        let _ = stream_app.emit(
+                            "journal://reasoning-chunk",
+                            serde_json::json!({
+                                "conversationId": stream_conv_id,
+                                "iter": stream_iter,
+                                "delta": delta,
+                            }),
+                        );
+                    }
+                    crate::llm::StreamEvent::ToolCallStart { id, name } => {
+                        let _ = stream_app.emit(
+                            "journal://assistant-tool-start",
+                            serde_json::json!({
+                                "conversationId": stream_conv_id,
+                                "iter": stream_iter,
+                                "toolCallId": id,
+                                "toolName": name,
+                            }),
+                        );
+                    }
+                    // ToolCallComplete + Done are captured off the
+                    // final ChatTurn after the await resolves — we
+                    // don't need to double-emit them from the callback.
+                    _ => {}
+                }
+            });
+            let turn_res = provider
+                .chat_with_tools_streaming(current_messages.clone(), opts, Some(on_event))
+                .await;
             match turn_res {
                 Err(e) => {
                     let err_str = e.to_string();
@@ -3893,6 +3945,19 @@ pub async fn journal_ingest(
     )
     .await;
     let assistant_msg_id = assistant_msg.as_ref().ok().map(|m| m.id);
+    // v0.28.66 — signal the streaming assistant bubble to finalize:
+    // frontend swaps the in-memory chunk buffer for the persisted row.
+    {
+        use tauri::Emitter;
+        let _ = app.emit(
+            "journal://assistant-done",
+            serde_json::json!({
+                "conversationId": conv_id,
+                "assistantMessageId": assistant_msg_id,
+                "content": assistant_visible.clone(),
+            }),
+        );
+    }
     let _ = crate::events::append_or_warn(
         &state.db.pool,
         conv_id,

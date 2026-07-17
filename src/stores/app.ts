@@ -139,6 +139,28 @@ type AppState = {
   /// don't flash between the two.
   voiceAudioLinkedMessageId: number | null;
   setVoiceAudioLinkedMessageId: (id: number | null) => void;
+  /// v0.28.66 — live streaming state for the in-flight assistant
+  /// turn. Populated by the journal://assistant-chunk listener; nulled
+  /// on journal://assistant-done. ChatCanvas reads this to render a
+  /// live-updating assistant bubble that fills with tokens as they
+  /// arrive from Anthropic's SSE stream.
+  streamingAssistant: {
+    conversationId: number;
+    content: string;
+    reasoning: string;
+    toolCalls: Array<{ id: string; name: string }>;
+    startedAt: number;
+  } | null;
+  setStreamingAssistant: (
+    v: AppState["streamingAssistant"] | null,
+  ) => void;
+  appendStreamingDelta: (conversationId: number, delta: string) => void;
+  appendStreamingReasoning: (conversationId: number, delta: string) => void;
+  appendStreamingToolCall: (
+    conversationId: number,
+    id: string,
+    name: string,
+  ) => void;
   /// v0.28.25 — modality-matched TTS. Voice submit paths set this
   /// true; text submit sets false. ChatTurn reads it before speaking
   /// the assistant response so typed turns stay silent. The Settings
@@ -337,6 +359,69 @@ export const useAppStore = create<AppState>((set, get) => ({
   setPendingVoiceAudio: (v) => set({ pendingVoiceAudio: v }),
   voiceAudioLinkedMessageId: null,
   setVoiceAudioLinkedMessageId: (id) => set({ voiceAudioLinkedMessageId: id }),
+  streamingAssistant: null,
+  setStreamingAssistant: (v) => set({ streamingAssistant: v }),
+  appendStreamingDelta: (conversationId, delta) =>
+    set((s) => {
+      const cur = s.streamingAssistant;
+      if (cur && cur.conversationId === conversationId) {
+        return {
+          streamingAssistant: { ...cur, content: cur.content + delta },
+        };
+      }
+      // First chunk of a fresh turn — initialize the slot.
+      return {
+        streamingAssistant: {
+          conversationId,
+          content: delta,
+          reasoning: "",
+          toolCalls: [],
+          startedAt: Date.now(),
+        },
+      };
+    }),
+  appendStreamingReasoning: (conversationId, delta) =>
+    set((s) => {
+      const cur = s.streamingAssistant;
+      if (cur && cur.conversationId === conversationId) {
+        return {
+          streamingAssistant: { ...cur, reasoning: cur.reasoning + delta },
+        };
+      }
+      return {
+        streamingAssistant: {
+          conversationId,
+          content: "",
+          reasoning: delta,
+          toolCalls: [],
+          startedAt: Date.now(),
+        },
+      };
+    }),
+  appendStreamingToolCall: (conversationId, id, name) =>
+    set((s) => {
+      const cur = s.streamingAssistant;
+      const nextCall = { id, name };
+      if (cur && cur.conversationId === conversationId) {
+        // Dedup by id.
+        if (cur.toolCalls.some((t) => t.id === id)) return {};
+        return {
+          streamingAssistant: {
+            ...cur,
+            toolCalls: [...cur.toolCalls, nextCall],
+          },
+        };
+      }
+      return {
+        streamingAssistant: {
+          conversationId,
+          content: "",
+          reasoning: "",
+          toolCalls: [nextCall],
+          startedAt: Date.now(),
+        },
+      };
+    }),
   speakNextResponse: false,
   setSpeakNextResponse: (v) => set({ speakNextResponse: v }),
   chatBusy: false,

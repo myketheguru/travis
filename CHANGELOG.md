@@ -1,5 +1,91 @@
 # Travis Changelog
 
+## v0.28.66 — Streaming + lobe-chat message anatomy + CPU pass (2026-07-17)
+
+Three big changes in one release, all threaded through Travis's canvas
+HUD frame so nothing about the app's identity changes — but the chat
+mode now streams, breathes, and stays out of your CPU's way.
+
+### 1. Streaming LLM responses (Anthropic SSE, end-to-end)
+
+The single biggest perceived-latency win. Tokens now stream into the
+assistant bubble as Anthropic produces them, replacing the 5–15s wait
+for a whole response to land at once.
+
+New `LlmProvider::chat_with_tools_streaming` trait method with a
+`StreamCallback` callback modeled on lobehub/lobe-chat's chunk union
+(see `packages/fetch-sse/src/fetchSSE.ts:36-92`). Six event types —
+`TextDelta`, `ReasoningDelta`, `ToolCallStart`, `ToolCallInputDelta`,
+`ToolCallComplete`, `Done` — same shape across every provider.
+
+Wire path:
+- `ClaudeProvider` implements SSE parsing directly against
+  `api.anthropic.com/v1/messages` with `stream: true`. Custom
+  byte-buffer parser handles `message_start` / `content_block_start` /
+  `content_block_delta` / `content_block_stop` / `message_delta` /
+  `message_stop` / `error` / `ping` — no external SSE crate.
+- `TravisCloudProvider` reuses the same parser — passes `stream: true`
+  to the cloud, which already tees the upstream SSE for metering and
+  forwards to the client verbatim.
+- `journal_ingest` calls `chat_with_tools_streaming` with a callback
+  that emits `journal://assistant-chunk` per text delta,
+  `journal://reasoning-chunk` per thinking delta,
+  `journal://assistant-tool-start` per tool call, and
+  `journal://assistant-done` on completion.
+- Frontend `useAssistantStream` hook (mounted once at WorkspaceV2 root)
+  listens for those events and accumulates into store's
+  `streamingAssistant` slot.
+- `ChatCanvas` renders a live bubble from the store slot, auto-scrolls
+  during streaming (unless the user has scrolled up to read history),
+  clears the bubble when `assistant-done` fires and the persisted
+  row appears in the polled thread.
+
+### 2. Lobe-chat message anatomy (chat canvas rewrite)
+
+The chat mode canvas now uses lobe-chat's message anatomy verbatim,
+themed to Travis's palette. What changed:
+- **Assistant messages are bubbleless.** Silvery-bronze-lavender avatar
+  + `TRAVIS` label + timestamp header + free-flowing markdown flush
+  left. Author label and timestamp fade in on row hover at 200ms
+  `motionEaseOut` — same pattern as lobe-chat's
+  `ChatItem/style.ts:5-39`.
+- **Hover-reveal action strip** on completed assistant messages —
+  Copy / Regenerate / Fork. Same fade-in timing.
+- **Streaming cursor** is a lavender-tinted blinking rectangle with
+  soft glow at the tail of the in-flight bubble. 1.4s blink on
+  `cubic-bezier(0.22, 1, 0.36, 1)`.
+- **Avatar shimmer while streaming** — Travis's spheroid avatar
+  breathes at 2.2s intervals during token stream.
+- **User bubble kept.** Travis's dashed-purple identity is retained
+  for optimistic bubbles, solid border for persisted. Voice audio
+  card renders inline via the v0.28.63+ persistent-store path.
+- **No model chip.** Travis Cloud is the abstraction. Users see
+  "Travis", never "Claude Sonnet 4.6". The model tag from the concept
+  mock is removed from every user-facing surface.
+
+### 3. CPU efficiency pass
+
+Users reported terminals becoming unresponsive while Travis was running.
+Two concrete fixes:
+- **Wake worker fully idles when paused.** Previously the tick loop
+  still drained + `try_send`'d 80ms chunks to the wake worker even
+  when `SetWakePaused(true)` had been received (the worker discarded
+  them but the batching cost per tick was real). Added
+  `wake_paused_local` mirror in the tick loop; the whole
+  chunk-batching path is now skipped while paused.
+- **Whisper thread cap lowered** from `min(cores, 4)` to
+  `min(cores/2, 3).max(1)`. tiny.en runs fine on 2–3 threads
+  (~800ms per 5s utterance on M1); leaving cores free for the
+  user's terminal / browser matters more than shaving 200ms off
+  transcription.
+
+### Not in this release
+Session sidebar redesign (lobe-chat NavPanel Accordion), cmdk command
+palette, full antd token-mirror theme, OpenAI/Ollama streaming
+(both fall through the default trait impl and emit one big
+TextDelta + Done — same event shape, just no incremental UI feedback).
+Coming in follow-up releases.
+
 ## v0.28.65 — Audio card actually appears + CPU steal fix (2026-07-17)
 
 The v0.28.63 "persistent pendingVoiceAudio in the store" fix didn't

@@ -348,6 +348,13 @@ fn tick_loop(app: AppHandle, audio: Arc<Mutex<AudioBuf>>, rx: Receiver<Cmd>, inp
     // we silently drop the oldest queued frame — same policy as
     // before but WITHOUT slowing down VAD/utterance capture.
     let mut wake_enabled = false;
+    // v0.28.66 — tick-loop mirror of SetWakePaused. Previously the
+    // tick loop still drained + try_send'd 80ms chunks to the worker
+    // every ~40ms even when wake was paused (the worker itself
+    // discarded the frames but the batching cost per tick added
+    // up). Gate the whole chunk-batching path on !wake_paused_local
+    // so the CPU cost drops to zero while paused.
+    let mut wake_paused_local = false;
     let mut wake_tx: Option<SyncSender<WakeCmd>> = None;
     let mut wake_buffer: Vec<f32> =
         Vec::with_capacity(super::wake::CHUNK_SAMPLES * 2);
@@ -401,8 +408,14 @@ fn tick_loop(app: AppHandle, audio: Arc<Mutex<AudioBuf>>, rx: Receiver<Cmd>, inp
                 }
                 Cmd::SetWakePaused(paused) => {
                     // v0.28.59 — external pause (e.g. chatBusy). The
-                    // worker checks this flag before each feed; queued
-                    // frames while paused are dropped on the floor.
+                    // worker checks this flag before each feed.
+                    // v0.28.66 — ALSO gate the tick-loop batching on
+                    // this so we don't waste CPU building chunks the
+                    // worker will just drop.
+                    wake_paused_local = paused;
+                    if paused {
+                        wake_buffer.clear();
+                    }
                     if let Some(tx) = &wake_tx {
                         let _ = tx.try_send(WakeCmd::SetPaused(paused));
                     }
@@ -461,7 +474,7 @@ fn tick_loop(app: AppHandle, audio: Arc<Mutex<AudioBuf>>, rx: Receiver<Cmd>, inp
         // worker stalls, `try_send` returns Full and we drop the
         // oldest queued frame — never blocking the tick loop, never
         // stealing time from VAD/utterance capture.
-        if wake_enabled && wake_tx.is_some() {
+        if wake_enabled && !wake_paused_local && wake_tx.is_some() {
             wake_buffer.extend_from_slice(&decimated);
             let mut disconnected = false;
             while wake_buffer.len() >= super::wake::CHUNK_SAMPLES {

@@ -38,6 +38,7 @@ import { ContactsOverlay } from "./ContactsOverlay";
 import { CanvasStage } from "./canvas/CanvasStage";
 import { useCanvasMode, useMapAutoExpand } from "./canvas/useCanvasMode";
 import { useNativeVoice } from "../../voice/useNativeVoice";
+import { useAssistantStream } from "../../chat/useAssistantStream";
 import { Composer } from "./Composer";
 import { useFocalContent } from "./useFocalContent";
 import AskTab from "../../manage/tabs/AskTab";
@@ -60,6 +61,11 @@ export function WorkspaceV2() {
   // on end-of-utterance, barge-in during Piper playback. Enabled by
   // default; a Settings toggle will let users opt out.
   useNativeVoice({ enabled: true });
+
+  // v0.28.66 — streaming assistant chunks. Journal_ingest emits per
+  // Anthropic SSE text_delta; this hook accumulates into the store's
+  // streamingAssistant slot and ChatCanvas renders it live.
+  useAssistantStream();
 
   // Global shortcuts.
   useEffect(() => {

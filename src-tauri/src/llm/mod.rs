@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -5,6 +7,54 @@ pub mod claude;
 pub mod ollama;
 pub mod openai;
 pub mod travis_cloud;
+
+/// v0.28.66 — normalized streaming event, same shape across every
+/// provider. Modeled directly on lobehub/lobe-chat's chunk union
+/// (see `packages/fetch-sse/src/fetchSSE.ts:36-92`) so the frontend
+/// renderer speaks one language regardless of upstream. Providers
+/// with no native streaming (OpenAI/Ollama today) fall through to
+/// the default impl in `chat_with_tools_streaming` and get a single
+/// synthesized `TextDelta` + `Done` pair after the non-streaming
+/// call resolves.
+#[derive(Clone, Debug)]
+pub enum StreamEvent {
+    /// A slice of assistant text — cumulative or delta depending on
+    /// the caller's needs; our journal_ingest treats each fire as
+    /// an APPEND (matches lobe-chat's `{type:'text', text: delta}`).
+    TextDelta(String),
+    /// Anthropic extended-thinking delta (Claude-only for now).
+    ReasoningDelta(String),
+    /// A tool call has started; frontend can render a running card.
+    /// The `input` is empty at start — Claude/OpenAI stream JSON
+    /// arg deltas that accumulate via ToolCallInputDelta.
+    ToolCallStart {
+        id: String,
+        name: String,
+    },
+    /// Partial JSON of a tool call's arguments. Accumulates by id.
+    ToolCallInputDelta {
+        id: String,
+        json_delta: String,
+    },
+    /// A tool call finished streaming — final args parsed.
+    ToolCallComplete(ToolCall),
+    /// Terminal event — model + token counts.
+    Done {
+        model: String,
+        input_tokens: Option<u32>,
+        output_tokens: Option<u32>,
+        cache_read_tokens: Option<u32>,
+        cache_write_tokens: Option<u32>,
+        stop_reason: Option<String>,
+    },
+}
+
+/// Callback the frontend/journal layer passes down to receive stream
+/// events. Owned as `Arc<dyn Fn>` so it can be cloned into spawn
+/// bodies cheaply. Sync closure — providers call it from their
+/// stream loop; the receiver decides whether to buffer/throttle
+/// (lobe-chat throttles tool_calls at ~300ms, text via a RAF loop).
+pub type StreamCallback = Arc<dyn Fn(StreamEvent) + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -267,6 +317,42 @@ pub trait LlmProvider: Send + Sync {
             stop_reason: None,
             thinking_blocks: Vec::new(),
         })
+    }
+
+    /// v0.28.66 — streaming variant of `chat_with_tools`. Providers
+    /// with native streaming (Claude direct, TravisCloud proxy)
+    /// override this to fire `on_event` per delta. The default impl
+    /// falls through to `chat_with_tools` and synthesizes a single
+    /// TextDelta + optional ToolCallComplete(s) + Done so the caller
+    /// gets a consistent event stream regardless of provider.
+    ///
+    /// Callers pass `on_event = None` when they want the same
+    /// awaited-ChatTurn shape without paying for callback overhead
+    /// (sub-agent calls, condense loops, verify checks).
+    async fn chat_with_tools_streaming(
+        &self,
+        messages: Vec<Message>,
+        opts: ChatWithToolsOptions,
+        on_event: Option<StreamCallback>,
+    ) -> anyhow::Result<ChatTurn> {
+        let turn = self.chat_with_tools(messages, opts).await?;
+        if let Some(cb) = on_event {
+            if !turn.content.is_empty() {
+                cb(StreamEvent::TextDelta(turn.content.clone()));
+            }
+            for tc in &turn.tool_calls {
+                cb(StreamEvent::ToolCallComplete(tc.clone()));
+            }
+            cb(StreamEvent::Done {
+                model: turn.model.clone(),
+                input_tokens: turn.input_tokens,
+                output_tokens: turn.output_tokens,
+                cache_read_tokens: turn.cache_read_tokens,
+                cache_write_tokens: turn.cache_write_tokens,
+                stop_reason: turn.stop_reason.clone(),
+            });
+        }
+        Ok(turn)
     }
 }
 

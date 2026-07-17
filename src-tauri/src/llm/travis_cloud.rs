@@ -24,7 +24,7 @@ use crate::cloud::{self, CLOUD_BASE};
 
 use super::{
     ChatOptions, ChatResponse, ChatTurn, ChatWithToolsOptions, LlmProvider, Message, PingResult,
-    Role, ToolCall, ToolChoice,
+    Role, StreamCallback, ToolCall, ToolChoice,
 };
 
 const ENDPOINT_SUFFIX: &str = "/llm/chat";
@@ -424,6 +424,22 @@ impl LlmProvider for TravisCloudProvider {
         })
     }
 
+    async fn chat_with_tools_streaming(
+        &self,
+        messages: Vec<Message>,
+        opts: ChatWithToolsOptions,
+        on_event: Option<StreamCallback>,
+    ) -> anyhow::Result<ChatTurn> {
+        // No callback → don't pay the streaming overhead; delegate to
+        // the non-streaming path. Same behavior as the default trait
+        // impl but avoids the extra work of synthesizing a fake event
+        // for callers that pass None (sub-agent + condense loops).
+        let Some(cb) = on_event else {
+            return self.chat_with_tools(messages, opts).await;
+        };
+        self.stream_inner(messages, opts, cb).await
+    }
+
     async fn chat_with_tools(
         &self,
         messages: Vec<Message>,
@@ -524,5 +540,98 @@ impl LlmProvider for TravisCloudProvider {
             stop_reason: parsed.stop_reason,
             thinking_blocks,
         })
+    }
+}
+
+impl TravisCloudProvider {
+    /// v0.28.66 — streaming variant of chat_with_tools. Passes
+    /// `stream: true` to the cloud (`/llm/chat`), which forwards
+    /// Anthropic's SSE stream back verbatim. We reuse claude.rs's
+    /// SSE parser since the wire format is identical — the cloud
+    /// is a transparent metering/tier proxy for streaming responses
+    /// exactly as it is for one-shot.
+    ///
+    /// Requires travis-cloud Worker to accept `stream: true` and
+    /// forward the Anthropic SSE. Older cloud deployments that ignore
+    /// the flag will return a normal one-shot JSON response, which
+    /// the parser will misinterpret — feature-gate on cloud version
+    /// (via ping metadata) before enabling in production.
+    async fn stream_inner(
+        &self,
+        messages: Vec<Message>,
+        opts: ChatWithToolsOptions,
+        on_event: StreamCallback,
+    ) -> anyhow::Result<ChatTurn> {
+        let mut body = json!({
+            "model": self.model,
+            "max_tokens": opts.max_tokens.unwrap_or(1024),
+            "messages": build_messages(&messages, opts.cache_conversation),
+            "stream": true,
+        });
+        if let Some(t) = opts.temperature {
+            body["temperature"] = json!(t);
+        }
+        if let Some(sys) = opts.system.as_deref() {
+            if opts.cache_system {
+                body["system"] = json!([{
+                    "type": "text",
+                    "text": sys,
+                    "cache_control": {"type": "ephemeral"},
+                }]);
+            } else {
+                body["system"] = json!(sys);
+            }
+        }
+        if !opts.tools.is_empty() {
+            let mut tools_arr: Vec<Value> = opts.tools.iter().map(|t| json!({
+                "name": t.name,
+                "description": t.description,
+                "input_schema": t.input_schema,
+            })).collect();
+            if opts.cache_tools {
+                if let Some(last) = tools_arr.last_mut() {
+                    if let Some(obj) = last.as_object_mut() {
+                        obj.insert("cache_control".to_string(), json!({"type": "ephemeral"}));
+                    }
+                }
+            }
+            body["tools"] = json!(tools_arr);
+        }
+        let thinking_enabled = opts.thinking_budget.is_some();
+        if let Some(budget) = opts.thinking_budget {
+            body["thinking"] = json!({"type": "enabled", "budget_tokens": budget});
+            body.as_object_mut().and_then(|o| o.remove("temperature"));
+        }
+        if let Some(choice) = opts.tool_choice {
+            let resolved = if thinking_enabled {
+                match &choice {
+                    ToolChoice::Specific(_) | ToolChoice::Required => json!({"type": "auto"}),
+                    ToolChoice::Auto => json!({"type": "auto"}),
+                }
+            } else {
+                match choice {
+                    ToolChoice::Auto => json!({"type": "auto"}),
+                    ToolChoice::Required => json!({"type": "any"}),
+                    ToolChoice::Specific(name) => json!({"type": "tool", "name": name}),
+                }
+            };
+            body["tool_choice"] = resolved;
+        }
+
+        let resp = self
+            .http
+            .post(Self::endpoint())
+            .header("authorization", Self::auth_header()?)
+            .header("content-type", "application/json")
+            .header("accept", "text/event-stream")
+            .json(&body)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let bytes = resp.bytes().await?;
+            return Err(anyhow::anyhow!(explain_error(status.as_u16(), &bytes)));
+        }
+        super::claude::parse_anthropic_sse(resp, on_event).await
     }
 }

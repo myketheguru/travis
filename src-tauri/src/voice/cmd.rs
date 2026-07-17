@@ -413,10 +413,17 @@ fn run_whisper_blocking(
     params.set_print_realtime(false);
     params.set_language(Some("en"));
     params.set_translate(false);
+    // v0.28.66 — friendlier CPU budget. Was `cores.min(4)` which
+    // pinned 4 cores on a 4-core laptop and made every other app
+    // stutter during voice turns. tiny.en runs fine on 2–3 threads
+    // (~800ms per 5s utterance on M1), and leaving headroom for
+    // the user's terminal / browser / whatever they're actually
+    // doing matters more than shaving 200ms off transcription.
     let cores = std::thread::available_parallelism()
         .map(|n| n.get() as i32)
         .unwrap_or(4);
-    params.set_n_threads(cores.min(4));
+    let thread_cap = ((cores / 2).max(1)).min(3);
+    params.set_n_threads(thread_cap);
     params.set_initial_prompt(seeded_prompt);
     state
         .full(params, samples)

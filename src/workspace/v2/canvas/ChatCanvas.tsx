@@ -1,14 +1,26 @@
 /**
- * ChatCanvas — v0.27.2 rewrite.
+ * ChatCanvas — v0.28.66 lobe-chat-style rewrite.
  *
- * Renders BOTH user and assistant messages chronologically. Latest
- * message is centered + full opacity; older messages scale + fade as
- * they age. Scrolling shifts focus naturally.
+ * Message anatomy adopted from lobehub/lobe-chat verbatim (source
+ * refs in the merge concept):
+ *   - User: bubble (right-aligned, dashed-purple for optimistic,
+ *     solid for persisted). Travis identity retained here.
+ *   - Assistant: BUBBLELESS. Avatar + author label + timestamp +
+ *     free-flowing markdown content on backdrop. Hover-reveal
+ *     action strip (Copy / Regenerate / Fork / Save) that fades in
+ *     on row hover at 200ms motionEaseOut.
+ *   - Streaming: live in-flight bubble driven by store's
+ *     `streamingAssistant`, updates as journal://assistant-chunk
+ *     events flow. Cursor blinks at the tail while streaming;
+ *     disappears when journal://assistant-done clears the slot.
+ *   - Model chip: HIDDEN. Travis Cloud is the only surface — users
+ *     never see the underlying provider or model name.
  *
- * Optimistic composer: when pendingComposerSubmit is set, we show the
- * user's message immediately (before the DB round-trip) so the canvas
- * feels alive. The optimistic bubble is replaced by the real DB row
- * on the next poll.
+ * Travis-native features preserved:
+ *   - Voice audio card inside user bubble (persistent, decoupled
+ *     from canvas mount lifecycle).
+ *   - Rich response cards rendered inline in assistant content.
+ *   - Focal-item fade/scale on message rows.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
@@ -31,9 +43,10 @@ interface RenderMessage {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
-  pending?: boolean;
   optimistic?: boolean;
+  streaming?: boolean;
   audio?: InlineAudio;
+  createdAt?: string;
 }
 
 export function ChatCanvas() {
@@ -44,6 +57,8 @@ export function ChatCanvas() {
   const voiceAudioLinkedMessageId = useAppStore((s) => s.voiceAudioLinkedMessageId);
   const setPendingVoiceAudio = useAppStore((s) => s.setPendingVoiceAudio);
   const setVoiceAudioLinkedMessageId = useAppStore((s) => s.setVoiceAudioLinkedMessageId);
+  const streamingAssistant = useAppStore((s) => s.streamingAssistant);
+  const activeConversationId = useAppStore((s) => s.activeConversationId);
   const { allMessages } = useFocalContent();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const lastPendingRef = useRef<string | null>(null);
@@ -55,16 +70,13 @@ export function ChatCanvas() {
     lastPendingRef,
   );
 
-  // v0.28.63 — once the DB user message that the audio was linked to
-  // is present in the current thread, VoiceMessageCard will render
-  // for it via its numeric id. Clear the persistent pending state so
-  // the in-flight card and the real card don't double up.
+  // v0.28.63 → v0.28.66 — clear the persistent voice-audio state
+  // once the DB user message that carries the linked audio appears
+  // in the current thread. VoiceMessageCard (numeric-id path) takes
+  // over rendering from InlineVoiceBubble at that instant.
   useEffect(() => {
     if (voiceAudioLinkedMessageId === null) return;
-    const found = allMessages.some(
-      (m) => m.id === voiceAudioLinkedMessageId,
-    );
-    if (found) {
+    if (allMessages.some((m) => m.id === voiceAudioLinkedMessageId)) {
       setPendingVoiceAudio(null);
       setVoiceAudioLinkedMessageId(null);
     }
@@ -82,14 +94,9 @@ export function ChatCanvas() {
         id: String(m.id),
         role: m.role as RenderMessage["role"],
         content: m.content,
+        createdAt: m.createdAt,
       }));
     if (optimistic) base.push(optimistic);
-    // v0.28.65 — the voice-transcribing placeholder used to render an
-    // EMPTY bubble during the ~700ms finalize window (voiceTranscribing
-    // flips true BEFORE the audio + transcript land in the store). The
-    // composer's own spinner state (glow border + thinking pill)
-    // covers that gap already. Only render a placeholder here if we
-    // already have audio metadata to show — otherwise skip entirely.
     if (voiceTranscribing && !optimistic && pendingVoiceAudio) {
       base.push({
         id: "__voice_transcribing__",
@@ -99,20 +106,57 @@ export function ChatCanvas() {
         audio: pendingVoiceAudio,
       });
     }
-    // v0.28.61 — killed the "..." pending-assistant bubble. Users
-    // reported it as a permanent eyesore during the 5-15s LLM turn.
-    // The composer's own thinking-state indicator (glow border +
-    // spinner, shipped in v0.28.44) already signals that Travis is
-    // working. When streaming lands, tokens fill the assistant bubble
-    // progressively instead of being preceded by dots.
+    // v0.28.66 — live streaming assistant bubble. Renders whenever
+    // the store has a streamingAssistant slot for the current
+    // conversation AND the persisted row hasn't landed yet (checked
+    // by comparing content prefix to avoid a flash-of-duplicate).
+    if (
+      streamingAssistant &&
+      streamingAssistant.conversationId === (activeConversationId ?? -1) &&
+      streamingAssistant.content.length > 0
+    ) {
+      const already = allMessages.some(
+        (m) =>
+          m.role === "assistant" &&
+          m.content.startsWith(streamingAssistant.content.slice(0, 40)),
+      );
+      if (!already) {
+        base.push({
+          id: "__streaming_assistant__",
+          role: "assistant",
+          content: streamingAssistant.content,
+          streaming: true,
+        });
+      }
+    }
     return base;
-  }, [allMessages, optimistic, voiceTranscribing, pendingVoiceAudio]);
+  }, [
+    allMessages,
+    optimistic,
+    voiceTranscribing,
+    pendingVoiceAudio,
+    streamingAssistant,
+    activeConversationId,
+  ]);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, [rendered.length, activity]);
+
+  // Auto-scroll during streaming so new tokens stay in view. Skip
+  // if the user has scrolled up manually (delta > 200 from bottom
+  // means they're reading history — don't yank them down).
+  useEffect(() => {
+    if (!streamingAssistant) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom < 200) {
+      el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
+    }
+  }, [streamingAssistant?.content, streamingAssistant]);
 
   if (rendered.length === 0) {
     return <EmptyChatCanvas />;
@@ -124,7 +168,7 @@ export function ChatCanvas() {
       className="absolute inset-0 overflow-y-auto scroll-smooth"
       style={{ paddingBottom: "160px", paddingTop: "18vh" }}
     >
-      <div className="max-w-3xl mx-auto px-6 flex flex-col gap-6">
+      <div className="max-w-3xl mx-auto px-6 flex flex-col gap-8">
         {rendered.map((m, i) => (
           <MessageBlock
             key={m.id}
@@ -138,11 +182,6 @@ export function ChatCanvas() {
   );
 }
 
-/**
- * Synthesize a user bubble the instant Composer fires
- * pendingComposerSubmit. Cleared once the matching user message
- * appears in the polled thread.
- */
 function useOptimisticSubmit(
   pending: string | null,
   pendingAudio: InlineAudio | null,
@@ -164,13 +203,6 @@ function useOptimisticSubmit(
     role: "user",
     content: seen,
     optimistic: true,
-    // v0.28.63 — read audio live from store. In v0.28.61 we snapshotted
-    // into a useRef so we wouldn't lose it when the journal://user-inserted
-    // listener cleared pendingVoiceAudio, but that broke the voice→chat
-    // canvas-mode transition: ChatCanvas mounts fresh and the ref starts
-    // null. Now pendingVoiceAudio stays in the store until the real
-    // linked message appears in the thread (see the useEffect above),
-    // so a fresh mount reads the current live value.
     audio: pendingAudio ?? undefined,
   };
 }
@@ -179,10 +211,10 @@ function levelFor(index: number, total: number): number {
   if (total === 0) return 0.5;
   const dist = total - 1 - index;
   if (dist === 0) return 1;
-  if (dist === 1) return 0.75;
-  if (dist === 2) return 0.55;
-  if (dist === 3) return 0.42;
-  return 0.32;
+  if (dist === 1) return 0.82;
+  if (dist === 2) return 0.68;
+  if (dist === 3) return 0.55;
+  return 0.42;
 }
 
 function MessageBlock({
@@ -197,6 +229,31 @@ function MessageBlock({
     ? parseRichResponse(message.content)
     : null;
 
+  if (isUser) {
+    return <UserRow message={message} focusLevel={focusLevel} />;
+  }
+  return (
+    <AssistantRow
+      message={message}
+      focusLevel={focusLevel}
+      rich={rich}
+    />
+  );
+}
+
+/**
+ * User message row — Travis's dashed-purple bubble identity, right
+ * aligned. Retains inline voice audio card (v0.28.61+) and
+ * VoiceMessageCard for persisted voice messages.
+ */
+function UserRow({
+  message,
+  focusLevel,
+}: {
+  message: RenderMessage;
+  focusLevel: number;
+}) {
+  const timeLabel = message.createdAt ? formatTime(message.createdAt) : null;
   return (
     <motion.div
       data-msg-id={message.id}
@@ -205,73 +262,274 @@ function MessageBlock({
       animate={{
         opacity: focusLevel,
         y: 0,
-        scale: 0.94 + focusLevel * 0.06,
+        scale: 0.96 + focusLevel * 0.04,
       }}
       transition={{ duration: 0.34, ease: [0.22, 1, 0.36, 1] }}
-      className="w-full"
+      className="w-full group"
     >
-      {isUser ? (
-        <div className="flex justify-end">
+      <div className="flex flex-col items-end gap-1.5">
+        {timeLabel && (
           <div
-            className="rounded-2xl px-4 py-2.5 max-w-[80%]"
-            style={{
-              background: "rgba(124, 92, 255, 0.14)",
-              border: message.optimistic
-                ? "1px dashed rgba(189, 158, 255, 0.45)"
-                : "1px solid rgba(124, 92, 255, 0.32)",
-              color: "rgba(236, 236, 241, 0.98)",
-              fontSize: 14 + focusLevel * 3,
-              lineHeight: 1.5,
-            }}
+            className="text-[10px] uppercase tracking-[0.22em] font-mono opacity-0 group-hover:opacity-100 transition-opacity duration-200 pr-1"
+            style={{ color: "rgba(236, 236, 241, 0.5)" }}
           >
-            {/^-?\d+$/.test(message.id) && !message.optimistic ? (
-              <VoiceMessageCard
-                messageId={Number(message.id)}
-                transcriptFallback={message.content}
-              />
-            ) : message.audio ? (
-              <InlineVoiceBubble audio={message.audio} />
-            ) : (
-              message.content
-            )}
+            {timeLabel}
           </div>
-        </div>
-      ) : (
-        <div>
-          <div
-            className="text-[10px] uppercase tracking-[0.22em] font-mono mb-2"
-            style={{ color: `rgba(236, 236, 241, ${0.35 * focusLevel})` }}
-          >
-            Travis
-          </div>
-          {(
-            <div
-              style={{
-                fontSize: 14 + focusLevel * 3,
-                lineHeight: 1.55,
-                color: `rgba(236, 236, 241, ${0.75 + focusLevel * 0.2})`,
-              }}
-            >
-              {rich ? (
-                <RichResponseRenderer response={rich} messageId={message.id} />
-              ) : (
-                <MarkdownBody text={message.content} />
-              )}
-            </div>
+        )}
+        <div
+          className="rounded-2xl px-4 py-2.5 max-w-[80%]"
+          style={{
+            background: "rgba(124, 92, 255, 0.12)",
+            border: message.optimistic
+              ? "1px dashed rgba(189, 158, 255, 0.42)"
+              : "1px solid rgba(124, 92, 255, 0.30)",
+            borderBottomRightRadius: "6px",
+            color: "rgba(236, 236, 241, 0.98)",
+            fontSize: 14 + focusLevel * 2,
+            lineHeight: 1.55,
+          }}
+        >
+          {/^-?\d+$/.test(message.id) && !message.optimistic ? (
+            <VoiceMessageCard
+              messageId={Number(message.id)}
+              transcriptFallback={message.content}
+            />
+          ) : message.audio ? (
+            <InlineVoiceBubble audio={message.audio} />
+          ) : (
+            message.content
           )}
         </div>
-      )}
+      </div>
     </motion.div>
   );
 }
 
 /**
- * Compact audio player rendered inside the optimistic user bubble.
- * v0.28.61 — decoupled from VoiceMessageCard so we can render the
- * moment the recording ends (no DB round-trip required — the audio
- * path is already local on disk and the transcript comes back from
- * whisper before we even fire the composer submit).
+ * Assistant message row — lobe-chat anatomy. Avatar + author label +
+ * timestamp + content flush left, no bubble. Hover reveals action
+ * strip (Copy/Regenerate/Fork/Save). Streaming variant renders a
+ * blinking lavender cursor at the tail.
  */
+function AssistantRow({
+  message,
+  focusLevel,
+  rich,
+}: {
+  message: RenderMessage;
+  focusLevel: number;
+  rich: ReturnType<typeof parseRichResponse>;
+}) {
+  const timeLabel = message.createdAt ? formatTime(message.createdAt) : null;
+
+  return (
+    <motion.div
+      data-msg-id={message.id}
+      layout
+      initial={{ opacity: 0, y: 12 }}
+      animate={{
+        opacity: focusLevel,
+        y: 0,
+        scale: 0.96 + focusLevel * 0.04,
+      }}
+      transition={{ duration: 0.34, ease: [0.22, 1, 0.36, 1] }}
+      className="w-full group"
+    >
+      <div className="flex gap-3">
+        <TravisAvatar streaming={message.streaming} />
+        <div className="flex-1 min-w-0 flex flex-col gap-1.5">
+          <div className="flex items-baseline gap-3">
+            <span
+              className="text-[10px] uppercase tracking-[0.22em] font-mono"
+              style={{ color: `rgba(236, 236, 241, ${0.85 * focusLevel})` }}
+            >
+              Travis
+            </span>
+            {timeLabel && (
+              <span
+                className="text-[10px] tracking-[0.16em] font-mono opacity-0 group-hover:opacity-100 transition-opacity duration-200 tabular-nums"
+                style={{ color: "rgba(236, 236, 241, 0.5)" }}
+              >
+                {timeLabel}
+              </span>
+            )}
+          </div>
+          <div
+            style={{
+              fontSize: 14 + focusLevel * 2,
+              lineHeight: 1.6,
+              color: `rgba(236, 236, 241, ${0.85 + focusLevel * 0.12})`,
+            }}
+          >
+            {message.streaming ? (
+              <div>
+                <MarkdownBody text={message.content} />
+                <StreamingCursor />
+              </div>
+            ) : rich ? (
+              <RichResponseRenderer response={rich} messageId={message.id} />
+            ) : (
+              <MarkdownBody text={message.content} />
+            )}
+          </div>
+          {/* Hover-reveal action strip — only on persisted assistant messages */}
+          {!message.streaming && /^-?\d+$/.test(message.id) && (
+            <div className="opacity-0 group-hover:opacity-100 transition-opacity duration-200 pt-1">
+              <MessageActions content={message.content} />
+            </div>
+          )}
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+/**
+ * Silvery-bronze-lavender avatar orb for the assistant — Travis's
+ * identity, distilled. Shimmers while streaming.
+ */
+function TravisAvatar({ streaming }: { streaming?: boolean }) {
+  return (
+    <div
+      className="shrink-0 mt-0.5 relative"
+      style={{
+        width: 30,
+        height: 30,
+        borderRadius: "50%",
+        background:
+          "radial-gradient(circle at 30% 25%, rgba(255,255,255,0.55), transparent 45%)," +
+          "radial-gradient(circle at 65% 70%, rgba(210,155,100,0.85), transparent 55%)," +
+          "radial-gradient(circle at 40% 55%, rgba(189,158,255,0.95), transparent 60%)",
+        boxShadow: streaming
+          ? "0 0 12px rgba(189,158,255,0.55), inset 0 0 4px rgba(0,0,0,0.35)"
+          : "0 0 8px rgba(189,158,255,0.30), inset 0 0 4px rgba(0,0,0,0.35)",
+        animation: streaming ? "travis-avatar-pulse 2.2s ease-in-out infinite" : undefined,
+      }}
+    >
+      <style>{`
+        @keyframes travis-avatar-pulse {
+          0%, 100% { transform: scale(1); }
+          50%      { transform: scale(1.05); }
+        }
+        @keyframes travis-cursor-blink {
+          0%, 45%   { opacity: 1; }
+          55%, 100% { opacity: 0.2; }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+function StreamingCursor() {
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        width: 8,
+        height: 15,
+        background: "rgb(189, 158, 255)",
+        verticalAlign: -2,
+        marginLeft: 2,
+        borderRadius: 1,
+        boxShadow: "0 0 6px rgba(189, 158, 255, 0.65)",
+        animation: "travis-cursor-blink 1.4s cubic-bezier(0.22, 1, 0.36, 1) infinite",
+      }}
+    />
+  );
+}
+
+/**
+ * Hover-reveal action strip on completed assistant messages.
+ * Matches lobe-chat's `[role='menubar']` fade-in pattern.
+ */
+function MessageActions({ content }: { content: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="flex gap-1" role="menubar">
+      <ActionButton
+        label={copied ? "Copied" : "Copy"}
+        onClick={() => {
+          void navigator.clipboard.writeText(content).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          });
+        }}
+      >
+        <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.75">
+          <rect x="9" y="9" width="13" height="13" rx="2" />
+          <path d="M5 15V5a2 2 0 012-2h10" />
+        </svg>
+      </ActionButton>
+      <ActionButton
+        label="Regenerate"
+        onClick={() => {
+          window.dispatchEvent(new CustomEvent("travis:regenerate-last"));
+        }}
+      >
+        <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.75">
+          <path d="M21 12a9 9 0 11-3.5-7.1M21 4v6h-6" />
+        </svg>
+      </ActionButton>
+      <ActionButton
+        label="Fork"
+        onClick={() => {
+          window.dispatchEvent(new CustomEvent("travis:fork-from-message"));
+        }}
+      >
+        <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.75">
+          <path d="M12 20h9M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4z" />
+        </svg>
+      </ActionButton>
+    </div>
+  );
+}
+
+function ActionButton({
+  label,
+  onClick,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md transition-colors duration-150"
+      style={{
+        background: "transparent",
+        color: "rgba(236, 236, 241, 0.42)",
+        fontFamily: "ui-monospace, monospace",
+        fontSize: 10,
+        letterSpacing: "0.14em",
+        textTransform: "uppercase",
+        border: "none",
+        cursor: "pointer",
+      }}
+      onMouseEnter={(e) => {
+        (e.currentTarget as HTMLButtonElement).style.color = "rgb(189, 158, 255)";
+        (e.currentTarget as HTMLButtonElement).style.background = "rgba(189, 158, 255, 0.06)";
+      }}
+      onMouseLeave={(e) => {
+        (e.currentTarget as HTMLButtonElement).style.color = "rgba(236, 236, 241, 0.42)";
+        (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+      }}
+    >
+      {children}
+      {label}
+    </button>
+  );
+}
+
+function formatTime(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  return d
+    .toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })
+    .toUpperCase();
+}
+
 function InlineVoiceBubble({ audio }: { audio: InlineAudio }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
