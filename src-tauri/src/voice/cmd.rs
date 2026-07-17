@@ -20,6 +20,15 @@ pub struct VoiceState {
     /// the current utterance. Avoids re-running whisper at speech-end
     /// when we already have a nearly-current transcript.
     prewarm: Mutex<Option<Prewarm>>,
+    /// v0.28.65 — sample_count of the currently-in-flight prewarm
+    /// task. VAD Speech↔ProbablySilence can bounce several times per
+    /// pause, and every bounce used to spawn its own whisper task —
+    /// with N bounces the machine ran N × min(cores, 4) whisper
+    /// threads concurrently and starved every other app (users
+    /// reported terminals becoming unresponsive). Dedup guard in
+    /// voice_prewarm_transcript reads this before dispatching.
+    /// Cleared at task end (any path).
+    prewarm_in_flight: Mutex<Option<usize>>,
 }
 
 /// Prewarmed transcript. `for_sample_count` is the utterance length
@@ -39,6 +48,7 @@ impl VoiceState {
         Self {
             inner: Mutex::new(None),
             prewarm: Mutex::new(None),
+            prewarm_in_flight: Mutex::new(None),
         }
     }
 }
@@ -273,72 +283,86 @@ pub async fn voice_prewarm_transcript(
         return Ok(());
     }
     let sample_count = samples.len();
+    // v0.28.65 — dedup guard. VAD Speech↔ProbablySilence can bounce
+    // several times during one pause; without this guard every bounce
+    // spawned its own whisper task, pinning N × min(cores, 4) threads
+    // concurrently and starving every other app on the machine
+    // (reported symptom: unresponsive terminal while Travis is
+    // running). Skip if a ready prewarm already covers this
+    // utterance, OR if a task is already running for approximately
+    // the same sample count.
+    const PREWARM_DEDUP_TOLERANCE: usize = 8000; // 0.5s @ 16kHz
+    {
+        if let Some(pw) = state.prewarm.lock().unwrap().as_ref() {
+            let age = std::time::Instant::now()
+                .saturating_duration_since(pw.ready_at)
+                .as_millis();
+            let delta = sample_count.saturating_sub(pw.for_sample_count);
+            if age <= 3000 && delta <= PREWARM_DEDUP_TOLERANCE {
+                return Ok(());
+            }
+        }
+        let mut in_flight = state.prewarm_in_flight.lock().unwrap();
+        if let Some(existing) = *in_flight {
+            let delta = sample_count.saturating_sub(existing);
+            if delta <= PREWARM_DEDUP_TOLERANCE {
+                return Ok(());
+            }
+        }
+        *in_flight = Some(sample_count);
+    }
     // Snapshot the pieces the spawned task needs. AppState clones are
     // Arc-based so this is cheap.
     let db_pool = app_state.db.pool.clone();
     let whisper = app_state.whisper.clone();
     let app_for_task = app.clone();
-    let prewarm_slot: &Mutex<Option<Prewarm>> = &state.prewarm;
-    // We cannot move `state` (a Tauri State) into the spawn, but the
-    // Mutex<Option<Prewarm>> lives inside VoiceState which itself
-    // lives inside AppHandle-managed state — reach it back through
-    // app.state() inside the task.
-    let _ = prewarm_slot; // silence unused warning; we use app.state() below
 
     tauri::async_runtime::spawn(async move {
-        let audio_path = match save_utterance_wav(&app_for_task, &samples) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!("[voice] prewarm wav failed: {e}");
-                return;
+        // Body wrapped in an async block so the in-flight marker is
+        // always cleared after — even on early error returns.
+        let body = async {
+            let audio_path = save_utterance_wav(&app_for_task, &samples)
+                .map_err(|e| format!("wav: {e}"))?;
+            let duration_ms =
+                (samples.len() as u64 * 1000 / super::capture_target_hz() as u64) as u32;
+            let seeded_prompt = build_whisper_seed(&db_pool)
+                .await
+                .unwrap_or_else(|_| BASE_WHISPER_SEED.to_string());
+            let model_name = bootstrap::DEFAULT_MODEL;
+            if !speech_runtime::model_ready(&app_for_task, model_name) {
+                let handle = bootstrap::BootstrapHandle::default();
+                bootstrap::ensure_ready(&app_for_task, handle, model_name)
+                    .await
+                    .map_err(|e| format!("bootstrap: {e}"))?;
             }
-        };
-        let duration_ms =
-            (samples.len() as u64 * 1000 / super::capture_target_hz() as u64) as u32;
-        let seeded_prompt = build_whisper_seed(&db_pool)
+            let model_path = speech_runtime::cache_model_path(&app_for_task, model_name)
+                .map_err(|e| format!("model path: {e}"))?;
+            let model_path_str = model_path.to_string_lossy().to_string();
+            let text = tokio::task::spawn_blocking(move || {
+                run_whisper_blocking(whisper, &model_path_str, &seeded_prompt, &samples)
+            })
             .await
-            .unwrap_or_else(|_| BASE_WHISPER_SEED.to_string());
-        let model_name = bootstrap::DEFAULT_MODEL;
-        if !speech_runtime::model_ready(&app_for_task, model_name) {
-            let handle = bootstrap::BootstrapHandle::default();
-            if let Err(e) = bootstrap::ensure_ready(&app_for_task, handle, model_name).await {
-                tracing::warn!("[voice] prewarm model bootstrap failed: {e}");
-                return;
-            }
-        }
-        let model_path = match speech_runtime::cache_model_path(&app_for_task, model_name) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!("[voice] prewarm model path failed: {e}");
-                return;
-            }
+            .map_err(|e| format!("join: {e}"))?
+            .map_err(|e| format!("whisper: {e}"))?;
+            let voice_state = app_for_task.state::<VoiceState>();
+            *voice_state.prewarm.lock().unwrap() = Some(Prewarm {
+                text,
+                audio_path,
+                duration_ms,
+                for_sample_count: sample_count,
+                ready_at: std::time::Instant::now(),
+            });
+            tracing::info!("[voice] prewarm ready ({sample_count} samples)");
+            Ok::<(), String>(())
         };
-        let model_path_str = model_path.to_string_lossy().to_string();
-        let text_res = tokio::task::spawn_blocking(move || {
-            run_whisper_blocking(whisper, &model_path_str, &seeded_prompt, &samples)
-        })
-        .await;
-        let text = match text_res {
-            Ok(Ok(t)) => t,
-            Ok(Err(e)) => {
-                tracing::warn!("[voice] prewarm whisper failed: {e}");
-                return;
-            }
-            Err(e) => {
-                tracing::warn!("[voice] prewarm join failed: {e}");
-                return;
-            }
-        };
-        // Store in the state slot for finalize to consume.
+        let result = body.await;
+        // ALWAYS clear the in-flight marker so the next pause can
+        // dispatch a fresh prewarm even if this one errored.
         let voice_state = app_for_task.state::<VoiceState>();
-        *voice_state.prewarm.lock().unwrap() = Some(Prewarm {
-            text,
-            audio_path,
-            duration_ms,
-            for_sample_count: sample_count,
-            ready_at: std::time::Instant::now(),
-        });
-        tracing::info!("[voice] prewarm ready ({sample_count} samples)");
+        *voice_state.prewarm_in_flight.lock().unwrap() = None;
+        if let Err(e) = result {
+            tracing::warn!("[voice] prewarm task failed: {e}");
+        }
     });
     Ok(())
 }

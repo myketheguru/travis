@@ -525,29 +525,15 @@ export default function AskTab() {
       // Merge: replace the optimistic row by content match, keep
       // every earlier row intact, append anything new from the server.
       setMessages((prev) => mergeServerThread(prev, optimisticId, r.thread.messages));
-      // v0.28.19 — if this submit came from voice, link the saved WAV
-      // to the newly-inserted user message so it renders as a
-      // playable audio card. Best-effort; ignore failures.
-      const voiceAudio = useAppStore.getState().pendingVoiceAudio;
-      if (voiceAudio) {
-        useAppStore.getState().setPendingVoiceAudio(null);
-        const userMsg = r.thread.messages
-          .filter((m) => m.role === "user")
-          .slice(-1)[0];
-        if (userMsg) {
-          try {
-            const { nativeVoice } = await import("../../lib/nativeVoice");
-            await nativeVoice.linkUtterance({
-              messageId: userMsg.id,
-              audioPath: voiceAudio.audioPath,
-              durationMs: voiceAudio.durationMs,
-              transcript: voiceAudio.transcript,
-            });
-          } catch (err) {
-            console.warn("[voice] link utterance failed:", err);
-          }
-        }
-      }
+      // v0.28.65 — voice audio linking + pendingVoiceAudio clearing
+      // moved OUT of here. useNativeVoice.ts already links the
+      // utterance eagerly on the journal://user-inserted event (long
+      // before this journalIngest await resolves), and ChatCanvas
+      // clears the persistent pendingVoiceAudio when the real linked
+      // message appears in the thread. The old post-journal clear
+      // here was racing with the fresh ChatCanvas mount and killing
+      // the InlineVoiceBubble every time. Do NOT put it back — it
+      // was already redundant, and the redundancy IS the bug.
     } catch (e) {
       setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
       setError(e instanceof Error ? e.message : String(e));

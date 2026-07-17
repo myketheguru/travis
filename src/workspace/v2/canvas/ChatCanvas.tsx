@@ -84,18 +84,19 @@ export function ChatCanvas() {
         content: m.content,
       }));
     if (optimistic) base.push(optimistic);
-    // v0.28.61 — voice-transcribing user bubble now carries the audio
-    // metadata inline (if capture already emitted it) so the audio
-    // player appears the moment recording ends, not after whisper +
-    // journal round-trip. Skip if the optimistic composer submit
-    // already replaced it.
-    if (voiceTranscribing && !optimistic) {
+    // v0.28.65 — the voice-transcribing placeholder used to render an
+    // EMPTY bubble during the ~700ms finalize window (voiceTranscribing
+    // flips true BEFORE the audio + transcript land in the store). The
+    // composer's own spinner state (glow border + thinking pill)
+    // covers that gap already. Only render a placeholder here if we
+    // already have audio metadata to show — otherwise skip entirely.
+    if (voiceTranscribing && !optimistic && pendingVoiceAudio) {
       base.push({
         id: "__voice_transcribing__",
         role: "user",
-        content: pendingVoiceAudio?.transcript ?? "",
+        content: pendingVoiceAudio.transcript,
         optimistic: true,
-        audio: pendingVoiceAudio ?? undefined,
+        audio: pendingVoiceAudio,
       });
     }
     // v0.28.61 — killed the "..." pending-assistant bubble. Users

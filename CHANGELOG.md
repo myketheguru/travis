@@ -1,5 +1,61 @@
 # Travis Changelog
 
+## v0.28.65 — Audio card actually appears + CPU steal fix (2026-07-17)
+
+The v0.28.63 "persistent pendingVoiceAudio in the store" fix didn't
+actually work in the app. Fork-agent audit found three concrete
+causes, each fixed here.
+
+### 1. AskTab was racing to clear pendingVoiceAudio
+
+`AskTab.tsx:531-550` still had the pre-v0.28.63 code that cleared
+`pendingVoiceAudio` and re-invoked `linkUtterance` the moment
+`journalIngest` returned. v0.28.63 removed the eager clear from
+`useNativeVoice.ts` but left this second copy in AskTab intact. So
+the store field held for ~50ms into the journal turn (long enough
+for `useNativeVoice`'s `journal://user-inserted` listener to link
+audio), then AskTab wiped it as the LLM turn returned — the fresh
+ChatCanvas mount had already lost its useRef snapshot in v0.28.61,
+and the store-based fallback shipped in v0.28.63 was killed by
+AskTab's redundant clear.
+
+Fix: **delete the AskTab clear+link block entirely**. `useNativeVoice`
+already links the utterance on `journal://user-inserted` (fires within
+~50ms of the user message insert, long before the LLM finishes), and
+ChatCanvas clears the persistent field when the real linked message
+appears in the thread. The AskTab code was pure redundancy — and the
+redundancy IS the bug. Do not put it back.
+
+### 2. Empty placeholder bubble during the 700ms finalize window
+
+`ChatCanvas.tsx` rendered a `__voice_transcribing__` bubble whenever
+`voiceTranscribing===true`. That flag flips true BEFORE whisper
+returns audio+transcript, so during the ~700ms wait the bubble
+rendered with `content=""` and `audio=undefined` — an empty box
+users reported as "empty chat bubble". Skip the placeholder entirely
+when there's nothing yet to show; the composer's own thinking
+indicator already covers the gap.
+
+### 3. Prewarm was spawning concurrent whisper tasks
+
+`voice_prewarm_transcript` (Rust) spawned a full whisper inference
+every time VAD emitted a `voice://speech-pausing` event. VAD can
+bounce Speech↔ProbablySilence several times during a single pause,
+so one utterance dispatched N prewarm tasks, each pinning
+`min(cores, 4)` threads concurrently. On a 4-core machine that's
+~16 whisper threads running at once when the user pauses mid-sentence
+— saturating CPU and making other apps unresponsive (users reported
+terminals hanging while Travis was running).
+
+Fix: added `prewarm_in_flight: Mutex<Option<usize>>` to `VoiceState`.
+The command guards on:
+- A ready prewarm within tolerance of the current sample count →
+  skip (finalize would just reuse it anyway).
+- An in-flight prewarm within tolerance → skip (already computing
+  essentially the same thing).
+Marker is set before spawn, cleared at task end on any path (wrapper
+async block guarantees this).
+
 ## v0.28.64 — Windows VC runtime + persistent voice card (2026-07-17)
 
 Combines two fixes because both were needed to make Windows 11 users
