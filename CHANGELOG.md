@@ -1,5 +1,30 @@
 # Travis Changelog
 
+## v0.28.75 — Prompt fix: code must be inline in the response field (2026-07-17)
+
+The user's second Bezier-code test shows Claude reasoning
+*"Let me provide it now as a proper code_snippet part"* and then
+never writing the code. There is no "code_snippet part" output
+channel — Claude was hallucinating a separate mechanism.
+
+Fix: expanded the `report_extraction` tool's `response` field
+description in `journal.rs::build_extraction_tool` to be explicit:
+
+> CODE: if the user asks for code, PUT THE CODE HERE in this
+> response field as a Markdown fenced code block: triple-backtick +
+> language + newline + code + newline + triple-backtick. NEVER
+> promise code and omit it. NEVER say 'here's the code' or 'let me
+> provide it as a code_snippet part' without including the actual
+> code inline in this field. There is NO separate code_snippet
+> output channel — Markdown-fenced code blocks embedded in this
+> response field ARE the way code renders. If a snippet is long,
+> still include it in full — do not truncate or promise a
+> continuation.
+
+The two specific hallucinated patterns Claude used (`code_snippet
+part`, "here's the code" without code) are now called out by name
+so the model can't slip into them again.
+
 ## v0.28.74 — Tool marker strip + preserve streamed code (2026-07-17)
 
 Both remaining items from the v0.28.73 "still investigating" list.
