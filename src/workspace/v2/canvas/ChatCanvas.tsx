@@ -22,14 +22,22 @@ import { parseRichResponse } from "../../../lib/richResponse";
 import { RichResponseRenderer } from "../../../chat/cards/RichResponseRenderer";
 import { MarkdownBody } from "../../../chat/MarkdownBody";
 import { VoiceMessageCard } from "./VoiceMessageCard";
+import { FileCard } from "../../../chat/FileCard";
+
+// v0.28.72 — module-level stable empty array. Returning `?? []` inline
+// in a Zustand selector creates a new array reference on every render,
+// which useSyncExternalStore diffs as "changed" → infinite render loop
+// (the "Maximum update depth exceeded" crash). Ref stability is
+// required for object-returning selectors.
+const EMPTY_MESSAGES: UIMessage[] = [];
 
 export function ChatCanvas() {
   const activity = useAppStore((s) => s.activity);
   const activeConversationId = useAppStore((s) => s.activeConversationId);
   const messages = useChatStore((s) =>
     activeConversationId !== null
-      ? s.messagesMap[activeConversationId] ?? []
-      : [],
+      ? s.messagesMap[activeConversationId] ?? EMPTY_MESSAGES
+      : EMPTY_MESSAGES,
   );
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -198,6 +206,20 @@ function AssistantRow({
   const hasToolCalls =
     !!message.toolCalls && message.toolCalls.length > 0;
   const streaming = !!message.streaming;
+  // v0.28.72 — parse `doc#N` markers out of assistant content and
+  // render FileCards below the text. Was standard in the old ChatTurn
+  // (line 132-138); the ChatCanvas rewrite lost this handling and
+  // users saw "doc#1" as raw text instead of a downloadable card.
+  const docMatches = !streaming
+    ? Array.from(message.content.matchAll(/doc#(\d+)/g)).map((m) =>
+        Number(m[1]),
+      )
+    : [];
+  const docIds = Array.from(new Set(docMatches));
+  const displayContent =
+    docIds.length > 0
+      ? message.content.replace(/doc#\d+/g, "").replace(/[ \t]+\n/g, "\n").trim()
+      : message.content;
 
   return (
     <motion.div
@@ -255,9 +277,20 @@ function AssistantRow({
             ) : rich ? (
               <RichResponseRenderer response={rich} messageId={String(message.id)} />
             ) : (
-              <MarkdownBody text={message.content} />
+              <MarkdownBody text={displayContent} />
             )}
           </div>
+
+          {/* v0.28.72 — doc#N cards rendered below the text. Clicking
+              opens the document viewer overlay (viewerDocumentId store
+              field routes through App.tsx to the DocumentViewer). */}
+          {docIds.length > 0 && (
+            <div className="flex flex-wrap gap-2 mt-2">
+              {docIds.map((id) => (
+                <DocCardClickable key={id} documentId={id} />
+              ))}
+            </div>
+          )}
 
           {message.error && (
             <div
@@ -282,6 +315,24 @@ function AssistantRow({
         </div>
       </div>
     </motion.div>
+  );
+}
+
+/**
+ * v0.28.72 — wraps FileCard with a click handler that pops the
+ * document viewer overlay. Uses `viewerDocumentId` on the app store
+ * which App.tsx already routes through DocumentViewer.
+ */
+function DocCardClickable({ documentId }: { documentId: number }) {
+  const setViewer = useAppStore((s) => s.setViewerDocumentId);
+  return (
+    <div
+      onClick={() => setViewer(documentId)}
+      style={{ cursor: "pointer" }}
+      className="hover:opacity-90 transition-opacity duration-150"
+    >
+      <FileCard documentId={documentId} />
+    </div>
   );
 }
 
@@ -673,6 +724,12 @@ function EmptyChatCanvas() {
           style={{ color: "rgba(236, 236, 241, 0.6)" }}
         >
           Ask, request, or just start typing.
+        </div>
+        <div
+          className="text-[10px] font-mono uppercase tracking-[0.20em] mt-6"
+          style={{ color: "rgba(236, 236, 241, 0.3)" }}
+        >
+          ⌘/Ctrl · N — new conversation
         </div>
       </motion.div>
     </div>

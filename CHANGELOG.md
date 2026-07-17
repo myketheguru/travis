@@ -1,5 +1,64 @@
 # Travis Changelog
 
+## v0.28.72 — Infinite loop + voice optimistic + code + doc cards + new chat (2026-07-17)
+
+Five real bugs from user feedback on v0.28.71. Every one is a
+regression from the v0.28.70 chat rewrite.
+
+### 1. Infinite render loop (the "app crashes" symptom)
+
+`useChatStore((s) => s.messagesMap[id] ?? [])` created a NEW empty
+array on every render when the conversation had no messages yet.
+useSyncExternalStore diffs by reference — it sees a "changed" value,
+triggers re-render, selector runs again, new array, infinite loop.
+CanvasErrorBoundary catches it as "Maximum update depth exceeded".
+
+Fix: module-level `EMPTY_MESSAGES: UIMessage[] = []` reused as the
+stable fallback. Same reference every render, no diff spike.
+
+### 2. Audio card takes ~9s to appear on voice submit
+
+Voice submits flow through AskTab via `pendingComposerSubmit`, not
+through Composer.handleSubmit. AskTab wasn't updated to insert into
+chatStore, so ChatCanvas stayed empty until `journal://user-inserted`
+landed — usually right before the assistant streams. From the user's
+POV: mic release → thinking → nothing → nothing → user + assistant
+both drop 9 seconds later.
+
+Fix: `useNativeVoice` speech-end handler inserts the optimistic user
+message into chatStore directly (with the current `pendingVoiceAudio`
+attached) BEFORE setting `pendingComposerSubmit`. The audio card + text
+render the instant whisper returns; journal://user-inserted still
+does the tmpId → realId swap when Rust persists.
+
+### 3. Code blocks + doc cards missing from assistant messages
+
+Two root causes:
+- **MarkdownBody** overrode `<p>` as `<p>`. Claude often outputs a
+  fenced code block INSIDE a paragraph — the resulting
+  `<p><CodeBlock/></p>` has `<div>` + `<pre>` nested in `<p>`, which
+  is invalid HTML. React 19 refuses to render the tree; the whole
+  message shows as headers with an empty content slot below.
+- **`doc#N` markers** rendered as plain text instead of a doc card.
+  Old ChatTurn had the marker-parse + FileCard render in
+  `ChatTurn.tsx:132-138`; the ChatCanvas rewrite dropped it.
+
+Fixes:
+- `MarkdownBody` renders `<p>` as `<div className="my-2">` — same
+  visual, but block content nests without complaint.
+- `ChatCanvas` now scans assistant content for `doc#\d+` markers,
+  strips them from displayed text, and renders `FileCard`s in a
+  chip-row below the message.
+- New `DocCardClickable` wrapper opens the document viewer overlay
+  on click by setting `viewerDocumentId` on the app store (which
+  App.tsx already routes through `DocumentViewer`).
+
+### 4. No way to start a new conversation
+
+Cmd/Ctrl+N is now bound at the WorkspaceV2 level — sets
+`activeConversationId = null` which pops ChatCanvas into empty state.
+Empty state now shows a hint: `⌘/Ctrl · N — new conversation`.
+
 ## v0.28.71 — v0.28.70 fix + smooth-drain (2026-07-17)
 
 Two fixes on top of v0.28.70 that materially change how streaming

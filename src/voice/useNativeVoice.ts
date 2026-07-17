@@ -119,6 +119,33 @@ export function useNativeVoice({ enabled }: Options) {
                 });
               }
               useAppStore.getState().setSpeakNextResponse(true);
+              // v0.28.72 — voice submits skip Composer.handleSubmit
+              // (they flow through AskTab via pendingComposerSubmit).
+              // AskTab doesn't insert into chatStore, so ChatCanvas
+              // stayed empty until journal://user-inserted landed ~9s
+              // later. Insert the optimistic user message directly
+              // here so the audio card + transcript render the
+              // instant whisper returns, before journal_ingest even
+              // starts.
+              const convId =
+                useAppStore.getState().activeConversationId;
+              if (convId !== null) {
+                try {
+                  const audio =
+                    useAppStore.getState().pendingVoiceAudio ??
+                    undefined;
+                  const { insertOptimisticUserMessage } =
+                    await import(
+                      "../chat/useConversationStream"
+                    );
+                  insertOptimisticUserMessage(convId, trimmed, audio);
+                } catch (err) {
+                  console.warn(
+                    "[voice] optimistic chatStore insert failed:",
+                    err,
+                  );
+                }
+              }
               setPendingComposerSubmit(trimmed);
             }
           } catch (err) {

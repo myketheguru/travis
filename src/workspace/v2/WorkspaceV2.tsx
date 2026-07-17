@@ -87,6 +87,15 @@ export function WorkspaceV2() {
         setHistoryOverlayOpen(true);
         return;
       }
+      // v0.28.72 — Cmd/Ctrl+N starts a fresh conversation. Sets
+      // activeConversationId to null; ChatCanvas renders the empty
+      // state; the next submit journal_ingest picks up "no active
+      // conversation" and opens a new one.
+      if ((e.metaKey || e.ctrlKey) && (e.key === "n" || e.key === "N")) {
+        e.preventDefault();
+        useAppStore.getState().setActiveConversationId(null);
+        return;
+      }
       if ((e.metaKey || e.ctrlKey) && (e.key === "d" || e.key === "D")) {
         e.preventDefault();
         setDocumentsOverlayOpen(true);

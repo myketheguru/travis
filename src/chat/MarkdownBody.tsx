@@ -15,7 +15,17 @@ export function MarkdownBody({ text }: Props) {
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          p: ({ children }) => <p className="my-2">{children}</p>,
+          // v0.28.72 — render <p> as <div>. react-markdown wraps
+          // ambient inline text in <p>, and when the assistant
+          // outputs a fenced code block inline with prose (which
+          // Claude does constantly), the resulting <p><CodeBlock/></p>
+          // is invalid HTML (<div>/<pre> can't nest in <p>). React 19
+          // refuses to render the tree and CanvasErrorBoundary
+          // catches the crash — which looked like "code is missing"
+          // to the user. Using <div> keeps semantics identical for
+          // styling and eats the nested block content without
+          // complaint.
+          p: ({ children }) => <div className="my-2">{children}</div>,
           h1: ({ children }) => (
             <h1 className="text-bone text-[20px] font-medium mt-4 mb-2">
               {children}
