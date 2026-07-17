@@ -135,29 +135,29 @@ jobs:
       - name: Stage VC++ runtime DLLs for Windows bundle
         if: matrix.platform == 'windows-latest'
         shell: pwsh
-        # v0.28.63 — copy msvcp140/vcruntime140 from the Windows runner's
-        # Visual Studio install into src-tauri/resources/vc/ so tauri
-        # picks them up via bundle.resources (windows overlay). At
-        # install time, src-tauri/windows/installer.nsh copies them from
-        # $INSTDIR\resources\vc\ to $INSTDIR so Windows finds them next
-        # to Travis.exe. Fixes "MSVCP140.dll was not found" on fresh
-        # Windows 11.
+        # v0.28.63 — copy the VC++ 2015-2022 runtime DLLs so tauri
+        # bundles them (via bundle.resources in tauri.windows.conf.json).
+        # At install time, windows/installer.nsh copies them from
+        # $INSTDIR\resources\vc\ to $INSTDIR so Windows finds them
+        # next to Travis.exe. Fixes "MSVCP140.dll was not found" on
+        # fresh Windows 11 installs.
+        #
+        # Source: System32. Simpler than walking the VS install layout
+        # (which shifted with the VS 2025 Preview toolset naming). Any
+        # Windows machine with VC++ installed has these in System32,
+        # and the GitHub Windows runner always does.
         run: |
           $ErrorActionPreference = "Stop"
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsRoot = & $vswhere -latest -property installationPath
-          Write-Host "VS root: $vsRoot"
-          $crtRoot = Join-Path $vsRoot "VC\Redist\MSVC"
-          $versionDir = Get-ChildItem $crtRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
-          Write-Host "CRT version: $($versionDir.FullName)"
-          $x64Dir = Join-Path $versionDir.FullName "x64"
-          $crtDir = Get-ChildItem $x64Dir -Directory -Filter "Microsoft.VC*.CRT" | Select-Object -First 1
-          Write-Host "CRT dir: $($crtDir.FullName)"
           $dest = "src-tauri/resources/vc"
           New-Item -ItemType Directory -Path $dest -Force | Out-Null
-          Copy-Item (Join-Path $crtDir.FullName "msvcp140.dll") $dest -Force
-          Copy-Item (Join-Path $crtDir.FullName "vcruntime140.dll") $dest -Force
-          Copy-Item (Join-Path $crtDir.FullName "vcruntime140_1.dll") $dest -Force
+          $src = "$env:WINDIR\System32"
+          foreach ($dll in @("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")) {
+            $srcPath = Join-Path $src $dll
+            if (-not (Test-Path $srcPath)) {
+              throw "Expected $srcPath on the runner but it's missing."
+            }
+            Copy-Item $srcPath $dest -Force
+          }
           Get-ChildItem $dest
 
       - name: Build & sign (no release upload from this repo)

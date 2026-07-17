@@ -1,6 +1,12 @@
 # Travis Changelog
 
-## v0.28.63 — Windows VC runtime + persistent voice card (2026-07-17)
+## v0.28.64 — Windows VC runtime + persistent voice card (2026-07-17)
+
+Combines two fixes because both were needed to make Windows 11 users
+whole again in the same release. Retags v0.28.63 whose CI failed
+before any release published (VS 2025 Preview shifted the CRT dir
+layout — this release copies DLLs from `System32` instead of walking
+the VS install).
 
 Bundles TWO fixes because both were needed to make Windows 11 users
 whole again in the same release.
