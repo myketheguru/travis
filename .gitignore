@@ -64,3 +64,4 @@ src-tauri/resources/piper/piper.exe
 src-tauri/resources/piper/*.tar.gz
 src-tauri/resources/piper/*.zip
 src-tauri/resources/piper/espeak-ng-data/
+debug-output.txt
