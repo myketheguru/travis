@@ -232,6 +232,18 @@ pub async fn voice_finalize_transcript(
             tracing::info!(
                 "[voice] finalize using prewarm (age={age}ms, delta={sample_delta} samples)"
             );
+            // v0.28.68 — emit the audio path IMMEDIATELY so the
+            // frontend can render the audio card without waiting for
+            // this whole finalize promise to resolve. Users reported
+            // "audio card only shows after Travis thinks" — this fires
+            // the moment we know the WAV path.
+            let _ = app.emit(
+                "voice://audio-ready",
+                serde_json::json!({
+                    "audioPath": pw.audio_path.clone(),
+                    "durationMs": pw.duration_ms,
+                }),
+            );
             let _ = app.emit("voice://transcript-final", pw.text.clone());
             return Ok(FinalizeResult {
                 text: pw.text,
@@ -245,9 +257,21 @@ pub async fn voice_finalize_transcript(
         }
     }
 
-    let transcript = run_whisper_on(&app, &app_state, &samples).await?;
+    // v0.28.68 — save WAV BEFORE running whisper so the frontend can
+    // render the audio card the instant we know the path. Whisper
+    // still takes ~700ms per 5s utterance on tiny.en; users don't
+    // need to stare at empty space during that window.
     let audio_path = save_utterance_wav(&app, &samples)?;
     let duration_ms = (samples.len() as u64 * 1000 / super::capture_target_hz() as u64) as u32;
+    let _ = app.emit(
+        "voice://audio-ready",
+        serde_json::json!({
+            "audioPath": audio_path.clone(),
+            "durationMs": duration_ms,
+        }),
+    );
+
+    let transcript = run_whisper_on(&app, &app_state, &samples).await?;
 
     let _ = app.emit("voice://transcript-final", transcript.clone());
     Ok(FinalizeResult {

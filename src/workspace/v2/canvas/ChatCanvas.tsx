@@ -106,25 +106,39 @@ export function ChatCanvas() {
         audio: pendingVoiceAudio,
       });
     }
-    // v0.28.66 — live streaming assistant bubble. Renders whenever
-    // the store has a streamingAssistant slot for the current
-    // conversation AND the persisted row hasn't landed yet (checked
-    // by comparing content prefix to avoid a flash-of-duplicate).
+    // v0.28.66 → v0.28.68 — live streaming assistant bubble.
+    // Renders whenever streamingAssistant has ANY signal — text,
+    // reasoning, or a running tool call — so the user sees Travis
+    // moving BEFORE the first response token arrives. Modeled on
+    // lobe-chat's per-part emit: reasoning renders as it streams,
+    // tool cards flip to running the moment tool_call_start fires,
+    // and the response text fills in progressively when it starts.
     if (
       streamingAssistant &&
       streamingAssistant.conversationId === (activeConversationId ?? -1) &&
-      streamingAssistant.content.length > 0
+      (streamingAssistant.content.length > 0 ||
+        streamingAssistant.reasoning.length > 0 ||
+        streamingAssistant.toolCalls.length > 0)
     ) {
-      const already = allMessages.some(
-        (m) =>
-          m.role === "assistant" &&
-          m.content.startsWith(streamingAssistant.content.slice(0, 40)),
-      );
+      // Dedupe: only skip the streaming bubble if we can prove the
+      // persisted assistant row is already the SAME turn (content
+      // prefix ≥30 chars). With reasoning-only or tool-only stream
+      // state (empty content), this check is skipped and we always
+      // show the bubble — assistant-done normally clears
+      // streamingAssistant before the persisted row lands.
+      const streamContent = streamingAssistant.content;
+      const already =
+        streamContent.length > 30 &&
+        allMessages.some(
+          (m) =>
+            m.role === "assistant" &&
+            m.content.startsWith(streamContent.slice(0, 40)),
+        );
       if (!already) {
         base.push({
           id: "__streaming_assistant__",
           role: "assistant",
-          content: streamingAssistant.content,
+          content: streamContent,
           streaming: true,
         });
       }
@@ -321,6 +335,13 @@ function AssistantRow({
   rich: ReturnType<typeof parseRichResponse>;
 }) {
   const timeLabel = message.createdAt ? formatTime(message.createdAt) : null;
+  // v0.28.68 — subscribe to streaming assistant's reasoning + tool
+  // calls so the row renders them ABOVE the response text, in real
+  // time, matching lobehub/lobe-chat's chat surface (see their
+  // `Messages/Tool/Tool/index.tsx` for tool-running state and
+  // reasoning blocks in `MessageContent.tsx`).
+  const streamingAssistant = useAppStore((s) => s.streamingAssistant);
+  const showLiveExtras = message.streaming && !!streamingAssistant;
 
   return (
     <motion.div
@@ -354,6 +375,15 @@ function AssistantRow({
               </span>
             )}
           </div>
+
+          {/* v0.28.68 — live tool-call chips + reasoning block during stream */}
+          {showLiveExtras && streamingAssistant!.toolCalls.length > 0 && (
+            <ToolCallsInline calls={streamingAssistant!.toolCalls} />
+          )}
+          {showLiveExtras && streamingAssistant!.reasoning.length > 0 && (
+            <ReasoningBlock text={streamingAssistant!.reasoning} />
+          )}
+
           <div
             style={{
               fontSize: 14 + focusLevel * 2,
@@ -362,10 +392,16 @@ function AssistantRow({
             }}
           >
             {message.streaming ? (
-              <div>
-                <MarkdownBody text={message.content} />
+              message.content.length > 0 ? (
+                <div>
+                  <MarkdownBody text={message.content} />
+                  <StreamingCursor />
+                </div>
+              ) : (
+                // No text yet — while reasoning/tools stream, show
+                // a bare cursor so the row has SOMETHING to anchor.
                 <StreamingCursor />
-              </div>
+              )
             ) : rich ? (
               <RichResponseRenderer response={rich} messageId={message.id} />
             ) : (
@@ -381,6 +417,96 @@ function AssistantRow({
         </div>
       </div>
     </motion.div>
+  );
+}
+
+/**
+ * v0.28.68 — Live tool-call chips rendered ABOVE the streaming text.
+ * Each chip shows the tool name + a live "running" dot. When the tool
+ * completes (via journal://assistant-done + polled message), the
+ * chip fades out and the tool result appears in the persisted message
+ * flow via rich-response cards.
+ *
+ * Modeled on lobe-chat's inline tool bubble (`Tool/index.tsx`) but
+ * compressed to a horizontal chip since Travis renders one row per
+ * assistant turn.
+ */
+function ToolCallsInline({ calls }: { calls: Array<{ id: string; name: string }> }) {
+  return (
+    <div className="flex flex-wrap gap-1.5 mb-1">
+      {calls.map((c) => (
+        <div
+          key={c.id}
+          className="inline-flex items-center gap-2 px-2.5 py-1 rounded-lg"
+          style={{
+            background: "rgba(189, 158, 255, 0.06)",
+            border: "1px solid rgba(189, 158, 255, 0.24)",
+          }}
+        >
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: "50%",
+              background: "rgb(74, 222, 128)",
+              boxShadow: "0 0 5px rgb(74, 222, 128)",
+              animation: "travis-cursor-blink 1.6s cubic-bezier(0.22, 1, 0.36, 1) infinite",
+            }}
+          />
+          <span
+            style={{
+              fontFamily: "ui-monospace, monospace",
+              fontSize: 10.5,
+              letterSpacing: "0.14em",
+              textTransform: "uppercase",
+              color: "rgba(189, 158, 255, 0.92)",
+            }}
+          >
+            {c.name}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * v0.28.68 — Live reasoning block during stream. Renders in a subtle
+ * muted panel so it reads as "thinking" not "answer". Same shape lobe-
+ * chat uses for extended-thinking blocks (Anthropic's <thinking> tags).
+ */
+function ReasoningBlock({ text }: { text: string }) {
+  return (
+    <div
+      className="rounded-xl px-3 py-2 mb-1"
+      style={{
+        background: "rgba(255, 255, 255, 0.02)",
+        border: "1px solid rgba(255, 255, 255, 0.05)",
+      }}
+    >
+      <div
+        style={{
+          fontFamily: "ui-monospace, monospace",
+          fontSize: 9.5,
+          letterSpacing: "0.22em",
+          textTransform: "uppercase",
+          color: "rgba(210, 155, 100, 0.75)",
+          marginBottom: 4,
+        }}
+      >
+        thinking
+      </div>
+      <div
+        style={{
+          fontSize: 13,
+          lineHeight: 1.55,
+          color: "rgba(236, 236, 241, 0.62)",
+          fontStyle: "italic",
+        }}
+      >
+        {text}
+      </div>
+    </div>
   );
 }
 

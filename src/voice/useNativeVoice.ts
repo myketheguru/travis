@@ -177,6 +177,29 @@ export function useNativeVoice({ enabled }: Options) {
         }),
       );
 
+      // v0.28.68 — Rust emits this the instant the WAV is saved,
+      // BEFORE running whisper (which takes ~700ms). Frontend renders
+      // the audio card immediately with an empty transcript; the
+      // transcript fills in when finalize returns. Kills the wait
+      // between mic-release and card-visible.
+      unlisteners.push(
+        await listen<{ audioPath: string; durationMs: number }>(
+          "voice://audio-ready",
+          (evt) => {
+            const store = useAppStore.getState();
+            const cur = store.pendingVoiceAudio;
+            store.setPendingVoiceAudio({
+              audioPath: evt.payload.audioPath,
+              durationMs: evt.payload.durationMs,
+              // Preserve any transcript the store already has (e.g. an
+              // in-progress finalize path where speech-end handler set
+              // it after finalize returned). Empty string otherwise.
+              transcript: cur?.transcript ?? "",
+            });
+          },
+        ),
+      );
+
       // v0.28.57 — journal_ingest emits this the moment the user
       // message row lands in the DB, before the (slow) LLM turn
       // begins. Flip the active conversation + link any pending voice

@@ -8776,7 +8776,7 @@ dependencies = [
 
 [[package]]
 name = "travis"
-version = "0.28.66"
+version = "0.28.68"
 dependencies = [
  "active-win-pos-rs",
  "anyhow",

@@ -1,5 +1,59 @@
 # Travis Changelog
 
+## v0.28.68 — Early audio card + live reasoning/tool render (2026-07-17)
+
+Two blockers on the streaming story that shipped in v0.28.66. Both were
+real gaps in the per-part emit architecture; addressing them now.
+
+### 1. Audio card renders BEFORE whisper finishes
+
+v0.28.66 shipped streaming but the audio card still waited for whisper
+to complete (~700ms of "Travis thinking" before ANYTHING appeared).
+User called it out: card should appear the instant the mic is released.
+
+Fix: `voice_finalize_transcript` now saves the WAV first, emits
+`voice://audio-ready { audioPath, durationMs }` on that spot, THEN
+runs whisper. Frontend `useNativeVoice` listens for the new event
+and sets `pendingVoiceAudio` immediately with an empty transcript.
+The `__voice_transcribing__` bubble in ChatCanvas already renders
+when `voiceTranscribing && pendingVoiceAudio`, so the audio player
+appears instantly; the transcript fills in when finalize returns.
+
+Same treatment applied to the prewarm-fast-path — emits
+`voice://audio-ready` with the cached prewarm audio_path.
+
+### 2. Reasoning + tool calls render live during the stream
+
+v0.28.66 wired `ReasoningDelta` and `ToolCallStart` events all the way
+from Anthropic SSE → `StreamCallback` → `journal://reasoning-chunk` /
+`journal://assistant-tool-start` → `streamingAssistant.reasoning` /
+`.toolCalls` in the Zustand store. But ChatCanvas ignored those slots
+— everything crammed into one text bubble.
+
+Fixed by rendering ABOVE the response text, during the stream, in
+lobe-chat's per-part shape:
+
+- **ToolCallsInline**: horizontal chip strip. Each chip shows the
+  tool name in Travis's mono-uppercase font with a pulsing green
+  status dot ("running"). Chips appear the instant `tool_call_start`
+  fires and vanish when `assistant-done` clears the streaming slot.
+
+- **ReasoningBlock**: subtle muted-panel showing the extended-thinking
+  text as it streams (Anthropic `<thinking>` blocks). Bronze
+  "THINKING" label on top, italic body text. Reads as thought, not
+  as answer.
+
+- **Streaming bubble activation**: the bubble now renders when there's
+  ANY signal (text OR reasoning OR tool calls), not just text. That
+  means the user sees Travis moving the instant the LLM starts
+  reasoning or calling a tool — before the first response token
+  arrives.
+
+This is the "emit-per-part → render-per-part" flow lobe-chat / claude.ai
+use: user turn shows up → reasoning streams → tool cards flip to
+running → response text builds → follow-ups repeat. No more monolithic
+"Travis is thinking" pause.
+
 ## v0.28.67 — v0.28.66 hotfix: dev-mode DLL glob + prewarm poison (2026-07-17)
 
 Two defensive fixes on top of v0.28.66 while I chase a runtime crash a
