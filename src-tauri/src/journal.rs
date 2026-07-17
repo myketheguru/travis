@@ -2580,6 +2580,30 @@ pub async fn journal_ingest(
         .await
         .ok();
 
+        // v0.28.70 — assistant-message-created event. One tmpId per
+        // journal turn (not per manager iteration — from the user's
+        // perspective there's ONE assistant response). Frontend
+        // chatStore uses this to create the assistant row upfront
+        // with LOADING sentinel content, then mutates it via chunk
+        // events until assistant-done swaps tmpId → real DB id.
+        let assistant_tmp_id = format!(
+            "tmp_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        {
+            use tauri::Emitter;
+            let _ = app.emit(
+                "journal://assistant-message-created",
+                serde_json::json!({
+                    "conversationId": conv_id,
+                    "tmpId": assistant_tmp_id.clone(),
+                }),
+            );
+        }
+
         let (this_ext, this_ok, this_err, this_raw) = 'outer: {
         let mut current_messages = working_messages.clone();
         let mut last_dump = String::new();
@@ -2643,6 +2667,7 @@ pub async fn journal_ingest(
             let stream_app = app.clone();
             let stream_conv_id = conv_id;
             let stream_iter = iter;
+            let stream_tmp_id = assistant_tmp_id.clone();
             let on_event: crate::llm::StreamCallback = std::sync::Arc::new(move |ev| {
                 use tauri::Emitter;
                 match ev {
@@ -2651,6 +2676,7 @@ pub async fn journal_ingest(
                             "journal://assistant-chunk",
                             serde_json::json!({
                                 "conversationId": stream_conv_id,
+                                "tmpId": stream_tmp_id.clone(),
                                 "iter": stream_iter,
                                 "delta": delta,
                             }),
@@ -2661,6 +2687,7 @@ pub async fn journal_ingest(
                             "journal://reasoning-chunk",
                             serde_json::json!({
                                 "conversationId": stream_conv_id,
+                                "tmpId": stream_tmp_id.clone(),
                                 "iter": stream_iter,
                                 "delta": delta,
                             }),
@@ -2671,6 +2698,7 @@ pub async fn journal_ingest(
                             "journal://assistant-tool-start",
                             serde_json::json!({
                                 "conversationId": stream_conv_id,
+                                "tmpId": stream_tmp_id.clone(),
                                 "iter": stream_iter,
                                 "toolCallId": id,
                                 "toolName": name,
@@ -3945,14 +3973,19 @@ pub async fn journal_ingest(
     )
     .await;
     let assistant_msg_id = assistant_msg.as_ref().ok().map(|m| m.id);
-    // v0.28.66 — signal the streaming assistant bubble to finalize:
-    // frontend swaps the in-memory chunk buffer for the persisted row.
+    // v0.28.66 → v0.28.70 — signal the streaming assistant bubble to
+    // finalize AND swap tmpId → real DB id in one atomic step. The
+    // frontend chatStore.swapTmpId action fires on this event: it
+    // updates the message's id from the tmp to the real DB id and
+    // patches in the final content (which usually matches what was
+    // streamed but can differ for the tool-loop synthesis path).
     {
         use tauri::Emitter;
         let _ = app.emit(
             "journal://assistant-done",
             serde_json::json!({
                 "conversationId": conv_id,
+                "tmpId": assistant_tmp_id.clone(),
                 "assistantMessageId": assistant_msg_id,
                 "content": assistant_visible.clone(),
             }),

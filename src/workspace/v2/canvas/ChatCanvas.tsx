@@ -1,178 +1,68 @@
 /**
- * ChatCanvas — v0.28.66 lobe-chat-style rewrite.
+ * ChatCanvas — v0.28.70 rearchitecture.
  *
- * Message anatomy adopted from lobehub/lobe-chat verbatim (source
- * refs in the merge concept):
- *   - User: bubble (right-aligned, dashed-purple for optimistic,
- *     solid for persisted). Travis identity retained here.
- *   - Assistant: BUBBLELESS. Avatar + author label + timestamp +
- *     free-flowing markdown content on backdrop. Hover-reveal
- *     action strip (Copy / Regenerate / Fork / Save) that fades in
- *     on row hover at 200ms motionEaseOut.
- *   - Streaming: live in-flight bubble driven by store's
- *     `streamingAssistant`, updates as journal://assistant-chunk
- *     events flow. Cursor blinks at the tail while streaming;
- *     disappears when journal://assistant-done clears the slot.
- *   - Model chip: HIDDEN. Travis Cloud is the only surface — users
- *     never see the underlying provider or model name.
+ * Reads exclusively from `chatStore.messagesMap[activeConversationId]`.
+ * No `useFocalContent` polling. No parallel "streamingAssistant" slot.
+ * No optimistic bubble managed in a sibling ref. One message list,
+ * one reducer, one render path.
  *
- * Travis-native features preserved:
- *   - Voice audio card inside user bubble (persistent, decoupled
- *     from canvas mount lifecycle).
- *   - Rich response cards rendered inline in assistant content.
- *   - Focal-item fade/scale on message rows.
+ * The v0.28.66 lobe-chat message anatomy is preserved (bubbleless
+ * assistant, avatar, author header, hover actions, streaming cursor,
+ * tool call chips, reasoning block, dashed user bubble, inline
+ * voice audio card). All fields that used to live in a parallel
+ * store (streaming, reasoning, toolCalls, audio, error) now live on
+ * the UIMessage itself.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
-import { motion } from "framer-motion";
+import { useEffect, useRef, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useAppStore } from "../../../stores/app";
-import { useFocalContent } from "../useFocalContent";
+import { useChatStore, type UIMessage } from "../../../stores/chatStore";
 import { parseRichResponse } from "../../../lib/richResponse";
 import { RichResponseRenderer } from "../../../chat/cards/RichResponseRenderer";
 import { MarkdownBody } from "../../../chat/MarkdownBody";
 import { VoiceMessageCard } from "./VoiceMessageCard";
-import type { ConversationMessage } from "../../../lib/conversation";
-
-interface InlineAudio {
-  audioPath: string;
-  durationMs: number;
-  transcript: string;
-}
-
-interface RenderMessage {
-  id: string;
-  role: "user" | "assistant" | "system";
-  content: string;
-  optimistic?: boolean;
-  streaming?: boolean;
-  audio?: InlineAudio;
-  createdAt?: string;
-}
 
 export function ChatCanvas() {
   const activity = useAppStore((s) => s.activity);
-  const voiceTranscribing = useAppStore((s) => s.voiceTranscribing);
-  const pendingComposerSubmit = useAppStore((s) => s.pendingComposerSubmit);
-  const pendingVoiceAudio = useAppStore((s) => s.pendingVoiceAudio);
-  const voiceAudioLinkedMessageId = useAppStore((s) => s.voiceAudioLinkedMessageId);
-  const setPendingVoiceAudio = useAppStore((s) => s.setPendingVoiceAudio);
-  const setVoiceAudioLinkedMessageId = useAppStore((s) => s.setVoiceAudioLinkedMessageId);
-  const streamingAssistant = useAppStore((s) => s.streamingAssistant);
   const activeConversationId = useAppStore((s) => s.activeConversationId);
-  const { allMessages } = useFocalContent();
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  const lastPendingRef = useRef<string | null>(null);
-
-  const optimistic = useOptimisticSubmit(
-    pendingComposerSubmit,
-    pendingVoiceAudio,
-    allMessages,
-    lastPendingRef,
+  const messages = useChatStore((s) =>
+    activeConversationId !== null
+      ? s.messagesMap[activeConversationId] ?? []
+      : [],
   );
+  const scrollRef = useRef<HTMLDivElement | null>(null);
 
-  // v0.28.63 → v0.28.66 — clear the persistent voice-audio state
-  // once the DB user message that carries the linked audio appears
-  // in the current thread. VoiceMessageCard (numeric-id path) takes
-  // over rendering from InlineVoiceBubble at that instant.
+  // Auto-scroll on new content — respect user's manual scroll-up.
+  const lastLenRef = useRef<number>(0);
+  const lastContentLenRef = useRef<number>(0);
   useEffect(() => {
-    if (voiceAudioLinkedMessageId === null) return;
-    if (allMessages.some((m) => m.id === voiceAudioLinkedMessageId)) {
-      setPendingVoiceAudio(null);
-      setVoiceAudioLinkedMessageId(null);
-    }
-  }, [
-    voiceAudioLinkedMessageId,
-    allMessages,
-    setPendingVoiceAudio,
-    setVoiceAudioLinkedMessageId,
-  ]);
-
-  const rendered: RenderMessage[] = useMemo(() => {
-    const base: RenderMessage[] = allMessages
-      .filter((m) => m.role === "user" || m.role === "assistant" || m.role === "system")
-      .map((m) => ({
-        id: String(m.id),
-        role: m.role as RenderMessage["role"],
-        content: m.content,
-        createdAt: m.createdAt,
-      }));
-    if (optimistic) base.push(optimistic);
-    if (voiceTranscribing && !optimistic && pendingVoiceAudio) {
-      base.push({
-        id: "__voice_transcribing__",
-        role: "user",
-        content: pendingVoiceAudio.transcript,
-        optimistic: true,
-        audio: pendingVoiceAudio,
+    const el = scrollRef.current;
+    if (!el) return;
+    const totalContent = messages.reduce((n, m) => n + m.content.length, 0);
+    const grew =
+      messages.length > lastLenRef.current ||
+      totalContent > lastContentLenRef.current;
+    lastLenRef.current = messages.length;
+    lastContentLenRef.current = totalContent;
+    if (!grew) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom < 200 || messages.length === 1) {
+      el.scrollTo({
+        top: el.scrollHeight,
+        behavior: messages.length === 1 ? "auto" : "smooth",
       });
     }
-    // v0.28.66 → v0.28.68 — live streaming assistant bubble.
-    // Renders whenever streamingAssistant has ANY signal — text,
-    // reasoning, or a running tool call — so the user sees Travis
-    // moving BEFORE the first response token arrives. Modeled on
-    // lobe-chat's per-part emit: reasoning renders as it streams,
-    // tool cards flip to running the moment tool_call_start fires,
-    // and the response text fills in progressively when it starts.
-    if (
-      streamingAssistant &&
-      streamingAssistant.conversationId === (activeConversationId ?? -1) &&
-      (streamingAssistant.content.length > 0 ||
-        streamingAssistant.reasoning.length > 0 ||
-        streamingAssistant.toolCalls.length > 0)
-    ) {
-      // Dedupe: only skip the streaming bubble if we can prove the
-      // persisted assistant row is already the SAME turn (content
-      // prefix ≥30 chars). With reasoning-only or tool-only stream
-      // state (empty content), this check is skipped and we always
-      // show the bubble — assistant-done normally clears
-      // streamingAssistant before the persisted row lands.
-      const streamContent = streamingAssistant.content;
-      const already =
-        streamContent.length > 30 &&
-        allMessages.some(
-          (m) =>
-            m.role === "assistant" &&
-            m.content.startsWith(streamContent.slice(0, 40)),
-        );
-      if (!already) {
-        base.push({
-          id: "__streaming_assistant__",
-          role: "assistant",
-          content: streamContent,
-          streaming: true,
-        });
-      }
-    }
-    return base;
-  }, [
-    allMessages,
-    optimistic,
-    voiceTranscribing,
-    pendingVoiceAudio,
-    streamingAssistant,
-    activeConversationId,
-  ]);
+  }, [messages]);
 
+  // Also scroll when activity changes (helps voice → thinking).
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  }, [rendered.length, activity]);
+  }, [activity]);
 
-  // Auto-scroll during streaming so new tokens stay in view. Skip
-  // if the user has scrolled up manually (delta > 200 from bottom
-  // means they're reading history — don't yank them down).
-  useEffect(() => {
-    if (!streamingAssistant) return;
-    const el = scrollRef.current;
-    if (!el) return;
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distanceFromBottom < 200) {
-      el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
-    }
-  }, [streamingAssistant?.content, streamingAssistant]);
-
-  if (rendered.length === 0) {
+  if (messages.length === 0) {
     return <EmptyChatCanvas />;
   }
 
@@ -183,42 +73,24 @@ export function ChatCanvas() {
       style={{ paddingBottom: "160px", paddingTop: "18vh" }}
     >
       <div className="max-w-3xl mx-auto px-6 flex flex-col gap-8">
-        {rendered.map((m, i) => (
-          <MessageBlock
-            key={m.id}
-            message={m}
-            focusLevel={levelFor(i, rendered.length)}
-          />
-        ))}
+        <AnimatePresence initial={false}>
+          {messages
+            .filter(
+              (m) =>
+                m.role === "user" || m.role === "assistant" || m.role === "system",
+            )
+            .map((m, i, arr) => (
+              <MessageBlock
+                key={String(m.id)}
+                message={m}
+                focusLevel={levelFor(i, arr.length)}
+              />
+            ))}
+        </AnimatePresence>
         <div style={{ height: "18vh" }} />
       </div>
     </div>
   );
-}
-
-function useOptimisticSubmit(
-  pending: string | null,
-  pendingAudio: InlineAudio | null,
-  allMessages: ConversationMessage[],
-  lastRef: React.MutableRefObject<string | null>,
-): RenderMessage | null {
-  if (pending) lastRef.current = pending;
-  const seen = lastRef.current;
-  if (!seen) return null;
-  const alreadyThere = allMessages
-    .slice(-6)
-    .some((m) => m.role === "user" && m.content.trim() === seen.trim());
-  if (alreadyThere) {
-    lastRef.current = null;
-    return null;
-  }
-  return {
-    id: "__optimistic_user__",
-    role: "user",
-    content: seen,
-    optimistic: true,
-    audio: pendingAudio ?? undefined,
-  };
 }
 
 function levelFor(index: number, total: number): number {
@@ -235,42 +107,32 @@ function MessageBlock({
   message,
   focusLevel,
 }: {
-  message: RenderMessage;
+  message: UIMessage;
   focusLevel: number;
 }) {
-  const isUser = message.role === "user";
-  const rich = !isUser && message.content
-    ? parseRichResponse(message.content)
-    : null;
-
-  if (isUser) {
+  if (message.role === "user") {
     return <UserRow message={message} focusLevel={focusLevel} />;
   }
+  const rich = !message.streaming && message.content
+    ? parseRichResponse(message.content)
+    : null;
   return (
-    <AssistantRow
-      message={message}
-      focusLevel={focusLevel}
-      rich={rich}
-    />
+    <AssistantRow message={message} focusLevel={focusLevel} rich={rich} />
   );
 }
 
-/**
- * User message row — Travis's dashed-purple bubble identity, right
- * aligned. Retains inline voice audio card (v0.28.61+) and
- * VoiceMessageCard for persisted voice messages.
- */
 function UserRow({
   message,
   focusLevel,
 }: {
-  message: RenderMessage;
+  message: UIMessage;
   focusLevel: number;
 }) {
   const timeLabel = message.createdAt ? formatTime(message.createdAt) : null;
+  const isOptimistic = typeof message.id === "string";
   return (
     <motion.div
-      data-msg-id={message.id}
+      data-msg-id={String(message.id)}
       layout
       initial={{ opacity: 0, y: 12 }}
       animate={{
@@ -278,6 +140,7 @@ function UserRow({
         y: 0,
         scale: 0.96 + focusLevel * 0.04,
       }}
+      exit={{ opacity: 0, y: -6 }}
       transition={{ duration: 0.34, ease: [0.22, 1, 0.36, 1] }}
       className="w-full group"
     >
@@ -294,7 +157,7 @@ function UserRow({
           className="rounded-2xl px-4 py-2.5 max-w-[80%]"
           style={{
             background: "rgba(124, 92, 255, 0.12)",
-            border: message.optimistic
+            border: isOptimistic
               ? "1px dashed rgba(189, 158, 255, 0.42)"
               : "1px solid rgba(124, 92, 255, 0.30)",
             borderBottomRightRadius: "6px",
@@ -303,9 +166,11 @@ function UserRow({
             lineHeight: 1.55,
           }}
         >
-          {/^-?\d+$/.test(message.id) && !message.optimistic ? (
+          {typeof message.id === "number" && !message.audio ? (
+            // Persisted row without eager audio — VoiceMessageCard
+            // will fetch by id if this was actually a voice turn.
             <VoiceMessageCard
-              messageId={Number(message.id)}
+              messageId={message.id}
               transcriptFallback={message.content}
             />
           ) : message.audio ? (
@@ -319,33 +184,24 @@ function UserRow({
   );
 }
 
-/**
- * Assistant message row — lobe-chat anatomy. Avatar + author label +
- * timestamp + content flush left, no bubble. Hover reveals action
- * strip (Copy/Regenerate/Fork/Save). Streaming variant renders a
- * blinking lavender cursor at the tail.
- */
 function AssistantRow({
   message,
   focusLevel,
   rich,
 }: {
-  message: RenderMessage;
+  message: UIMessage;
   focusLevel: number;
   rich: ReturnType<typeof parseRichResponse>;
 }) {
   const timeLabel = message.createdAt ? formatTime(message.createdAt) : null;
-  // v0.28.68 — subscribe to streaming assistant's reasoning + tool
-  // calls so the row renders them ABOVE the response text, in real
-  // time, matching lobehub/lobe-chat's chat surface (see their
-  // `Messages/Tool/Tool/index.tsx` for tool-running state and
-  // reasoning blocks in `MessageContent.tsx`).
-  const streamingAssistant = useAppStore((s) => s.streamingAssistant);
-  const showLiveExtras = message.streaming && !!streamingAssistant;
+  const hasReasoning = !!message.reasoning && message.reasoning.length > 0;
+  const hasToolCalls =
+    !!message.toolCalls && message.toolCalls.length > 0;
+  const streaming = !!message.streaming;
 
   return (
     <motion.div
-      data-msg-id={message.id}
+      data-msg-id={String(message.id)}
       layout
       initial={{ opacity: 0, y: 12 }}
       animate={{
@@ -353,11 +209,12 @@ function AssistantRow({
         y: 0,
         scale: 0.96 + focusLevel * 0.04,
       }}
+      exit={{ opacity: 0, y: -6 }}
       transition={{ duration: 0.34, ease: [0.22, 1, 0.36, 1] }}
       className="w-full group"
     >
       <div className="flex gap-3">
-        <TravisAvatar streaming={message.streaming} />
+        <TravisAvatar streaming={streaming} />
         <div className="flex-1 min-w-0 flex flex-col gap-1.5">
           <div className="flex items-baseline gap-3">
             <span
@@ -376,13 +233,8 @@ function AssistantRow({
             )}
           </div>
 
-          {/* v0.28.68 — live tool-call chips + reasoning block during stream */}
-          {showLiveExtras && streamingAssistant!.toolCalls.length > 0 && (
-            <ToolCallsInline calls={streamingAssistant!.toolCalls} />
-          )}
-          {showLiveExtras && streamingAssistant!.reasoning.length > 0 && (
-            <ReasoningBlock text={streamingAssistant!.reasoning} />
-          )}
+          {hasToolCalls && <ToolCallsInline calls={message.toolCalls!} />}
+          {hasReasoning && <ReasoningBlock text={message.reasoning!} />}
 
           <div
             style={{
@@ -391,25 +243,38 @@ function AssistantRow({
               color: `rgba(236, 236, 241, ${0.85 + focusLevel * 0.12})`,
             }}
           >
-            {message.streaming ? (
+            {streaming ? (
               message.content.length > 0 ? (
                 <div>
                   <MarkdownBody text={message.content} />
                   <StreamingCursor />
                 </div>
               ) : (
-                // No text yet — while reasoning/tools stream, show
-                // a bare cursor so the row has SOMETHING to anchor.
                 <StreamingCursor />
               )
             ) : rich ? (
-              <RichResponseRenderer response={rich} messageId={message.id} />
+              <RichResponseRenderer response={rich} messageId={String(message.id)} />
             ) : (
               <MarkdownBody text={message.content} />
             )}
           </div>
-          {/* Hover-reveal action strip — only on persisted assistant messages */}
-          {!message.streaming && /^-?\d+$/.test(message.id) && (
+
+          {message.error && (
+            <div
+              className="rounded-lg px-3 py-2 mt-1"
+              style={{
+                background: "rgba(248, 113, 113, 0.06)",
+                border: "1px solid rgba(248, 113, 113, 0.28)",
+                fontSize: 12,
+                color: "rgba(248, 113, 113, 0.92)",
+                fontFamily: "ui-monospace, monospace",
+              }}
+            >
+              {message.aborted ? "Turn cancelled." : message.error}
+            </div>
+          )}
+
+          {!streaming && typeof message.id === "number" && (
             <div className="opacity-0 group-hover:opacity-100 transition-opacity duration-200 pt-1">
               <MessageActions content={message.content} />
             </div>
@@ -420,100 +285,6 @@ function AssistantRow({
   );
 }
 
-/**
- * v0.28.68 — Live tool-call chips rendered ABOVE the streaming text.
- * Each chip shows the tool name + a live "running" dot. When the tool
- * completes (via journal://assistant-done + polled message), the
- * chip fades out and the tool result appears in the persisted message
- * flow via rich-response cards.
- *
- * Modeled on lobe-chat's inline tool bubble (`Tool/index.tsx`) but
- * compressed to a horizontal chip since Travis renders one row per
- * assistant turn.
- */
-function ToolCallsInline({ calls }: { calls: Array<{ id: string; name: string }> }) {
-  return (
-    <div className="flex flex-wrap gap-1.5 mb-1">
-      {calls.map((c) => (
-        <div
-          key={c.id}
-          className="inline-flex items-center gap-2 px-2.5 py-1 rounded-lg"
-          style={{
-            background: "rgba(189, 158, 255, 0.06)",
-            border: "1px solid rgba(189, 158, 255, 0.24)",
-          }}
-        >
-          <span
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: "50%",
-              background: "rgb(74, 222, 128)",
-              boxShadow: "0 0 5px rgb(74, 222, 128)",
-              animation: "travis-cursor-blink 1.6s cubic-bezier(0.22, 1, 0.36, 1) infinite",
-            }}
-          />
-          <span
-            style={{
-              fontFamily: "ui-monospace, monospace",
-              fontSize: 10.5,
-              letterSpacing: "0.14em",
-              textTransform: "uppercase",
-              color: "rgba(189, 158, 255, 0.92)",
-            }}
-          >
-            {c.name}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/**
- * v0.28.68 — Live reasoning block during stream. Renders in a subtle
- * muted panel so it reads as "thinking" not "answer". Same shape lobe-
- * chat uses for extended-thinking blocks (Anthropic's <thinking> tags).
- */
-function ReasoningBlock({ text }: { text: string }) {
-  return (
-    <div
-      className="rounded-xl px-3 py-2 mb-1"
-      style={{
-        background: "rgba(255, 255, 255, 0.02)",
-        border: "1px solid rgba(255, 255, 255, 0.05)",
-      }}
-    >
-      <div
-        style={{
-          fontFamily: "ui-monospace, monospace",
-          fontSize: 9.5,
-          letterSpacing: "0.22em",
-          textTransform: "uppercase",
-          color: "rgba(210, 155, 100, 0.75)",
-          marginBottom: 4,
-        }}
-      >
-        thinking
-      </div>
-      <div
-        style={{
-          fontSize: 13,
-          lineHeight: 1.55,
-          color: "rgba(236, 236, 241, 0.62)",
-          fontStyle: "italic",
-        }}
-      >
-        {text}
-      </div>
-    </div>
-  );
-}
-
-/**
- * Silvery-bronze-lavender avatar orb for the assistant — Travis's
- * identity, distilled. Shimmers while streaming.
- */
 function TravisAvatar({ streaming }: { streaming?: boolean }) {
   return (
     <div
@@ -558,16 +329,106 @@ function StreamingCursor() {
         marginLeft: 2,
         borderRadius: 1,
         boxShadow: "0 0 6px rgba(189, 158, 255, 0.65)",
-        animation: "travis-cursor-blink 1.4s cubic-bezier(0.22, 1, 0.36, 1) infinite",
+        animation:
+          "travis-cursor-blink 1.4s cubic-bezier(0.22, 1, 0.36, 1) infinite",
       }}
     />
   );
 }
 
-/**
- * Hover-reveal action strip on completed assistant messages.
- * Matches lobe-chat's `[role='menubar']` fade-in pattern.
- */
+function ToolCallsInline({
+  calls,
+}: {
+  calls: Array<{ id: string; name: string }>;
+}) {
+  return (
+    <div className="flex flex-wrap gap-1.5 mb-1">
+      {calls.map((c) => (
+        <div
+          key={c.id}
+          className="inline-flex items-center gap-2 px-2.5 py-1 rounded-lg"
+          style={{
+            background: "rgba(189, 158, 255, 0.06)",
+            border: "1px solid rgba(189, 158, 255, 0.24)",
+          }}
+        >
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: "50%",
+              background: "rgb(74, 222, 128)",
+              boxShadow: "0 0 5px rgb(74, 222, 128)",
+              animation:
+                "travis-cursor-blink 1.6s cubic-bezier(0.22, 1, 0.36, 1) infinite",
+            }}
+          />
+          <span
+            style={{
+              fontFamily: "ui-monospace, monospace",
+              fontSize: 10.5,
+              letterSpacing: "0.14em",
+              textTransform: "uppercase",
+              color: "rgba(189, 158, 255, 0.92)",
+            }}
+          >
+            {c.name}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ReasoningBlock({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(true);
+  return (
+    <div
+      className="rounded-xl px-3 py-2 mb-1"
+      style={{
+        background: "rgba(255, 255, 255, 0.02)",
+        border: "1px solid rgba(255, 255, 255, 0.05)",
+      }}
+    >
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        style={{
+          fontFamily: "ui-monospace, monospace",
+          fontSize: 9.5,
+          letterSpacing: "0.22em",
+          textTransform: "uppercase",
+          color: "rgba(210, 155, 100, 0.75)",
+          marginBottom: expanded ? 4 : 0,
+          background: "transparent",
+          border: "none",
+          padding: 0,
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+        }}
+      >
+        <span>thinking</span>
+        <span style={{ opacity: 0.5, fontSize: 10 }}>
+          {expanded ? "▾" : "▸"}
+        </span>
+      </button>
+      {expanded && (
+        <div
+          style={{
+            fontSize: 13,
+            lineHeight: 1.55,
+            color: "rgba(236, 236, 241, 0.62)",
+            fontStyle: "italic",
+          }}
+        >
+          {text}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MessageActions({ content }: { content: string }) {
   const [copied, setCopied] = useState(false);
   return (
@@ -581,7 +442,14 @@ function MessageActions({ content }: { content: string }) {
           });
         }}
       >
-        <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.75">
+        <svg
+          viewBox="0 0 24 24"
+          width="11"
+          height="11"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.75"
+        >
           <rect x="9" y="9" width="13" height="13" rx="2" />
           <path d="M5 15V5a2 2 0 012-2h10" />
         </svg>
@@ -592,7 +460,14 @@ function MessageActions({ content }: { content: string }) {
           window.dispatchEvent(new CustomEvent("travis:regenerate-last"));
         }}
       >
-        <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.75">
+        <svg
+          viewBox="0 0 24 24"
+          width="11"
+          height="11"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.75"
+        >
           <path d="M21 12a9 9 0 11-3.5-7.1M21 4v6h-6" />
         </svg>
       </ActionButton>
@@ -602,7 +477,14 @@ function MessageActions({ content }: { content: string }) {
           window.dispatchEvent(new CustomEvent("travis:fork-from-message"));
         }}
       >
-        <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.75">
+        <svg
+          viewBox="0 0 24 24"
+          width="11"
+          height="11"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.75"
+        >
           <path d="M12 20h9M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4z" />
         </svg>
       </ActionButton>
@@ -634,11 +516,14 @@ function ActionButton({
         cursor: "pointer",
       }}
       onMouseEnter={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.color = "rgb(189, 158, 255)";
-        (e.currentTarget as HTMLButtonElement).style.background = "rgba(189, 158, 255, 0.06)";
+        (e.currentTarget as HTMLButtonElement).style.color =
+          "rgb(189, 158, 255)";
+        (e.currentTarget as HTMLButtonElement).style.background =
+          "rgba(189, 158, 255, 0.06)";
       }}
       onMouseLeave={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.color = "rgba(236, 236, 241, 0.42)";
+        (e.currentTarget as HTMLButtonElement).style.color =
+          "rgba(236, 236, 241, 0.42)";
         (e.currentTarget as HTMLButtonElement).style.background = "transparent";
       }}
     >
@@ -652,11 +537,19 @@ function formatTime(iso: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return "";
   return d
-    .toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })
+    .toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+    })
     .toUpperCase();
 }
 
-function InlineVoiceBubble({ audio }: { audio: InlineAudio }) {
+function InlineVoiceBubble({
+  audio,
+}: {
+  audio: { audioPath: string; durationMs: number; transcript: string };
+}) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
   const [pos, setPos] = useState(0);
@@ -689,12 +582,24 @@ function InlineVoiceBubble({ audio }: { audio: InlineAudio }) {
           aria-label={playing ? "Pause" : "Play"}
         >
           {playing ? (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              aria-hidden
+            >
               <rect x="6" y="5" width="4" height="14" rx="1" />
               <rect x="14" y="5" width="4" height="14" rx="1" />
             </svg>
           ) : (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              aria-hidden
+            >
               <path d="M7 5v14l12-7z" />
             </svg>
           )}
@@ -707,7 +612,11 @@ function InlineVoiceBubble({ audio }: { audio: InlineAudio }) {
             <div
               className="h-full rounded-full transition-[width] duration-150"
               style={{
-                width: `${durationSec === 0 ? 0 : Math.min(100, (pos / durationSec) * 100)}%`,
+                width: `${
+                  durationSec === 0
+                    ? 0
+                    : Math.min(100, (pos / durationSec) * 100)
+                }%`,
                 background: "rgb(189, 158, 255)",
               }}
             />

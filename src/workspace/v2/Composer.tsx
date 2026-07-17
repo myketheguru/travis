@@ -23,6 +23,7 @@ export function Composer() {
   const setPendingComposerSubmit = useAppStore(
     (s) => s.setPendingComposerSubmit,
   );
+  const activeConversationId = useAppStore((s) => s.activeConversationId);
   const noteUserActivity = useAppStore((s) => s.noteUserActivity);
 
   useEffect(() => {
@@ -36,7 +37,7 @@ export function Composer() {
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   }, [text]);
 
-  function handleSubmit(overrideText?: string) {
+  async function handleSubmit(overrideText?: string) {
     const trimmed = (overrideText ?? text).trim();
     if (!trimmed) return;
     // v0.28.25 — typed turns explicitly opt out of TTS. Voice paths
@@ -46,6 +47,18 @@ export function Composer() {
     // on immersive views (map, voice) while the LLM is still working.
     // Cleared automatically after chatBusy flips false.
     useAppStore.getState().setLastSubmittedText(trimmed);
+    // v0.28.70 — insert an optimistic user message into chatStore so
+    // the row renders instantly. The journal://user-inserted event
+    // will swap tmpId → real DB id when Rust persists the row.
+    // Fall back to the legacy pendingComposerSubmit path (AskTab
+    // still owns the actual submit call).
+    if (activeConversationId !== null) {
+      const audio = useAppStore.getState().pendingVoiceAudio ?? undefined;
+      const { insertOptimisticUserMessage } = await import(
+        "../../chat/useConversationStream"
+      );
+      insertOptimisticUserMessage(activeConversationId, trimmed, audio);
+    }
     setPendingComposerSubmit(trimmed);
     setText("");
     noteUserActivity();
@@ -54,7 +67,7 @@ export function Composer() {
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
-      handleSubmit();
+      void handleSubmit();
     }
   }
 

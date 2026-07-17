@@ -38,7 +38,8 @@ import { ContactsOverlay } from "./ContactsOverlay";
 import { CanvasStage } from "./canvas/CanvasStage";
 import { useCanvasMode, useMapAutoExpand } from "./canvas/useCanvasMode";
 import { useNativeVoice } from "../../voice/useNativeVoice";
-import { useAssistantStream } from "../../chat/useAssistantStream";
+import { useConversationStream } from "../../chat/useConversationStream";
+import { useHydrateChatStore } from "../../chat/useHydrateChatStore";
 import { Composer } from "./Composer";
 import { useFocalContent } from "./useFocalContent";
 import AskTab from "../../manage/tabs/AskTab";
@@ -62,10 +63,16 @@ export function WorkspaceV2() {
   // default; a Settings toggle will let users opt out.
   useNativeVoice({ enabled: true });
 
-  // v0.28.66 — streaming assistant chunks. Journal_ingest emits per
-  // Anthropic SSE text_delta; this hook accumulates into the store's
-  // streamingAssistant slot and ChatCanvas renders it live.
-  useAssistantStream();
+  // v0.28.70 — full conversation stream. This hook replaces
+  // useAssistantStream and handles the ENTIRE chat lifecycle: user
+  // message insert, assistant message create (with tmpId), text
+  // deltas, reasoning deltas, tool call starts, and the final swap
+  // tmp→realId on assistant-done. All events land in chatStore's
+  // messagesMap; ChatCanvas renders from there.
+  useConversationStream();
+  // Load persisted DB messages into chatStore when the active
+  // conversation changes so history reappears on switch.
+  useHydrateChatStore();
 
   // Global shortcuts.
   useEffect(() => {

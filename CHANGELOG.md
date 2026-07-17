@@ -1,5 +1,77 @@
 # Travis Changelog
 
+## v0.28.70 — Chat rearchitecture: messagesMap + reducer + tmpId (2026-07-17)
+
+The real lobe-chat-shaped rewrite. Streaming pipeline from v0.28.66 is
+kept; the FRONTEND state model is replaced.
+
+### What changed structurally
+
+**Before (v0.28.66 → v0.28.68 hybrid):**
+- ChatCanvas rendered from `useFocalContent` (DB polling)
+- Streaming state lived in a parallel `streamingAssistant` store slot
+- Optimistic user bubble lived in `useOptimisticSubmit` refs inside ChatCanvas
+- Voice audio lived in `pendingVoiceAudio` + `voiceAudioLinkedMessageId`
+- Three separate state models, all trying to describe the same message
+
+**After (v0.28.70):**
+- Single `chatStore.messagesMap[conversationId]` — the source of truth
+- Reducer-style actions: `createMessage`, `updateMessage`, `appendContent`,
+  `appendReasoning`, `addToolCall`, `swapTmpId`, `removeMessage`,
+  `hydrateConversation`, `clear`
+- UIMessage carries ALL its state: content, reasoning, toolCalls, audio,
+  streaming flag, error, aborted flag, tmpId, real DB id
+- Every event mutates ONE list by (tmpId or realId). No parallel stores.
+
+### New wire protocol
+
+Rust `journal_ingest` now emits one event per lifecycle stage:
+
+1. `journal://user-inserted` — user message row landed with real DB id.
+2. `journal://assistant-message-created` — LLM turn started; carries a
+   `tmpId` for the frontend to create the assistant row optimistically
+   (before ANY token arrives).
+3. `journal://assistant-chunk` — text delta, carries `tmpId`.
+4. `journal://reasoning-chunk` — thinking delta, carries `tmpId`.
+5. `journal://assistant-tool-start` — tool call started, carries `tmpId`.
+6. `journal://assistant-done` — final content + real DB id, carries `tmpId`
+   for the swap.
+
+Every message goes through the same tmpId → realId swap at the boundary
+between "in-flight" and "persisted". The renderer never sees a state
+transition — it just sees `id` change from string to number.
+
+### New frontend pieces
+
+- **`src/stores/chatStore.ts`** — Zustand store, single messagesMap,
+  reducer actions. Immer-lite manual patches (Zustand's set()
+  semantics compose fine at this scale).
+- **`src/chat/useConversationStream.ts`** — the ONE hook that listens
+  to every journal event and mutates chatStore. Replaces v0.28.66's
+  `useAssistantStream`. Mounts once at WorkspaceV2 root.
+- **`src/chat/useHydrateChatStore.ts`** — on conversation switch,
+  fetches the DB thread and populates chatStore. Idempotent per
+  conversation.
+- **ChatCanvas rewrite** — reads exclusively from
+  `chatStore.messagesMap[activeConversationId]`. No polling. No
+  parallel refs. No optimistic-slot juggling. Renders lobe-chat
+  message anatomy (bubbleless assistant, avatar, hover actions,
+  streaming cursor, tool chips, reasoning block, error footer) with
+  full v0.28.66 visual continuity.
+- **Composer** — inserts optimistic user message into chatStore on
+  submit; the tmpId is auto-swapped for the real DB id when Rust
+  emits `journal://user-inserted`.
+
+### Explicit non-goals for this release
+
+- **Abort controller / Stop button** — not wired yet. UI has no way
+  to interrupt a stream. Deferred to v0.28.71.
+- **Smooth-message RAF drain** — deferred; deltas still land as they
+  arrive (React 19 handles it fine but not the "silky typing" feel).
+- **Mid-stream error footer** — UIMessage has the `error` and
+  `aborted` fields wired; the actual error-catching + population is
+  deferred to v0.28.71.
+
 ## v0.28.68 — Early audio card + live reasoning/tool render (2026-07-17)
 
 Two blockers on the streaming story that shipped in v0.28.66. Both were
