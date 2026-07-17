@@ -1,5 +1,32 @@
 # Travis Changelog
 
+## v0.28.67 — v0.28.66 hotfix: dev-mode DLL glob + prewarm poison (2026-07-17)
+
+Two defensive fixes on top of v0.28.66 while I chase a runtime crash a
+user reported on the installed build.
+
+1. **Dev-mode `resources/vc/*.dll` glob failure.** The `tauri.windows.
+   conf.json` overlay (v0.28.64) requires the VC++ runtime DLLs to exist
+   in `src-tauri/resources/vc/` — CI stages them from the Windows
+   runner's `C:\Windows\System32` before build. In local `npm run tauri
+   dev` those files don't exist, and Tauri's config resolver bails at
+   startup on the unresolved glob. Added `resources/vc/placeholder.dll`
+   (empty, committed) so the glob always resolves to at least one file;
+   CI still overwrites with the real 3 DLLs on release builds.
+
+2. **Prewarm mutex poison-recovery.** v0.28.65 added `prewarm_in_flight:
+   Mutex<Option<usize>>` for the dedup guard, using `.lock().unwrap()`
+   throughout. If a prewarm task ever panicked while holding one of
+   those locks, the mutex was poisoned and every subsequent mic press
+   panicked at the same call site — presenting as "app crashes on mic".
+   Now recovers from `PoisonError` via `p.into_inner()` for both
+   `prewarm` and `prewarm_in_flight` locks.
+
+Not fixed here: the installed-build crash on voice submit. Needs the
+actual panic trace before I can pinpoint. If you can reproduce and
+capture stderr, please share the `thread '...' panicked at ..., file:
+line` line.
+
 ## v0.28.66 — Streaming + lobe-chat message anatomy + CPU pass (2026-07-17)
 
 Three big changes in one release, all threaded through Travis's canvas

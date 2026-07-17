@@ -293,7 +293,15 @@ pub async fn voice_prewarm_transcript(
     // the same sample count.
     const PREWARM_DEDUP_TOLERANCE: usize = 8000; // 0.5s @ 16kHz
     {
-        if let Some(pw) = state.prewarm.lock().unwrap().as_ref() {
+        // v0.28.67 — recover from poisoned mutexes instead of panicking.
+        // A prewarm task that ever panicked would poison the mutex and
+        // every subsequent mic press would immediately re-panic here,
+        // which looked like "app crashes on mic press" to the user.
+        let ready = match state.prewarm.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(pw) = ready.as_ref() {
             let age = std::time::Instant::now()
                 .saturating_duration_since(pw.ready_at)
                 .as_millis();
@@ -302,7 +310,11 @@ pub async fn voice_prewarm_transcript(
                 return Ok(());
             }
         }
-        let mut in_flight = state.prewarm_in_flight.lock().unwrap();
+        drop(ready);
+        let mut in_flight = match state.prewarm_in_flight.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
         if let Some(existing) = *in_flight {
             let delta = sample_count.saturating_sub(existing);
             if delta <= PREWARM_DEDUP_TOLERANCE {

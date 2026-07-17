@@ -8,5 +8,8 @@
 
 # v0.28.63 — VC++ runtime DLLs are staged into here by the Windows
 # release-CI step from the runner's Visual Studio install. Never
-# checked in.
-/resources/vc/
+# checked in — EXCEPT the placeholder.dll below, which exists so
+# the tauri.windows.conf.json overlay's `resources/vc/*.dll` glob
+# resolves cleanly in dev mode when the real DLLs aren't staged.
+/resources/vc/*
+!/resources/vc/placeholder.dll
