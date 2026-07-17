@@ -1,5 +1,43 @@
 # Travis Changelog
 
+## v0.28.71 — v0.28.70 fix + smooth-drain (2026-07-17)
+
+Two fixes on top of v0.28.70 that materially change how streaming
+reads:
+
+1. **Compile error fix.** `assistant_tmp_id` was declared inside the
+   manager iteration loop but the `journal://assistant-done` emit
+   reads it far outside that scope. `error[E0425]: cannot find value
+   'assistant_tmp_id' in this scope`. Moved the declaration to the
+   outer journal_ingest scope so the tmpId lives for the whole call
+   (which is what "one assistant turn = one tmpId" already assumes).
+
+2. **Smooth-drain (lobe-chat parity).** Direct port of lobe-chat's
+   `createSmoothMessage` (packages/fetch-sse/src/fetchSSE.ts:127-217).
+   `src/chat/smoothMessage.ts` — adaptive character-per-frame RAF
+   drain. Queue depth drives the drain rate:
+   `currentSpeed += (max(startSpeed, queueLen) - currentSpeed)
+                   * (|Δqueue| * 0.0008 + 0.005)`.
+   When Claude dumps 100+ chars in one SSE event, speed ramps up
+   toward the queue depth. As the queue drains, speed decays back
+   toward 12 chars/sec. Feels like fluid typing regardless of
+   upstream bursty cadence.
+
+   `useConversationStream` routes `journal://assistant-chunk`
+   through `getSmoother(conversationId, tmpId).push(delta)` instead
+   of calling `appendContent` directly. `.done()` fires on
+   `assistant-done`.
+
+### Still deferred to v0.28.72
+
+- **Abort controller / Stop button.** Attempted here; needs an
+  `abort_flags` field on `AppState` which requires cascading changes
+  to every `AppState` construction site. Doing it half-way would
+  ship broken code — pulled the change, deferring properly.
+- **Mid-stream error footer.** UIMessage has the `error` and
+  `aborted` fields. Population from the journal_ingest error path is
+  a small next step; deferred with abort so they ship together.
+
 ## v0.28.70 — Chat rearchitecture: messagesMap + reducer + tmpId (2026-07-17)
 
 The real lobe-chat-shaped rewrite. Streaming pipeline from v0.28.66 is

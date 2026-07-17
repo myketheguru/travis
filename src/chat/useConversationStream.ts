@@ -23,6 +23,7 @@ import { useEffect } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useAppStore } from "../stores/app";
 import { useChatStore, tmpMessageId } from "../stores/chatStore";
+import { getSmoother } from "./smoothMessage";
 
 interface UserInsertedEvent {
   conversationId: number;
@@ -143,12 +144,18 @@ export function useConversationStream(): void {
         ),
       );
 
-      // ---- assistant text delta ----
+      // ---- assistant text delta (smooth-drained) ----
+      // v0.28.71 — direct calls to appendContent make React re-render
+      // per token which reads as "chunky" on longer responses. Route
+      // through the smoothMessage RAF drain — adaptive char-per-frame
+      // cadence keeps the queue responsive to bursty upstream chunks
+      // (Claude sometimes dumps 100+ chars in one event) while
+      // rendering as fluid typing.
       unlisteners.push(
         await listen<ChunkEvent>("journal://assistant-chunk", (evt) => {
           if (!mounted) return;
           const { conversationId, tmpId, delta } = evt.payload;
-          chat().appendContent(conversationId, tmpId, delta);
+          getSmoother(conversationId, tmpId).push(delta);
         }),
       );
 
@@ -182,6 +189,8 @@ export function useConversationStream(): void {
           if (!mounted) return;
           const { conversationId, tmpId, assistantMessageId, content } =
             evt.payload;
+          // Stop the smoother's RAF loop for this message.
+          getSmoother(conversationId, tmpId).done();
           if (assistantMessageId !== null && assistantMessageId !== undefined) {
             // Swap tmpId → real DB id and patch in the final content
             // (which usually matches what streamed but can differ on
