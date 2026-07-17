@@ -191,21 +191,30 @@ export function useConversationStream(): void {
             evt.payload;
           // Stop the smoother's RAF loop for this message.
           getSmoother(conversationId, tmpId).done();
+          // v0.28.74 — preserve the LONGER of streamed vs done content.
+          // Rust's `assistant_visible` comes from the extraction tool's
+          // response field; if the LLM streamed prose + a big code
+          // block but extraction returned a shorter synthesis, the
+          // naive REPLACE would drop the code (users reported code
+          // vanishing on second Bezier request). Only take the done
+          // content if it's longer OR similar length — otherwise keep
+          // what we accumulated.
+          const list = chat().messagesFor(conversationId);
+          const cur = list.find(
+            (m) => m.tmpId === tmpId || m.id === tmpId,
+          );
+          const streamedLen = cur?.content.length ?? 0;
+          const finalContent =
+            content.length >= streamedLen - 40 ? content : cur?.content ?? content;
           if (assistantMessageId !== null && assistantMessageId !== undefined) {
-            // Swap tmpId → real DB id and patch in the final content
-            // (which usually matches what streamed but can differ on
-            // the tool-loop synthesis path).
             chat().swapTmpId(conversationId, tmpId, assistantMessageId, {
-              content,
+              content: finalContent,
               streaming: false,
             });
           } else {
-            // No DB id (rare — journal_ingest error path). Just clear
-            // the streaming flag; the message stays visible with
-            // whatever content it accumulated.
             chat().updateMessage(conversationId, tmpId, {
               streaming: false,
-              content,
+              content: finalContent,
             });
           }
         }),

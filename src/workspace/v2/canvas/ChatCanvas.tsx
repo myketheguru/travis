@@ -216,10 +216,11 @@ function AssistantRow({
       )
     : [];
   const docIds = Array.from(new Set(docMatches));
-  const displayContent =
+  const displayContent = sanitizeAssistantContent(
     docIds.length > 0
       ? message.content.replace(/doc#\d+/g, "").replace(/[ \t]+\n/g, "\n").trim()
-      : message.content;
+      : message.content,
+  );
 
   return (
     <motion.div
@@ -334,6 +335,46 @@ function DocCardClickable({ documentId }: { documentId: number }) {
       <FileCard documentId={documentId} />
     </div>
   );
+}
+
+/**
+ * v0.28.74 — strip internal tool call markers that sometimes leak
+ * into the visible assistant content when the LLM prefixes a tool
+ * call with a bare mention of the tool name. Users reported seeing
+ * `report_extraction` as the entire response text; that's the LLM
+ * saying "I'm about to call report_extraction" before actually
+ * calling it, and journal_ingest's extraction path failed to strip
+ * it.
+ *
+ * List of tool names is small + stable; sanitize on the frontend
+ * as a cheap belt-and-suspenders (Rust sanitizer is the real fix
+ * but this covers historical / edge cases).
+ */
+const LEAKED_TOOL_MARKERS = new Set([
+  "report_extraction",
+  "extract_report",
+  "run_python",
+  "edit_python_artifact",
+  "read_document",
+  "search_docs",
+]);
+
+function sanitizeAssistantContent(text: string): string {
+  const lines = text.split("\n");
+  const filtered = lines.filter((l) => {
+    const t = l.trim();
+    if (!t) return true;
+    if (LEAKED_TOOL_MARKERS.has(t)) return false;
+    // Also strip lines like "Calling report_extraction..." or
+    // "Using tool: report_extraction".
+    if (/^(calling|using tool:?)\s+[a-z_]+\s*\.?\.?\.?$/i.test(t)) return false;
+    return true;
+  });
+  // Collapse triple+ blank lines that result.
+  return filtered
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function TravisAvatar({ streaming }: { streaming?: boolean }) {

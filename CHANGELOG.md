@@ -1,5 +1,45 @@
 # Travis Changelog
 
+## v0.28.74 — Tool marker strip + preserve streamed code (2026-07-17)
+
+Both remaining items from the v0.28.73 "still investigating" list.
+
+### 1. Tool call name leaking into visible content
+
+Users saw `report_extraction` as the entire visible assistant response.
+Cause: Claude sometimes prefixes a tool call with a plain-text mention
+of the tool name; when the extraction path fell through, that
+prefix persisted as the message content.
+
+Two-sided fix:
+- **Rust:** `journal.rs` `strip_leaked_tool_markers()` runs on the
+  assistant response text before it's written to the DB. Removes
+  lines that are exactly a known tool name (`report_extraction`,
+  `extract_report`, `run_python`, `edit_python_artifact`,
+  `read_document`, `search_docs`) OR that match the
+  "Calling <tool>..." / "Using tool: <tool>" preambles Claude
+  sometimes emits.
+- **Frontend:** `ChatCanvas.sanitizeAssistantContent()` re-runs the
+  same strip on the display path — belt-and-suspenders for messages
+  already persisted before the Rust fix.
+
+### 2. Code missing on second code request
+
+Users' first code snippet (polygon clipping) rendered perfectly; the
+second (Bezier) showed only the intro sentence. Root cause: the
+`journal://assistant-done` event carries `content: assistant_visible`
+from Rust, which is the extraction tool's `response` field. If the
+extraction returned a summary shorter than what streamed (which
+happens when the tool loop's synthesis prose is briefer than the raw
+streamed answer with code), my `swapTmpId` handler REPLACED the
+streamed content — dropping the code.
+
+Fix: in `useConversationStream`'s `assistant-done` handler, compare
+the streamed content length to the done event's content. Take the
+LONGER of the two (with a 40-char slack to allow for whitespace
+differences). Now the streaming path acts as insurance against the
+extraction path stripping content.
+
 ## v0.28.73 — Doc viewer overlay + voice static import (2026-07-17)
 
 Fixes v0.28.72 gaps found by the user:

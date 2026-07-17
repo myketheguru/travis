@@ -3800,13 +3800,66 @@ pub async fn journal_ingest(
         .filter(|s| !s.is_empty())
         .map(str::to_string);
 
+    // v0.28.74 — strip lines that are bare tool call names. Claude
+    // sometimes prefixes a real tool call with a plain-text mention
+    // ("report_extraction" on its own line) which then persists as
+    // the assistant message when extraction fell through. Users saw
+    // "report_extraction" as the whole visible response.
+    fn strip_leaked_tool_markers(text: &str) -> String {
+        const TOOLS: &[&str] = &[
+            "report_extraction",
+            "extract_report",
+            "run_python",
+            "edit_python_artifact",
+            "read_document",
+            "search_docs",
+        ];
+        let mut out: Vec<&str> = Vec::new();
+        for line in text.lines() {
+            let t = line.trim();
+            if t.is_empty() {
+                out.push(line);
+                continue;
+            }
+            if TOOLS.iter().any(|name| t == *name) {
+                continue;
+            }
+            // "Calling report_extraction..." / "Using tool: run_python"
+            let lower = t.to_lowercase();
+            let is_prefix = (lower.starts_with("calling ") || lower.starts_with("using tool"))
+                && TOOLS.iter().any(|name| lower.contains(name));
+            if is_prefix {
+                continue;
+            }
+            out.push(line);
+        }
+        // Collapse triple+ newlines that result from stripping.
+        let joined = out.join("\n");
+        let mut collapsed = String::with_capacity(joined.len());
+        let mut blank_run = 0;
+        for line in joined.lines() {
+            if line.trim().is_empty() {
+                blank_run += 1;
+                if blank_run <= 1 {
+                    collapsed.push_str(line);
+                    collapsed.push('\n');
+                }
+            } else {
+                blank_run = 0;
+                collapsed.push_str(line);
+                collapsed.push('\n');
+            }
+        }
+        collapsed.trim().to_string()
+    }
+
     let assistant_visible: String = match response_text {
         Some(r) => {
             // Belt-and-suspenders: the system prompt asks Travis to voice
             // capability gaps in its own words. If somehow it didn't (no gap
             // verb appears in the response), append a discreet marker so the
             // user is never unaware of an unmet ask.
-            let mut text = r.clone();
+            let mut text = strip_leaked_tool_markers(&r);
             if !extraction.capability_gaps.is_empty() {
                 let lower = text.to_lowercase();
                 let mentioned = extraction.capability_gaps.iter().any(|g| {
