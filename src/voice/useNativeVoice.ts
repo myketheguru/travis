@@ -24,6 +24,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { nativeVoice, onVoiceEvent } from "../lib/nativeVoice";
 import { useAppStore } from "../stores/app";
 import { playCue } from "./cues";
+import { insertOptimisticUserMessage } from "../chat/useConversationStream";
 
 interface Options {
   enabled: boolean;
@@ -119,14 +120,16 @@ export function useNativeVoice({ enabled }: Options) {
                 });
               }
               useAppStore.getState().setSpeakNextResponse(true);
-              // v0.28.72 — voice submits skip Composer.handleSubmit
+              // v0.28.72/.73 — voice submits skip Composer.handleSubmit
               // (they flow through AskTab via pendingComposerSubmit).
               // AskTab doesn't insert into chatStore, so ChatCanvas
               // stayed empty until journal://user-inserted landed ~9s
               // later. Insert the optimistic user message directly
               // here so the audio card + transcript render the
               // instant whisper returns, before journal_ingest even
-              // starts.
+              // starts. v0.28.73: static import (was dynamic → added
+              // ~200ms of module-load delay on first voice turn even
+              // after the fetch).
               const convId =
                 useAppStore.getState().activeConversationId;
               if (convId !== null) {
@@ -134,10 +137,6 @@ export function useNativeVoice({ enabled }: Options) {
                   const audio =
                     useAppStore.getState().pendingVoiceAudio ??
                     undefined;
-                  const { insertOptimisticUserMessage } =
-                    await import(
-                      "../chat/useConversationStream"
-                    );
                   insertOptimisticUserMessage(convId, trimmed, audio);
                 } catch (err) {
                   console.warn(

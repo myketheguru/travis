@@ -11,6 +11,7 @@ import { useAppStore } from "../../stores/app";
 import { VoiceArmButton } from "./VoiceArmButton";
 import { MicMeter } from "./MicMeter";
 import { useCanvasMode } from "./canvas/useCanvasMode";
+import { insertOptimisticUserMessage } from "../../chat/useConversationStream";
 
 export function Composer() {
   const [text, setText] = useState("");
@@ -54,9 +55,6 @@ export function Composer() {
     // still owns the actual submit call).
     if (activeConversationId !== null) {
       const audio = useAppStore.getState().pendingVoiceAudio ?? undefined;
-      const { insertOptimisticUserMessage } = await import(
-        "../../chat/useConversationStream"
-      );
       insertOptimisticUserMessage(activeConversationId, trimmed, audio);
     }
     setPendingComposerSubmit(trimmed);

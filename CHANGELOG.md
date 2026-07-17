@@ -1,5 +1,45 @@
 # Travis Changelog
 
+## v0.28.73 — Doc viewer overlay + voice static import (2026-07-17)
+
+Fixes v0.28.72 gaps found by the user:
+
+### 1. Clicking a doc card / doc list item did nothing
+
+`viewerDocumentId` was ONLY consumed by the legacy `Manage.tsx` view
+(`Manage.tsx:200-213`). The v2 workspace never mounted anything that
+watched the store field, so `setViewerDocumentId(id)` was a silent
+no-op. Setting the ID both from `DocCardClickable` (chat message) and
+from `DocumentsOverlay` (documents list) went nowhere.
+
+New: `src/workspace/v2/DocumentViewerOverlay.tsx` — modal-style
+overlay that watches `viewerDocumentId` and renders `<DocumentViewer/>`
+inside a backdrop-blurred sheet. Esc + backdrop-click close.
+Mounted alongside the other overlays in WorkspaceV2.
+
+### 2. Voice audio still not instant
+
+The v0.28.72 optimistic-insert helper (`insertOptimisticUserMessage`)
+was dynamically imported (`await import(...)`) inside the speech-end
+handler. On first voice turn the module hadn't been loaded yet, so
+Vite fetched it right when we needed it — ~150-300ms of latency.
+Cached after that, but the first press was slow.
+
+Static imports in both `useNativeVoice.ts` and `Composer.tsx`. First
+voice turn now inserts as fast as subsequent ones.
+
+### Deferred (still investigating)
+
+- **Missing code on second Bezier response.** First code snippet
+  (polygon clipping) rendered perfectly via the same MarkdownBody /
+  CodeBlock path. Second response shows only the intro sentence.
+  Same rendering path — this is almost certainly an LLM output issue
+  (the model stopped early), not a UI bug. Reproducing to confirm.
+- **`report_extraction` marker leaking into visible content.** Tool
+  call name leaked into the persisted assistant message; needs a
+  Rust-side content sanitizer in `journal_ingest`. Tracking
+  separately.
+
 ## v0.28.72 — Infinite loop + voice optimistic + code + doc cards + new chat (2026-07-17)
 
 Five real bugs from user feedback on v0.28.71. Every one is a

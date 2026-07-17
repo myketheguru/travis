@@ -34,6 +34,7 @@ import { HistoryOverlay } from "./HistoryOverlay";
 import { ResumeChip } from "./ResumeChip";
 import { QuickAccessDock } from "./QuickAccessDock";
 import { DocumentsOverlay } from "./DocumentsOverlay";
+import { DocumentViewerOverlay } from "./DocumentViewerOverlay";
 import { ContactsOverlay } from "./ContactsOverlay";
 import { CanvasStage } from "./canvas/CanvasStage";
 import { useCanvasMode, useMapAutoExpand } from "./canvas/useCanvasMode";
@@ -262,6 +263,7 @@ export function WorkspaceV2() {
       <SettingsOverlay />
       <HistoryOverlay />
       <DocumentsOverlay />
+      <DocumentViewerOverlay />
       <ContactsOverlay />
     </div>
   );
