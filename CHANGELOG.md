@@ -1,6 +1,35 @@
 # Travis Changelog
 
-## v0.28.63 — Persistent voice audio card (2026-07-17)
+## v0.28.63 — Windows VC runtime + persistent voice card (2026-07-17)
+
+Bundles TWO fixes because both were needed to make Windows 11 users
+whole again in the same release.
+
+### 1. VC++ runtime DLLs bundled alongside app.exe
+
+Fresh Windows 11 users hit "MSVCP140.dll was not found" on first
+launch. Tried static-linking the CRT (v0.28.62 attempt) — didn't
+work because `fastembed` pulls in `ort` → `ort-sys`, which ships
+pre-built ONNX Runtime binaries linked with /MD. Can't mix /MT and
+/MD in a single binary.
+
+Fallback: ship msvcp140.dll, vcruntime140.dll, and vcruntime140_1.dll
+alongside Travis.exe. Windows' DLL search order looks in the
+executable's directory first, so it finds them without any system
+install. No admin prompt, no vc_redist download, adds ~620KB to
+the installer.
+
+Implementation:
+- Release CI (Windows only) copies the DLLs from the runner's
+  Visual Studio install into `src-tauri/resources/vc/`.
+- `tauri.windows.conf.json` overlay adds `resources/vc/*.dll` to
+  `bundle.resources` and wires `installerHooks` to
+  `windows/installer.nsh`.
+- `src-tauri/windows/installer.nsh` defines `NSIS_HOOK_POSTINSTALL`
+  that `CopyFiles` from `$INSTDIR\resources\vc\` up to `$INSTDIR`.
+  `NSIS_HOOK_POSTUNINSTALL` cleans them out on uninstall.
+
+### 2. Persistent voice audio card (survives canvas mount race)
 
 The v0.28.61 InlineVoiceBubble fix was structurally correct code but
 never got mounted for the case it was written for: when the user
@@ -28,31 +57,6 @@ reply. That's the LLM turn itself, and the real fix is streaming +
 split-emit — where the user message emits as its own event
 immediately, then assistant tokens stream in progressively. Coming
 in v0.28.64.
-
-## v0.28.62 — Windows 11 MSVCP140.dll hotfix (2026-07-17)
-
-Reported by a Windows 11 user: on fresh Windows 11 installs, launching
-Travis threw "The code execution cannot proceed because MSVCP140.dll
-was not found." Root cause: the shipped binary linked the Visual C++
-2015-2022 runtime dynamically, and Windows 11 doesn't ship those DLLs
-out of the box.
-
-Fix: statically link the C runtime into the binary so no external
-DLL is needed. Two coordinated pieces:
-
-1. `src-tauri/.cargo/config.toml` sets `rustflags = ["-C",
-   "target-feature=+crt-static"]` for all `*-pc-windows-msvc`
-   targets. This links the Rust half of the CRT statically.
-
-2. Release CI sets `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded` +
-   `CFLAGS=/MT` + `CXXFLAGS=/MT` on Windows runs only, so
-   whisper.cpp's cmake build (the biggest C++ dep) links the CRT
-   statically too. Both halves must agree — a mixed build fails to
-   link.
-
-Net effect: users on any Windows 10/11 install can run the .exe
-without installing VC++ redistributable first. Binary is slightly
-larger (~1MB) but no admin prompt, no separate download.
 
 ## v0.28.61 — Voice UX honesty (2026-07-16)
 

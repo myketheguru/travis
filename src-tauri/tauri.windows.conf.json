@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": [
+      "resources/python/**/*",
+      "resources/whisper/**/*",
+      "resources/piper/**/*",
+      "resources/wake/**/*",
+      "resources/vc/*.dll"
+    ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/installer.nsh"
+      }
+    }
+  }
+}

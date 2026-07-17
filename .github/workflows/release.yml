@@ -132,20 +132,33 @@ jobs:
       - name: Install npm deps
         run: npm ci
 
-      - name: Force static CRT for Windows C++ deps
+      - name: Stage VC++ runtime DLLs for Windows bundle
         if: matrix.platform == 'windows-latest'
         shell: pwsh
-        # v0.28.62 — pairs with src-tauri/.cargo/config.toml crt-static.
-        # Rust's flag statically links the CRT for Rust code; these
-        # env vars propagate the same choice into whisper.cpp's cmake
-        # build so no dependency dynamically links MSVCP140.dll /
-        # VCRUNTIME140.dll. Without a consistent choice across both
-        # sides, users on fresh Windows 11 installs hit "MSVCP140.dll
-        # was not found" on first launch.
+        # v0.28.63 — copy msvcp140/vcruntime140 from the Windows runner's
+        # Visual Studio install into src-tauri/resources/vc/ so tauri
+        # picks them up via bundle.resources (windows overlay). At
+        # install time, src-tauri/windows/installer.nsh copies them from
+        # $INSTDIR\resources\vc\ to $INSTDIR so Windows finds them next
+        # to Travis.exe. Fixes "MSVCP140.dll was not found" on fresh
+        # Windows 11.
         run: |
-          "CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CFLAGS=/MT" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CXXFLAGS=/MT" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $ErrorActionPreference = "Stop"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsRoot = & $vswhere -latest -property installationPath
+          Write-Host "VS root: $vsRoot"
+          $crtRoot = Join-Path $vsRoot "VC\Redist\MSVC"
+          $versionDir = Get-ChildItem $crtRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          Write-Host "CRT version: $($versionDir.FullName)"
+          $x64Dir = Join-Path $versionDir.FullName "x64"
+          $crtDir = Get-ChildItem $x64Dir -Directory -Filter "Microsoft.VC*.CRT" | Select-Object -First 1
+          Write-Host "CRT dir: $($crtDir.FullName)"
+          $dest = "src-tauri/resources/vc"
+          New-Item -ItemType Directory -Path $dest -Force | Out-Null
+          Copy-Item (Join-Path $crtDir.FullName "msvcp140.dll") $dest -Force
+          Copy-Item (Join-Path $crtDir.FullName "vcruntime140.dll") $dest -Force
+          Copy-Item (Join-Path $crtDir.FullName "vcruntime140_1.dll") $dest -Force
+          Get-ChildItem $dest
 
       - name: Build & sign (no release upload from this repo)
         uses: tauri-apps/tauri-action@v0
