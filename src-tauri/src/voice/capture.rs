@@ -540,7 +540,14 @@ fn tick_loop(app: AppHandle, audio: Arc<Mutex<AudioBuf>>, rx: Receiver<Cmd>, inp
                 VadState::Speech => "speech",
                 VadState::ProbablySilence => "probably-silence",
             };
-            tracing::info!(
+            // v0.28.76 — this fires every 500ms forever while the
+            // capture thread runs (always, from app boot). At INFO
+            // it flooded the terminal in dev with `rms=... state=silent`
+            // spam even when ambient mode + wake word were both off.
+            // Dropped to DEBUG so it stays available for voice
+            // debugging (RUST_LOG=debug) but disappears from normal
+            // dev runs.
+            tracing::debug!(
                 "[voice] rms={:.4} state={} utterance_len={}",
                 last_rms_seen,
                 state_name,

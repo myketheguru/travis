@@ -1,5 +1,20 @@
 # Travis Changelog
 
+## v0.28.76 — Voice tick-loop log spam → DEBUG (2026-07-17)
+
+`voice::capture.rs` fires a per-tick VAD diagnostic every 500ms
+forever while the capture thread runs — from app boot onward. At
+`tracing::info!` level it flooded dev terminals with
+`[voice] rms=... state=silent utterance_len=0` even when both
+ambient mode + Hey Jarvis wake were off (the capture thread is
+always up to be ready for mic press; only wake INFERENCE is
+gated by the toggle).
+
+Dropped to `tracing::debug!`. Available via `RUST_LOG=debug` when
+voice-debugging; silent by default. Other voice INFO logs are
+event-based (state transitions, arm/disarm, speech-end) and stay
+at INFO — those are useful.
+
 ## v0.28.75 — Prompt fix: code must be inline in the response field (2026-07-17)
 
 The user's second Bezier-code test shows Claude reasoning
